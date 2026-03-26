@@ -6,107 +6,139 @@ Infraestructura NAS casera basada en TV Box S905X3, optimizada para ingestión, 
 
 ## 🚀 Qué hace este sistema
 
-Este NAS no solo almacena archivos, sino que:
-
-* 📥 **Recibe contenido multimedia masivo** (principalmente desde Immich)
-* 🎬 **Optimiza videos automáticamente** para reducir peso y carga
-* 🧠 **Decide qué procesar y qué ignorar** (evita reprocesos)
-* 💾 **Mantiene separación entre originales y versiones optimizadas**
-* ⚙️ **Se protege a sí mismo contra fallos comunes (mounts, temperatura, carga)**
+* 📥 Recepción masiva de multimedia (Immich)
+* 🎬 Optimización automática de video
+* 🧠 Decisiones inteligentes de procesamiento
+* 💾 Separación de originales vs optimizados
+* ⚙️ Protección ante fallos operativos
 
 ---
 
 ## 📂 Estructura de almacenamiento
 
-```
-/mnt/storage-main/
-├── photos/upload     # Entrada principal (Immich)
-├── cache             # Videos optimizados
+```bash
+# Sistema (eMMC)
+/ (eMMC)
+├── /opt/
+├── /usr/local/bin/
+├── /var/log/
 └── ...
 
-/mnt/storage-backup/  # Respaldo
+# Disco principal
+/mnt/storage-main/
+├── photos/upload
+├── cache
+├── .state
+└── ...
+
+# Disco backup
+/mnt/storage-backup/
+├── photos
+├── cache
+└── ...
 ```
+
+---
+
+## 🧠 Roles por almacenamiento
+
+### ⚡ eMMC
+
+* Sistema operativo
+* Docker + Immich
+* Scripts y logs
+
+### 💾 storage-main
+
+* Datos activos
+* Cache optimizado
+
+### 🛡️ storage-backup
+
+* Respaldo
+
+---
+
+## 🔁 Flujo entre discos
+
+* Entrada → `/storage-main/photos/upload`
+* Procesamiento → `/storage-main/cache`
+* Backup → `/storage-backup/`
 
 ---
 
 ## 🎬 Pipeline de video
 
-### 🔁 Flujo real:
-
-1. Archivos llegan a:
-
-   ```
-   /mnt/storage-main/photos/upload
-   ```
-
-2. Detección inteligente:
-
-   * Filtrado por tamaño (ej: >40MB)
-   * Evita duplicados en cache
-
-3. Conversión híbrida:
-
-   **GPU (NVENC):**
-
-   * Compresión eficiente
-   * Control de bitrate
-   * Reducción de resolución
-
-   **Fallback CPU:**
-
-   * CRF optimizado
-   * Preset rápido para hardware limitado
-
-4. Resultado:
-
-   ```
-   /mnt/storage-main/cache
-   ```
+* Filtrado por tamaño
+* Detección de duplicados
+* Conversión híbrida (GPU/CPU)
+* Validación de salida
+* Limpieza automática
 
 ---
 
-## ⚙️ Automatización
+## ⚙️ Scripts del sistema
 
-### 🕑 Orquestador
+### 🧱 Instalación
 
-* `night-run.sh` → 2:00 AM
+* `install.sh` → instalación inicial del sistema
+* `verify.sh` → validación post-instalación
+
+---
+
+### 🔁 Operación
+
+* `night-run.sh` → orquestador principal (2:00 AM)
+* `video-optimize.sh` → conversión de videos
+* `nas-alert.sh` → envío de alertas
+
+---
 
 ### 🛡️ Protección
 
-* `mount-guard.sh`
-* `ml-temp-guard.sh`
-* `retry-quarantine.sh` *(en integración)*
+* `mount-guard.sh` → valida discos montados
+* `ml-temp-guard.sh` → controla carga/temperatura
+* `retry-quarantine.sh` → reintentos (WIP)
+
+---
 
 ### 💽 Mantenimiento
 
-* `backup.sh`
-* `cache-clean.sh`
-* `smart-check.sh`
+* `backup.sh` → sincronización de datos
+* `cache-clean.sh` → limpieza de cache
+* `smart-check.sh` → salud de discos
+
+---
+
+## ⚡ Optimizaciones implementadas
+
+* Filtrado por tamaño
+* Detección de duplicados
+* Conversión híbrida GPU/CPU
+* Reducción de resolución
+* Control de bitrate
+* Validación de archivos
+* Skip automático de errores
+* Fallback automático
+* Control de carga (secuencial)
+* Validación de mounts
+* Limpieza de temporales
+* Alertas automáticas
 
 ---
 
 ## ☁️ Integración con Immich
 
-* Ingesta automática desde móvil
-* Procesamiento paralelo (rostros, metadata)
-* Manejo de cargas pesadas con tolerancia a fallos
+* Ingesta automática
+* Procesamiento concurrente
+* No interfiere agresivamente con uploads
 
 ---
 
 ## 📡 Alertas
 
-* `nas-alert.sh`
-* Integración con Telegram
-
----
-
-## 🧠 Problemas reales considerados
-
-* Timeouts en subida
-* Saturación de CPU
-* Cuellos de botella en almacenamiento
-* Concurrencia alta
-* Archivos problemáticos
+* Telegram (`nas-alert.sh`)
+* Eventos críticos y fallos
 
 ---
 
@@ -120,43 +152,33 @@ Este NAS no solo almacena archivos, sino que:
 
 ## 🎯 Filosofía
 
-* Estabilidad sobre rendimiento bruto
+* Estabilidad > rendimiento
 * Procesamiento progresivo
-* Automatización modular
+* Modularidad
 * Tolerancia a fallos
 
 ---
 
 ## ⚠️ Limitaciones
 
-* Hardware limitado (TV Box)
-* Sin RAID tradicional
-* Rendimiento condicionado por el medio de almacenamiento (no dependiente de USB)
-* Procesamiento intensivo puede impactar ingestión si no se controla
+* Hardware limitado
+* Sin RAID
+* Dependencia del disco principal
 
 ---
 
 ## 🧪 Estado
 
-* ✔ Pipeline funcional
-* ✔ Conversión híbrida activa
-* ✔ Automatización operativa
-* ⚙️ En mejora continua
+* ✔ Funcional
+* ✔ Automatizado
+* ⚙️ En optimización
 
 ---
 
 ## 🔮 Próximos pasos
 
-* Control de concurrencia inteligente
-* Integración total de reintentos
-* Optimización de ingestión vs procesamiento
-
----
-
-## 🧩 Caso de uso
-
-* Biblioteca multimedia personal
-* Ingesta continua desde móvil
-* Infraestructura eficiente y autónoma
+* Control de concurrencia dinámico
+* Integración completa de reintentos
+* Mejor coordinación con Immich
 
 ---
