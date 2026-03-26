@@ -4,13 +4,6 @@ Infraestructura NAS casera basada en TV Box S905X3, optimizada para ingestión, 
 
 ---
 
-## 🚀 Qué hace este sistema
-# 🧠 NAS S905X3 – Arquitectura y Pipeline Multimedia
-
-Sistema NAS optimizado para ingestión, procesamiento y entrega de contenido multimedia en hardware limitado (Amlogic S905X3), con separación de almacenamiento, cache inteligente y control de carga.
-
----
-
 ## 🏗️ Arquitectura del sistema
 
 El sistema está dividido en **3 capas físicas con roles definidos**:
