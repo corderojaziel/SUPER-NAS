@@ -5,6 +5,258 @@ Infraestructura NAS casera basada en TV Box S905X3, optimizada para ingestión, 
 ---
 
 ## 🚀 Qué hace este sistema
+# 🧠 NAS S905X3 – Arquitectura y Pipeline Multimedia
+
+Sistema NAS optimizado para ingestión, procesamiento y entrega de contenido multimedia en hardware limitado (Amlogic S905X3), con separación de almacenamiento, cache inteligente y control de carga.
+
+---
+
+## 🏗️ Arquitectura del sistema
+
+El sistema está dividido en **3 capas físicas con roles definidos**:
+
+```bash
+# ⚡ eMMC (alta velocidad)
+/ (sistema)
+├── Docker (Immich, PostgreSQL, Redis)
+├── thumbnails (lectura intensiva)
+├── base de datos (PostgreSQL)
+└── servicios
+
+# 💾 Disco principal (datos activos)
+/mnt/storage-main/
+├── photos/upload     # ingestión (Immich)
+├── library/          # archivos organizados
+├── cache/            # videos optimizados (720p)
+└── ...
+
+# 🛡️ Disco secundario (respaldo)
+/mnt/storage-backup/
+```
+
+---
+
+## 🔁 Flujo real del sistema
+
+### 📥 Ingesta (write path)
+
+```text
+Celular → nginx → Immich → /upload → rename → /library
+```
+
+* subida concurrente desde múltiples usuarios
+* escritura directa al disco principal
+* `rename` atómico (sin copia de datos)
+
+---
+
+### ⚙️ Procesamiento inmediato (post-upload)
+
+* generación de thumbnails (libvips)
+* indexación en PostgreSQL (eMMC)
+* extracción de metadata (EXIF)
+
+👉 consumo típico:
+
+* CPU: 60–80%
+* RAM: ~70%
+* duración: 3–5 min
+
+---
+
+### 🎬 Optimización diferida (pipeline nocturno)
+
+```text
+/library → video-optimize.sh → /cache (720p)
+```
+
+* conversión GPU (`h264_nvenc`)
+* fallback automático a CPU (`libx264`)
+* reducción de resolución + bitrate
+* evita reprocesar (verificación en cache)
+
+👉 clave:
+los videos **no se optimizan en tiempo real**
+
+---
+
+### 📤 Consumo (read path)
+
+#### 🎥 Videos
+
+```text
+Cliente → nginx → Immich → /cache (720p)
+```
+
+#### 🖼️ Fotos
+
+```text
+Cliente → nginx → cache eMMC (thumbnails)
+```
+
+👉 resultado:
+
+* lecturas rápidas desde eMMC
+* mínimo uso del disco principal
+* baja latencia
+
+---
+
+## ⚙️ Scripts del sistema (shells)
+
+### 🧱 Instalación
+
+* `install.sh`
+  👉 configura el sistema completo (cron, rutas, servicios)
+
+* `verify.sh`
+  👉 valida que todo esté correctamente instalado
+
+---
+
+### 🔁 Operación
+
+* `night-run.sh`
+  👉 orquestador principal (ejecuta tareas nocturnas)
+
+* `video-optimize.sh`
+  👉 convierte videos a formato optimizado (cache)
+
+* `nas-alert.sh`
+  👉 envía alertas a Telegram
+
+---
+
+### 🛡️ Protección
+
+* `mount-guard.sh`
+  👉 valida que los discos estén montados antes de operar
+
+* `ml-temp-guard.sh`
+  👉 controla carga/temperatura del sistema
+
+* `retry-quarantine.sh` *(en integración)*
+  👉 reintenta archivos fallidos
+
+---
+
+### 💽 Mantenimiento
+
+* `backup.sh`
+  👉 sincroniza datos hacia el disco de respaldo
+
+* `cache-clean.sh`
+  👉 limpia archivos innecesarios del cache
+
+* `smart-check.sh`
+  👉 monitorea salud de discos
+
+---
+
+## ⚡ Decisiones de arquitectura (clave)
+
+### 1️⃣ Separación eMMC vs disco
+
+* eMMC → lecturas intensivas (DB, thumbnails)
+* disco → almacenamiento masivo
+
+👉 evita cuellos de botella en I/O
+
+---
+
+### 2️⃣ Cache de video obligatorio
+
+* 4K original → 40–60 Mbps
+* red disponible → ~12 Mbps
+
+👉 sin cache: ❌ no reproducible
+👉 con cache: ✅ estable
+
+---
+
+### 3️⃣ Procesamiento desacoplado
+
+* ingestión ≠ conversión
+* optimización en background
+
+👉 evita romper uploads
+
+---
+
+### 4️⃣ Control de carga
+
+* procesamiento secuencial
+* workers limitados
+* ML fuera de horario activo
+
+---
+
+## 📊 Comportamiento bajo carga
+
+### 👥 2 usuarios concurrentes
+
+* RAM: ~52–72%
+* CPU:
+
+  * normal: 25–35%
+  * ingesta: hasta 80%
+* temperatura: 42–62°C
+
+👉 sistema estable
+
+---
+
+## ⚠️ Cuellos de botella reales
+
+* 🎥 videos nuevos sin cache
+* 💾 presión de RAM en ingesta
+* 🔥 picos de CPU (thumbnails)
+
+---
+
+## ⚡ Optimizaciones implementadas
+
+* separación física de I/O
+* cache en eMMC
+* conversión GPU + fallback CPU
+* filtrado por tamaño
+* detección de duplicados
+* control de bitrate/resolución
+* procesamiento diferido
+* rename atómico
+* validación de mounts
+* limpieza automática
+
+---
+
+## ⚠️ Limitaciones
+
+* sin transcodificación en tiempo real
+* dependencia de procesamiento nocturno
+* sin RAID
+* limitado por RAM (4GB)
+
+---
+
+## 🎯 Objetivo
+
+Mantener ingestión estable y reproducción eficiente mediante:
+
+* cache inteligente
+* separación de cargas
+* procesamiento progresivo
+* control de recursos
+
+---
+
+## 🧪 Estado
+
+* ✔ arquitectura estable
+* ✔ pipeline funcional
+* ✔ validado bajo carga real
+* ⚙️ en mejora continua
+
+---
 
 * 📥 Recepción masiva de multimedia (Immich)
 * 🎬 Optimización automática de video
