@@ -1,0 +1,428 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════
+# night-run.sh — Orquestador nocturno endurecido
+#
+# CAMBIOS CLAVE
+#   - Cola secuencial con descansos explícitos entre tareas
+#   - SMART pesado semanal (no diario)
+#   - Lectura de estados persistentes: mounts, SMART, eMMC y DB
+#   - Resumen nocturno por Telegram con emojis claros
+#   - Si un estado queda en CRIT, se omiten tareas pesadas
+# ═══════════════════════════════════════════════════════════════════════════
+
+set -u
+LOCK="/var/lock/night-run.lock"
+LOG="/var/log/night-run.log"
+HEALTH_DIR="/var/lib/nas-health"
+VIDEO_SUMMARY_FILE="$HEALTH_DIR/video-optimize-summary.env"
+NAS_ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
+EMMC_DF_TARGET="${EMMC_DF_TARGET:-/var/lib/immich}"
+DOCKER_BIN="${DOCKER_BIN:-/usr/bin/docker}"
+COMPOSE_DIR="${COMPOSE_DIR:-/opt/immich-app}"
+ML_POLICY_BIN="${ML_POLICY_BIN:-/usr/local/bin/immich-ml-window.sh}"
+ML_START_HOUR="${ML_START_HOUR:-2}"
+ML_STOP_HOUR="${ML_STOP_HOUR:-6}"
+ML_WINDOW_HOUR="${ML_WINDOW_HOUR:-${NAS_CURRENT_HOUR:-$(date +%H)}}"
+NAS_CURRENT_HOUR="${NAS_CURRENT_HOUR:-$ML_WINDOW_HOUR}"
+export NAS_CURRENT_HOUR
+mkdir -p "$HEALTH_DIR" "$(dirname "$LOCK")"
+
+MOUNT_ISSUE_SEEN=0
+MOUNT_RECOVERED=0
+LAST_BROKEN_FRIENDLY=""
+
+exec 9>"$LOCK"
+flock -n 9 || {
+  "$NAS_ALERT_BIN" "⏭️ Ya había una rutina nocturna corriendo
+No lancé otra para evitar trabajo duplicado."
+  exit 1
+}
+
+log() { echo "[$(date '+%F %T')] $1" | tee -a "$LOG"; }
+alert() { "$NAS_ALERT_BIN" "$1"; }
+load_status_env() { [ -f "$1" ] && . "$1"; }
+
+friendly_mount() {
+  case "$1" in
+    /mnt/storage-main) echo "disco principal de fotos" ;;
+    /mnt/storage-backup) echo "disco de respaldo" ;;
+    /mnt/merged) echo "biblioteca unificada" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+friendly_mount_list() {
+  local item result=""
+  for item in "$@"; do
+    [ -n "$item" ] || continue
+    [ -n "$result" ] && result="$result, "
+    result="${result}$(friendly_mount "$item")"
+  done
+  printf '%s\n' "$result"
+}
+
+task_label() {
+  case "$1" in
+    "Video optimize") echo "la optimización de videos" ;;
+    "SMART semanal") echo "la revisión profunda de los discos" ;;
+    "Backup") echo "la copia de seguridad" ;;
+    "Cache monitor") echo "la revisión del tamaño del cache" ;;
+    "Cache clean") echo "la limpieza del cache" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+pretty_status() {
+  case "$1" in
+    OK) echo "Bien" ;;
+    WARN) echo "Revisar" ;;
+    CRIT) echo "Problema serio" ;;
+    FAIL) echo "Falló" ;;
+    SKIPPED) echo "Omitido" ;;
+    WEEKLY_OK) echo "Hecho" ;;
+    WEEKLY_SKIPPED) echo "Hoy no tocaba" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+add_summary_note() {
+  local note="$1"
+  [ -n "$note" ] || return 0
+  if [ -n "${SUMMARY_NOTES:-}" ]; then
+    SUMMARY_NOTES="${SUMMARY_NOTES}
+- $note"
+  else
+    SUMMARY_NOTES="- $note"
+  fi
+}
+
+build_summary_notes() {
+  SUMMARY_NOTES=""
+
+  if [ "$MOUNT_RECOVERED" -eq 1 ] && [ "${GLOBAL_MOUNT_STATUS:-OK}" = "OK" ]; then
+    add_summary_note "Hubo una pérdida temporal de acceso a ${LAST_BROKEN_FRIENDLY:-uno o más discos}, pero logré recuperarla y el NAS terminó estable."
+  elif [ "${GLOBAL_MOUNT_STATUS:-OK}" = "CRIT" ]; then
+    add_summary_note "Sigo viendo un problema con ${LAST_BROKEN_FRIENDLY:-uno o más discos}. Por eso pausé tareas pesadas para proteger tus datos."
+  fi
+
+  case "${GLOBAL_SMART_STATUS:-OK}" in
+    WARN)
+      add_summary_note "Uno de los discos mostró una señal temprana de desgaste o temperatura alta. Conviene revisarlo pronto."
+      ;;
+    CRIT)
+      add_summary_note "Uno de los discos mostró señales serias de salud. Mantengo las tareas pesadas en pausa hasta revisarlo."
+      ;;
+  esac
+
+  case "${EMMC_STATUS:-OK}" in
+    WARN)
+      add_summary_note "La memoria interna va justa. Todavía puede seguir trabajando, pero conviene liberar espacio pronto."
+      ;;
+    CRIT)
+      add_summary_note "La memoria interna del NAS está casi llena. Pausé tareas pesadas para no empeorar la situación."
+      ;;
+  esac
+
+  case "${DB_STATUS:-OK}" in
+    WARN)
+      add_summary_note "La base de datos respondió, pero vi reinicios recientes. La seguiré vigilando."
+      ;;
+    CRIT)
+      add_summary_note "La base de datos de Immich no estuvo disponible. Varias tareas quedaron en pausa para no forzar el sistema."
+      ;;
+  esac
+
+  [ "$VIDEO_RES" = "FAIL" ] && add_summary_note "La optimización de videos no pudo terminar esta noche."
+  [ "$BACKUP_RES" = "FAIL" ] && add_summary_note "La copia de seguridad del día no pudo completarse."
+  [ "$CACHE_MONITOR_RES" = "FAIL" ] && add_summary_note "No pude revisar el tamaño del cache de videos."
+  [ "$CACHE_CLEAN_RES" = "FAIL" ] && add_summary_note "No pude limpiar el cache de videos."
+  [ "$ML_RES" = "FAIL" ] && add_summary_note "No pude encender la IA nocturna de Immich."
+  [ "$DBDUMP_RES" = "FAIL" ] && add_summary_note "No pude guardar la copia lógica de la base de datos."
+
+  if [ "$VIDEO_RES" = "OK" ] && [ -f "$VIDEO_SUMMARY_FILE" ]; then
+    load_status_env "$VIDEO_SUMMARY_FILE"
+    if [ "${VIDEO_TOTAL_COUNT:-0}" -eq 0 ]; then
+      add_summary_note "No vi videos pendientes por revisar esta noche."
+    else
+      local parts=""
+      [ "${VIDEO_DIRECT_COUNT:-0}" -gt 0 ] && parts="${parts}${VIDEO_DIRECT_COUNT} ya eran ligeros y se dejaron tal cual; "
+      [ "${VIDEO_READY_COUNT:-0}" -gt 0 ] && parts="${parts}${VIDEO_READY_COUNT} ya estaban listos en cache; "
+      [ "${VIDEO_OPTIMIZED_COUNT:-0}" -gt 0 ] && parts="${parts}${VIDEO_OPTIMIZED_COUNT} pesados quedaron listos para verse mañana; "
+      [ "${VIDEO_PENDING_COUNT:-0}" -gt 0 ] && parts="${parts}${VIDEO_PENDING_COUNT} siguen pendientes para otra noche; "
+      [ "${VIDEO_MANUAL_REVIEW_COUNT:-0}" -gt 0 ] && parts="${parts}${VIDEO_MANUAL_REVIEW_COUNT} necesitan revisión manual; "
+      parts="${parts%%; }"
+      [ -n "$parts" ] && add_summary_note "En videos: $parts."
+    fi
+  fi
+
+  [ -n "$SUMMARY_NOTES" ] || add_summary_note "El NAS terminó estable y las tareas principales salieron como se esperaba."
+  printf '%s\n' "$SUMMARY_NOTES"
+}
+
+db_username() {
+  local env_file="/opt/immich-app/.env" user=""
+  if [ -f "$env_file" ]; then
+    user=$(awk -F= '$1=="DB_USERNAME"{sub(/^[^=]*=/,""); print $2; exit}' "$env_file")
+  fi
+  [ -n "$user" ] || user="immich"
+  printf '%s\n' "$user"
+}
+
+write_mount_status() {
+  local status="OK" broken="" friendly_broken
+  for mp in /mnt/storage-main /mnt/storage-backup /mnt/merged; do
+    if ! mountpoint -q "$mp"; then
+      status="CRIT"
+      broken="$broken $mp"
+    fi
+  done
+  cat > "$HEALTH_DIR/mount-status.env" <<EOF
+GLOBAL_MOUNT_STATUS=$status
+BROKEN_MOUNTS="${broken# }"
+MOUNT_LAST_RUN=$(date -Iseconds)
+EOF
+
+  if [ "$status" = "CRIT" ]; then
+    friendly_broken="$(friendly_mount_list $broken)"
+    LAST_BROKEN_FRIENDLY="${friendly_broken:-los discos configurados}"
+    MOUNT_ISSUE_SEEN=1
+  elif [ "$MOUNT_ISSUE_SEEN" -eq 1 ]; then
+    MOUNT_RECOVERED=1
+  fi
+}
+
+write_storage_status() {
+  local pct free_mb status
+  pct=$(df -P "$EMMC_DF_TARGET" 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5+0}')
+  free_mb=$(df -Pm "$EMMC_DF_TARGET" 2>/dev/null | awk 'NR==2{print $4+0}')
+  status="OK"
+  [ -z "$pct" ] && pct=0
+  [ -z "$free_mb" ] && free_mb=0
+
+  if [ "$pct" -ge 90 ] || [ "$free_mb" -lt 1500 ]; then
+    status="CRIT"
+  elif [ "$pct" -ge 80 ] || [ "$free_mb" -lt 3000 ]; then
+    status="WARN"
+  fi
+
+  cat > "$HEALTH_DIR/storage-status.env" <<EOF
+EMMC_STATUS=$status
+EMMC_USED_PCT=$pct
+EMMC_FREE_MB=$free_mb
+EMMC_LAST_RUN=$(date -Iseconds)
+EOF
+}
+
+write_db_status() {
+  local status="OK" reason="healthy" db_user
+  db_user=$(db_username)
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^immich_postgres$'; then
+    if docker exec immich_postgres pg_isready -U "$db_user" >/dev/null 2>&1; then
+      if docker inspect -f '{{.State.RestartCount}}' immich_postgres 2>/dev/null | awk '{exit !($1>0)}'; then
+        status="WARN"
+        reason="reinicios detectados"
+      fi
+    else
+      status="CRIT"
+      reason="pg_isready falló"
+    fi
+  else
+    status="CRIT"
+    reason="contenedor ausente"
+  fi
+
+  cat > "$HEALTH_DIR/db-status.env" <<EOF
+DB_STATUS=$status
+DB_LAST_RUN=$(date -Iseconds)
+DB_REASON="$reason"
+EOF
+}
+
+run_task() {
+  local NAME="$1" CMD="$2" MAX_MIN="$3" LABEL rc
+  LABEL="$(task_label "$NAME")"
+  log "INICIO: $NAME"
+  if timeout $((MAX_MIN * 60)) env NAS_ALERT_SUPPRESS=1 bash -c "$CMD"; then
+    log "OK: $NAME"
+    return 0
+  else
+    rc=$?
+  fi
+
+  if [ "$rc" -eq 124 ]; then
+    log "TIMEOUT: $LABEL"
+  else
+    log "ERROR: $LABEL"
+  fi
+  log "FAIL: $NAME rc=$rc"
+  return "$rc"
+}
+
+should_skip_heavy() {
+  load_status_env "$HEALTH_DIR/mount-status.env"
+  load_status_env "$HEALTH_DIR/smart-status.env"
+  load_status_env "$HEALTH_DIR/storage-status.env"
+  load_status_env "$HEALTH_DIR/db-status.env"
+  [ "${GLOBAL_MOUNT_STATUS:-OK}" = "CRIT" ] && return 0
+  [ "${GLOBAL_SMART_STATUS:-OK}" = "CRIT" ] && return 0
+  [ "${EMMC_STATUS:-OK}" = "CRIT" ] && return 0
+  [ "${DB_STATUS:-OK}" = "CRIT" ] && return 0
+  return 1
+}
+
+ml_within_window() {
+  local hour start stop
+  hour=$((10#${ML_WINDOW_HOUR}))
+  start=$((10#${ML_START_HOUR}))
+  stop=$((10#${ML_STOP_HOUR}))
+  [ "$hour" -ge "$start" ] && [ "$hour" -lt "$stop" ]
+}
+
+start_night_ml() {
+  local status
+
+  if ! ml_within_window; then
+    log "SKIP: ML fuera de ventana nocturna (${ML_WINDOW_HOUR}:00)"
+    return 2
+  fi
+
+  if should_skip_heavy; then
+    log "SKIP: ML pausado por estado crítico del NAS"
+    return 2
+  fi
+
+  if [ ! -x "$ML_POLICY_BIN" ]; then
+    log "FAIL: Falta $ML_POLICY_BIN"
+    return 1
+  fi
+
+  if timeout 10m "$ML_POLICY_BIN" night-on >/dev/null 2>&1; then
+    for _ in $(seq 1 20); do
+      status=$("$DOCKER_BIN" inspect -f '{{.State.Status}}' immich_machine_learning 2>/dev/null || echo "missing")
+      [ "$status" = "running" ] && {
+        log "OK: Immich ML y la IA visual quedaron activos para la ventana nocturna"
+        return 0
+      }
+      sleep 3
+    done
+  fi
+
+  log "FAIL: No se pudo encender Immich ML"
+  return 1
+}
+
+alert "🌙 Empezó la rutina nocturna
+Voy a revisar el NAS y, si todo está bien, haré mantenimiento y copias de seguridad."
+write_mount_status
+load_status_env "$HEALTH_DIR/mount-status.env"
+[ "${GLOBAL_MOUNT_STATUS:-OK}" = "CRIT" ] && NAS_ALERT_SUPPRESS=1 /usr/local/bin/mount-guard.sh >/dev/null 2>&1 || true
+write_mount_status
+load_status_env "$HEALTH_DIR/mount-status.env"
+write_storage_status
+write_db_status
+NAS_ALERT_SUPPRESS=1 /usr/local/bin/smart-check.sh daily >/dev/null 2>&1 || true
+load_status_env "$HEALTH_DIR/smart-status.env"
+
+VIDEO_RES="SKIPPED"
+BACKUP_RES="SKIPPED"
+SMART_RES="OK"
+DBDUMP_RES="SKIPPED"
+CACHE_MONITOR_RES="SKIPPED"
+CACHE_CLEAN_RES="SKIPPED"
+ML_RES="SKIPPED"
+
+if should_skip_heavy; then
+  log "SKIP: Se pausaron tareas pesadas por estado crítico del NAS"
+else
+  run_task "Video optimize" "/usr/local/bin/video-optimize.sh" 60 && VIDEO_RES="OK" || VIDEO_RES="FAIL"
+  sleep 180
+
+  DOW=$(date +%u)
+  if [ "$DOW" -eq 7 ]; then
+    run_task "SMART semanal" "/usr/local/bin/smart-check.sh weekly" 20 && SMART_RES="WEEKLY_OK" || SMART_RES="FAIL"
+    sleep 120
+  else
+    SMART_RES="WEEKLY_SKIPPED"
+  fi
+
+  run_task "Backup" "nice -n 15 ionice -c2 -n7 /usr/local/bin/backup.sh" 180 && BACKUP_RES="OK" || BACKUP_RES="FAIL"
+  sleep 120
+fi
+
+write_mount_status
+load_status_env "$HEALTH_DIR/mount-status.env"
+write_storage_status
+load_status_env "$HEALTH_DIR/storage-status.env"
+
+if [ "${GLOBAL_MOUNT_STATUS:-OK}" != "CRIT" ] && [ "${EMMC_STATUS:-OK}" != "CRIT" ]; then
+  if [ -x /usr/local/bin/cache-monitor.sh ]; then
+    run_task "Cache monitor" "/usr/local/bin/cache-monitor.sh" 5 && CACHE_MONITOR_RES="OK" || CACHE_MONITOR_RES="FAIL"
+  fi
+  if [ -x /usr/local/bin/cache-clean.sh ]; then
+    run_task "Cache clean" "/usr/local/bin/cache-clean.sh" 10 && CACHE_CLEAN_RES="OK" || CACHE_CLEAN_RES="FAIL"
+  fi
+fi
+
+write_mount_status
+write_storage_status
+write_db_status
+load_status_env "$HEALTH_DIR/mount-status.env"
+load_status_env "$HEALTH_DIR/storage-status.env"
+load_status_env "$HEALTH_DIR/db-status.env"
+
+start_night_ml
+ML_RC=$?
+case "$ML_RC" in
+  0)
+    ML_RES="OK"
+    ;;
+  2)
+    ML_RES="SKIPPED"
+    ;;
+  *)
+    ML_RES="FAIL"
+    ;;
+esac
+
+load_status_env "$HEALTH_DIR/db-status.env"
+if [ "${DB_STATUS:-OK}" != "CRIT" ] && [ "${GLOBAL_MOUNT_STATUS:-OK}" != "CRIT" ]; then
+  DB_DEST="/mnt/storage-backup/snapshots/immich-db"
+  DB_DATE=$(date +%F)
+  DB_FILE="$DB_DEST/immich-db-$DB_DATE.sql.gz"
+  DB_TMP="$DB_FILE.tmp"
+  DB_USER=$(db_username)
+  mkdir -p "$DB_DEST"
+  if timeout 20m bash -lc "set -o pipefail; docker exec immich_postgres pg_dumpall --clean --if-exists --username='$DB_USER' | gzip > '$DB_TMP'"; then
+    mv -f "$DB_TMP" "$DB_FILE"
+    find "$DB_DEST" -name '*.sql.gz' -mtime +7 -delete
+    DBDUMP_RES="OK"
+  else
+    rm -f "$DB_TMP"
+    DBDUMP_RES="FAIL"
+  fi
+else
+  DBDUMP_RES="SKIPPED"
+fi
+
+load_status_env "$HEALTH_DIR/mount-status.env"
+load_status_env "$HEALTH_DIR/smart-status.env"
+load_status_env "$HEALTH_DIR/storage-status.env"
+load_status_env "$HEALTH_DIR/db-status.env"
+
+SUMMARY_NOTES="$(build_summary_notes)"
+
+alert "🌙 Resumen de la noche
+🗂️ Discos montados: $(pretty_status "${GLOBAL_MOUNT_STATUS:-OK}")
+🩺 Salud de los discos: $(pretty_status "${GLOBAL_SMART_STATUS:-OK}")
+💽 Memoria interna: $(pretty_status "${EMMC_STATUS:-OK}")
+🐘 Base de datos de Immich: $(pretty_status "${DB_STATUS:-OK}")
+🎬 Optimización de videos: $(pretty_status "${VIDEO_RES}")
+💾 Copia de seguridad: $(pretty_status "${BACKUP_RES}")
+📦 Revisión del cache: $(pretty_status "${CACHE_MONITOR_RES}")
+🧹 Limpieza del cache: $(pretty_status "${CACHE_CLEAN_RES}")
+🧠 IA nocturna: $(pretty_status "${ML_RES}")
+🔬 Revisión profunda de discos: $(pretty_status "${SMART_RES}")
+🗄️ Copia de la base de datos: $(pretty_status "${DBDUMP_RES}")
+📝 Lo más importante:
+${SUMMARY_NOTES}"
+exit 0

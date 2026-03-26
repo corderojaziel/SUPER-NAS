@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""
+immich-video-playback-resolver.py
+
+Decide qué debe entregar el portal cuando el usuario pide reproducir un video:
+  - Si ya existe la versión ligera en /var/lib/immich/cache, servirla.
+  - Si el original ya es lo bastante ligero, dejar un enlace ligero en cache.
+  - Si todavía no existe y sigue pesado, servir el MP4 genérico.
+
+El script valida la sesión del usuario reutilizando las cookies o el header
+Authorization del request original contra la API local de Immich.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Tuple
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
+
+
+LISTEN_HOST = os.environ.get("LISTEN_HOST", "127.0.0.1")
+LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "2284"))
+IMMICH_API_BASE = os.environ.get("IMMICH_API_BASE", "http://127.0.0.1:2283").rstrip("/")
+UPLOAD_PREFIX = os.environ.get("UPLOAD_PREFIX", "/usr/src/app/upload/")
+UPLOAD_HOST_ROOT = os.path.abspath(
+    os.environ.get("UPLOAD_HOST_ROOT", "/mnt/storage-main/photos")
+)
+CACHE_ROOT = os.path.abspath(os.environ.get("CACHE_ROOT", "/var/lib/immich/cache"))
+PLACEHOLDER_LANDSCAPE_URI = os.environ.get(
+    "PLACEHOLDER_LANDSCAPE_URI", "/__static/video-processing.mp4"
+)
+PLACEHOLDER_PORTRAIT_URI = os.environ.get(
+    "PLACEHOLDER_PORTRAIT_URI", "/__static/video-processing-portrait.mp4"
+)
+DIRECT_PLAY_INTERNAL_PREFIX = os.environ.get(
+    "DIRECT_PLAY_INTERNAL_PREFIX", "/__immich-direct/"
+)
+CACHE_INTERNAL_PREFIX = os.environ.get("CACHE_INTERNAL_PREFIX", "/__cache-video/")
+try:
+    VIDEO_STREAM_MAX_MB_PER_MIN = float(
+        os.environ.get("VIDEO_STREAM_MAX_MB_PER_MIN", "40")
+    )
+except ValueError:
+    VIDEO_STREAM_MAX_MB_PER_MIN = 40.0
+ASSET_PLAYBACK_RE = re.compile(r"^/api/assets/([0-9a-f-]+)/video/playback$")
+
+
+def safe_cache_path(original_path: str) -> Tuple[str, str]:
+    if not original_path.startswith(UPLOAD_PREFIX):
+        raise ValueError(f"originalPath fuera del upload esperado: {original_path}")
+
+    rel_path = original_path[len(UPLOAD_PREFIX):].lstrip("/")
+    rel_mp4 = os.path.splitext(rel_path)[0] + ".mp4"
+    candidate = os.path.abspath(os.path.join(CACHE_ROOT, rel_mp4))
+    if candidate != CACHE_ROOT and not candidate.startswith(CACHE_ROOT + os.sep):
+        raise ValueError(f"ruta fuera de CACHE_ROOT: {candidate}")
+    return rel_mp4, candidate
+
+
+def safe_original_host_path(original_path: str) -> str:
+    if not original_path.startswith(UPLOAD_PREFIX):
+        raise ValueError(f"originalPath fuera del upload esperado: {original_path}")
+
+    rel_path = original_path[len(UPLOAD_PREFIX):].lstrip("/")
+    candidate = os.path.abspath(os.path.join(UPLOAD_HOST_ROOT, rel_path))
+    if candidate != UPLOAD_HOST_ROOT and not candidate.startswith(UPLOAD_HOST_ROOT + os.sep):
+        raise ValueError(f"ruta fuera de UPLOAD_HOST_ROOT: {candidate}")
+    return candidate
+
+
+def parse_duration_seconds(value: str | None) -> float:
+    if not value:
+        return 0.0
+
+    try:
+        hours, minutes, seconds = str(value).split(":")
+        return (int(hours) * 3600) + (int(minutes) * 60) + float(seconds)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_asset_size_bytes(asset: dict) -> int:
+    exif_info = asset.get("exifInfo") or {}
+    for value in (exif_info.get("fileSizeInByte"), asset.get("size")):
+        try:
+            size = int(value or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if size > 0:
+            return size
+    return 0
+
+
+def get_allowed_bytes(duration_seconds: float) -> float:
+    if duration_seconds <= 0:
+        return 0.0
+    return (duration_seconds * VIDEO_STREAM_MAX_MB_PER_MIN * 1_000_000) / 60.0
+
+
+def ensure_direct_cache_link(original_path: str, cache_path: str) -> bool:
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    original_size = os.path.getsize(original_path)
+
+    if os.path.islink(cache_path):
+        if os.readlink(cache_path) == original_path:
+            return True
+        os.unlink(cache_path)
+    elif os.path.isfile(cache_path):
+        try:
+            if os.path.getsize(cache_path) == original_size:
+                return True
+        except OSError:
+            pass
+        return False
+    elif os.path.exists(cache_path):
+        return False
+
+    try:
+        os.symlink(original_path, cache_path)
+        return os.path.islink(cache_path)
+    except OSError:
+        pass
+
+    tmp_copy = f"{cache_path}.tmp-copy"
+    try:
+        shutil.copy2(original_path, tmp_copy)
+        os.replace(tmp_copy, cache_path)
+        return os.path.isfile(cache_path) and os.path.getsize(cache_path) == original_size
+    except OSError:
+        try:
+            if os.path.exists(tmp_copy) or os.path.islink(tmp_copy):
+                os.unlink(tmp_copy)
+        except OSError:
+            pass
+        return False
+
+
+class PlaybackResolverHandler(BaseHTTPRequestHandler):
+    server_version = "ImmichPlaybackResolver/1.0"
+
+    def do_GET(self) -> None:  # noqa: N802
+        self.handle_request()
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        self.handle_request()
+
+    def handle_request(self) -> None:
+        parsed = urlparse(self.path)
+        match = ASSET_PLAYBACK_RE.match(parsed.path)
+        if not match:
+            self.send_error(404, "Ruta no soportada")
+            return
+
+        asset_id = match.group(1)
+        status, asset = self.fetch_asset(asset_id)
+
+        if status in (401, 403, 404):
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            return
+
+        if status != 200:
+            self.send_error(502, "No pude consultar Immich")
+            return
+
+        if asset.get("type") != "VIDEO" or asset.get("isTrashed"):
+            self.send_error(404, "Asset no reproducible")
+            return
+
+        original_path = asset.get("originalPath") or ""
+        try:
+            rel_mp4, cache_path = safe_cache_path(original_path)
+            host_original_path = safe_original_host_path(original_path)
+        except ValueError as exc:
+            self.send_error(500, str(exc))
+            return
+
+        if self.can_stream_original(asset, host_original_path):
+            if ensure_direct_cache_link(host_original_path, cache_path):
+                internal_uri = CACHE_INTERNAL_PREFIX + quote(rel_mp4, safe="/")
+                source = "direct-cache-link"
+            else:
+                internal_uri = DIRECT_PLAY_INTERNAL_PREFIX + parsed.path.lstrip("/")
+                source = "original-direct"
+            cache_control = "private, max-age=300, no-transform"
+        elif os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0:
+            internal_uri = CACHE_INTERNAL_PREFIX + quote(rel_mp4, safe="/")
+            source = "optimized-cache"
+            cache_control = "private, max-age=86400, no-transform"
+        else:
+            internal_uri = self.placeholder_for(asset)
+            source = "placeholder"
+            cache_control = "no-store"
+
+        self.send_response(200)
+        self.send_header("X-Accel-Redirect", internal_uri)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("X-Video-Source", source)
+        self.end_headers()
+
+    def placeholder_for(self, asset: dict) -> str:
+        width = int(asset.get("width") or 0)
+        height = int(asset.get("height") or 0)
+        # Para celular conviene priorizar la variante vertical cuando el asset
+        # no es claramente horizontal. Eso cubre videos verticales y cuadrados.
+        if width > 0 and height > 0 and height >= width:
+            return PLACEHOLDER_PORTRAIT_URI
+        return PLACEHOLDER_LANDSCAPE_URI
+
+    def can_stream_original(self, asset: dict, original_host_path: str) -> bool:
+        size_bytes = get_asset_size_bytes(asset)
+        if size_bytes <= 0 and os.path.isfile(original_host_path):
+            size_bytes = os.path.getsize(original_host_path)
+        duration_seconds = parse_duration_seconds(asset.get("duration"))
+        if size_bytes <= 0 or duration_seconds <= 0:
+            return False
+
+        return size_bytes <= get_allowed_bytes(duration_seconds)
+
+    def fetch_asset(self, asset_id: str) -> Tuple[int, dict]:
+        request = Request(
+            f"{IMMICH_API_BASE}/api/assets/{asset_id}",
+            headers={"Accept": "application/json"},
+        )
+
+        cookie = self.headers.get("Cookie")
+        if cookie:
+            request.add_header("Cookie", cookie)
+
+        authorization = self.headers.get("Authorization")
+        if authorization:
+            request.add_header("Authorization", authorization)
+
+        try:
+            with urlopen(request, timeout=10) as response:
+                return response.status, json.load(response)
+        except HTTPError as exc:
+            try:
+                payload = json.loads(exc.read().decode("utf-8") or "{}")
+            except Exception:
+                payload = {}
+            return exc.code, payload
+        except (URLError, TimeoutError):
+            return 502, {}
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        print(
+            "%s - - [%s] %s"
+            % (self.address_string(), self.log_date_time_string(), fmt % args),
+            flush=True,
+        )
+
+
+def main() -> None:
+    server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), PlaybackResolverHandler)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

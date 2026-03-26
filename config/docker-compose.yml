@@ -1,0 +1,171 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# docker-compose.yml — Stack Immich v2 optimizado para S905X3
+# Guía Maestra NAS V58
+#
+# ── ARQUITECTURA DE ALMACENAMIENTO ───────────────────────────────────────
+#
+#  eMMC interna 128 GB (bus dedicado al SoC, sin USB):
+#    /var/lib/immich/db            → PostgreSQL (15,000 IOPS vs 150 del HDD)
+#    /var/lib/immich/models        → Modelos ONNX ML (~900 MB, carga en 5–8s)
+#    /var/lib/immich/thumbs        → Miniaturas (scroll galería instantáneo)
+#    /var/lib/immich/encoded-video → Videos 720p transcodificados por Immich
+#    /var/lib/immich/profile       → Fotos de perfil (kilobytes, lectura frecuente)
+#    /var/lib/immich/nginx-cache   → Cache de thumbnails nginx
+#
+#  HDD USB 3.0 7200 RPM (solo originales — acceso secuencial, sin IOPS random):
+#    /mnt/storage-main/photos      → Fotos y videos originales 4K
+#
+#  HDD USB 2.0 (solo backup):
+#    /mnt/storage-backup           → Snapshots rsync + dumps DB
+#
+# ── POR QUÉ ESTA SEPARACIÓN ──────────────────────────────────────────────
+#
+#  PostgreSQL hace miles de operaciones random 4K (índices, vectores faciales).
+#  En HDD: ~150 IOPS → abrir álbum tarda 3–5s.
+#  En eMMC: ~15,000 IOPS → abrir álbum tarda 0.5–1s. 150× más rápido.
+#
+#  Las miniaturas en eMMC permiten scroll fluido con 20,000+ fotos.
+#  El HDD queda dedicado exclusivamente a leer/escribir archivos originales
+#  — operaciones secuenciales donde el HDD 7200 RPM es eficiente.
+#
+#  Los subdirectorios específicos (thumbs, encoded-video, profile) se montan
+#  ENCIMA del volumen general (upload) usando bind mounts anidados de Docker.
+#  Docker soporta este patrón — el subdirectorio específico tiene precedencia.
+#
+# ── NOTA SOBRE upload/ ───────────────────────────────────────────────────
+#
+#  upload/ (directorio temporal de ingesta) NO se mueve a eMMC intencionalmente.
+#  Razón: upload/ y library/ deben estar en el MISMO disco para que
+#  mover un archivo entre ellos sea un rename() atómico (0 escrituras extra).
+#  Si upload/ estuviera en eMMC, cada foto subiría: eMMC→copia→HDD→borra eMMC
+#  = 3 operaciones en vez de 1. Con 20,000 fotos = 20,000 copias evitadas.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: immich
+
+services:
+
+  immich-server:
+    container_name: immich_server
+    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}
+    env_file:
+      - .env
+    volumes:
+      # ── Almacenamiento principal — HDD via mergerfs ───────────────────
+      # UPLOAD_LOCATION = /mnt/merged (mergerfs HDD:eMMC/cache)
+      # Immich escribe library/ y upload/ en el HDD (primer branch mergerfs).
+      - ${UPLOAD_LOCATION}:/usr/src/app/upload
+
+      # ── Subdirectorios en eMMC — método oficial de Immich ─────────────
+      # Las variables THUMB_LOCATION, ENCODED_VIDEO_LOCATION, PROFILE_LOCATION
+      # se definen en .env y apuntan a la eMMC (bus dedicado, 15,000 IOPS).
+      # Immich las valida al arrancar y crea el archivo .immich en cada una.
+      # Usar variables en vez de rutas hardcodeadas es el método documentado
+      # — evita el error "ENOENT: .immich not found" con bind mounts anidados.
+      - ${THUMB_LOCATION}:/usr/src/app/upload/thumbs
+      - ${ENCODED_VIDEO_LOCATION}:/usr/src/app/upload/encoded-video
+      - ${PROFILE_LOCATION}:/usr/src/app/upload/profile
+
+      - /etc/localtime:/etc/localtime:ro
+
+    ports:
+      - 2283:2283
+    depends_on:
+      - redis
+      - database
+    restart: unless-stopped
+    healthcheck:
+      disable: false
+
+  immich-machine-learning:
+    container_name: immich_machine_learning
+    image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-release}
+    env_file:
+      - .env
+    # cpus a nivel de servicio sí se traduce a HostConfig/NanoCpus con
+    # docker compose up, así el límite queda aplicado fuera de Swarm.
+    cpus: 2.0
+    deploy:
+      resources:
+        limits:
+          # ── Límite de CPU: 2 de 4 cores ───────────────────────────────
+          # El ML (ONNX Runtime, reconocimiento facial + CLIP) usa todos
+          # los cores disponibles por defecto. En el A55 eso lleva el SoC
+          # a 78–82°C → throttling a 75°C.
+          # Con cpus=2.0: temperatura baja a 60–66°C con ventilador USB.
+          # Los otros 2 cores quedan libres para Immich Server y Postgres.
+          cpus: '2.0'
+    volumes:
+      # Modelos ONNX en eMMC: buffalo_s (~400 MB) + CLIP (~350 MB).
+      # En HDD tardarían 45–60s en cargar al arrancar. En eMMC: 5–8s.
+      # Los modelos se descargan automáticamente tras 5 min de inactividad
+      # (MACHINE_LEARNING_MODEL_TTL=300), liberando ~900 MB de RAM.
+      - /var/lib/immich/models:/cache
+    restart: unless-stopped
+    healthcheck:
+      disable: false
+
+  redis:
+    container_name: immich_redis
+    # Valkey 8 (fork open-source de Redis). NO usar valkey:9 (incompatible)
+    # ni redis:6-alpine (imagen incorrecta para esta versión de Immich).
+    image: docker.io/valkey/valkey:8-bookworm
+    healthcheck:
+      test: redis-cli ping
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  database:
+    container_name: immich_postgres
+    # Imagen oficial de Immich con vectorchord (búsqueda vectorial facial)
+    # y pgvectors. NO usar postgres:14 estándar — le falta la extensión.
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_DB: ${DB_DATABASE_NAME}
+      # data-checksums: detecta corrupción silenciosa de datos en el disco.
+      # Mínimo overhead de CPU, máxima seguridad para los metadatos de fotos.
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+    volumes:
+      # DB en eMMC: 150× más IOPS que en HDD para operaciones random 4K.
+      # El directorio lo crea install.sh antes de arrancar los contenedores.
+      - /var/lib/immich/db:/var/lib/postgresql/data
+    command: >
+      postgres
+      -c shared_preload_libraries=vchord.so
+      -c shared_buffers=768MB
+      -c work_mem=16MB
+      -c effective_cache_size=2GB
+      -c maintenance_work_mem=128MB
+      -c max_connections=50
+    # ── Parámetros PostgreSQL explicados ──────────────────────────────────
+    # shared_buffers=768MB:
+    #   Páginas de DB que PostgreSQL mantiene en RAM.
+    #   Subido de 512MB a 768MB al eliminar los tmpfs (se liberaron 500MB).
+    #   Con esto, la primera apertura del día carga metadatos desde eMMC
+    #   y los cachea en RAM — el resto de la sesión va desde RAM (~0ms).
+    #   Regla: 25% de RAM disponible para el contenedor. 768/3072 = 25% ✓
+    #
+    # work_mem=16MB:
+    #   RAM por operación de sort/join. Con max_connections=50 el peor caso
+    #   es 50×16=800MB, pero en práctica hay 5–10 conexiones = 80–160MB.
+    #   Evita que los sorts vayan a disco durante búsquedas vectoriales.
+    #
+    # effective_cache_size=2GB:
+    #   Le dice al query planner cuánta RAM hay disponible para cache del OS.
+    #   No reserva memoria — solo guía al planner para elegir mejores planes.
+    #   Con 4GB RAM y Docker, 2GB es una estimación conservadora y segura.
+    #
+    # maintenance_work_mem=128MB:
+    #   RAM para operaciones de mantenimiento (VACUUM, CREATE INDEX).
+    #   Más RAM aquí acelera la indexación inicial de 20,000 fotos.
+    #
+    # max_connections=50:
+    #   Suficiente para Immich Server (pool de 40) + conexiones admin.
+    #   Menos conexiones = menos overhead de proceso en el A55.
+    shm_size: 128mb
+    restart: unless-stopped
