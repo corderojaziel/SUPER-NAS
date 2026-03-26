@@ -1,0 +1,33 @@
+
+### Busca lo que hay ya en cache 
+
+find /mnt/storage-main/cache/ -maxdepth 1 -type f -printf "%p|%f|%s\n" | awk -F'|' '{printf "%s|%s|%.2f MB\n", $1, $2, $3/1024/1024}' > /tmp/cache.txt
+
+
+###Busca los archivos candidatos a convertir
+
+find /mnt/storage-main/photos/upload -type f -size +80M \( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.avi" \) -print0 | xargs -0 -I{} -P 4 bash -c '
+f="{}"
+size_bytes=$(stat -c%s "$f")
+duration=$(ffprobe -v error -select_streams v:0 -show_entries format=duration -of csv=p=0 "$f" 2>/dev/null)
+
+if [[ -n "$duration" && "$duration" != "0" ]]; then
+  size_mb=$(awk "BEGIN {print $size_bytes/1024/1024}")
+  duration_min=$(awk "BEGIN {print $duration/60}")
+  mb_per_min=$(awk "BEGIN {print $size_mb/$duration_min}")
+
+  if (( $(awk "BEGIN {print ($mb_per_min > 40)}") )); then
+    printf "%s|%s|%.2f MB|%.2f min|%.2f MB/min\n" "$f" "$(basename "$f")" "$size_mb" "$duration_min" "$mb_per_min"
+  fi
+fi
+' > /tmp/universo_filtrado.txt
+
+### Hacer cruce con CHATGPT
+
+###Cuanto ocupa cache en videos
+du -s /mnt/storage-main/cache | awk '{printf "%.2f GB\n", $1/1024/1024}'
+
+
+###Total de videos en cache
+
+find /mnt/storage-main/cache -type f -iname "*.mp4" | wc -l
