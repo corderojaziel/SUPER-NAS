@@ -13,6 +13,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 
 if (!(Test-Path $LocalWork)) {
     New-Item -ItemType Directory -Force -Path $LocalWork | Out-Null
@@ -37,30 +40,27 @@ function Invoke-External {
         [int]$TimeoutSec = 7200,
         [string]$Label = "cmd"
     )
-    $tmpOut = Join-Path $LocalWork ("tmp_" + [guid]::NewGuid().ToString("N") + ".out")
-    $tmpErr = Join-Path $LocalWork ("tmp_" + [guid]::NewGuid().ToString("N") + ".err")
+    $prevEa = $global:ErrorActionPreference
+    $global:ErrorActionPreference = "Continue"
     try {
-        $p = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -PassThru -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr
-        if (-not $p.WaitForExit($TimeoutSec * 1000)) {
-            try { $p.Kill() } catch {}
-            throw "$Label timeout (${TimeoutSec}s)"
-        }
-        $out = if (Test-Path $tmpOut) { Get-Content $tmpOut -Raw } else { "" }
-        $err = if (Test-Path $tmpErr) { Get-Content $tmpErr -Raw } else { "" }
-        return [PSCustomObject]@{
-            ExitCode = $p.ExitCode
-            StdOut   = $out
-            StdErr   = $err
-        }
+        $all = & $FilePath @ArgumentList 2>&1
     }
     finally {
-        Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
+        $global:ErrorActionPreference = $prevEa
+    }
+    $code = $LASTEXITCODE
+    $text = if ($all) { ($all | Out-String) } else { "" }
+    return [PSCustomObject]@{
+        ExitCode = $code
+        StdOut   = $text
+        StdErr   = $text
     }
 }
 
 function Quote-Sq {
     param([string]$Value)
-    return "'" + ($Value -replace "'", "'\"'\"'") + "'"
+    # Las rutas esperadas en Immich no incluyen comillas simples.
+    return "'" + $Value + "'"
 }
 
 function Get-RemoteDir {
@@ -68,6 +68,11 @@ function Get-RemoteDir {
     $i = $PathUnix.LastIndexOf("/")
     if ($i -le 0) { return "/" }
     return $PathUnix.Substring(0, $i)
+}
+
+function Safe-Text {
+    param([object]$Value)
+    return ([string]$Value).Trim()
 }
 
 $sshOpts = @(
@@ -85,8 +90,15 @@ if (-not $NoPlan) {
     Log "Generando insumos en el server..."
     $rPlan = Invoke-External -FilePath "ssh" -ArgumentList ($sshOpts + @("${RemoteUser}@${RemoteHost}", $RemotePlanCmd)) -TimeoutSec 1800 -Label "ssh-plan"
     if ($rPlan.ExitCode -ne 0) {
-        Log "No pude generar plan en server: $($rPlan.StdErr.Trim())" "Red"
-        throw "Plan remoto falló"
+        Log "Plan por helper fallo (exit=$($rPlan.ExitCode)). Intento fallback..." "DarkYellow"
+        $fallbackOut = & ssh @sshOpts "${RemoteUser}@${RemoteHost}" $RemotePlanCmd 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Log "No pude generar plan en server: $(Safe-Text $rPlan.StdErr)" "Red"
+            throw "Plan remoto fallo"
+        }
+        if ($fallbackOut) {
+            Log "Plan remoto OK (fallback)."
+        }
     }
     if ($rPlan.StdOut) {
         Log "Plan remoto OK"
@@ -96,7 +108,7 @@ if (-not $NoPlan) {
 Log "Descargando insumo heavy: $RemoteHeavyCsv"
 $rCsv = Invoke-External -FilePath "scp" -ArgumentList (@("-q") + $sshOpts + @("${RemoteUser}@${RemoteHost}:$RemoteHeavyCsv", $csvLocal)) -TimeoutSec 1800 -Label "scp-heavy-csv"
 if ($rCsv.ExitCode -ne 0 -or -not (Test-Path $csvLocal)) {
-    Log "No pude descargar CSV heavy: $($rCsv.StdErr.Trim())" "Red"
+    Log "No pude descargar CSV heavy: $(Safe-Text $rCsv.StdErr)" "Red"
     throw "CSV heavy no disponible"
 }
 
@@ -162,24 +174,33 @@ foreach ($row in $rows) {
     $rDl = Invoke-External -FilePath "scp" -ArgumentList (@("-q") + $sshOpts + @("${RemoteUser}@${RemoteHost}:$src", $localIn)) -TimeoutSec 7200 -Label "scp-download"
     if ($rDl.ExitCode -ne 0 -or -not (Test-Path $localIn)) {
         $countFail++
-        $report.Add([PSCustomObject]@{asset_id=$asset;status="download_failed";source_path=$src;dest_cache_path=$dst;note=$rDl.StdErr.Trim()})
+        $report.Add([PSCustomObject]@{asset_id=$asset;status="download_failed";source_path=$src;dest_cache_path=$dst;note=(Safe-Text $rDl.StdErr)})
         continue
     }
 
     if ($hasNvenc) {
-        & ffmpeg -y -hwaccel cuda -i "$localIn" `
-          -c:v h264_nvenc -preset p4 -rc vbr -b:v "${targetVideoKbps}k" -maxrate "${targetVideoKbps}k" -bufsize "$($targetVideoKbps * 2)k" `
-          -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:a aac -b:a "${AudioKbps}k" -movflags +faststart "$localOut" *> $null
+        $ffArgs = @(
+            "-y", "-hwaccel", "cuda", "-i", $localIn,
+            "-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr",
+            "-b:v", "${targetVideoKbps}k", "-maxrate", "${targetVideoKbps}k", "-bufsize", "$($targetVideoKbps * 2)k",
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-c:a", "aac", "-b:a", "${AudioKbps}k", "-movflags", "+faststart", $localOut
+        )
     }
     else {
-        & ffmpeg -y -i "$localIn" `
-          -c:v libx264 -preset veryfast -b:v "${targetVideoKbps}k" -maxrate "${targetVideoKbps}k" -bufsize "$($targetVideoKbps * 2)k" `
-          -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:a aac -b:a "${AudioKbps}k" -movflags +faststart "$localOut" *> $null
+        $ffArgs = @(
+            "-y", "-i", $localIn,
+            "-c:v", "libx264", "-preset", "veryfast",
+            "-b:v", "${targetVideoKbps}k", "-maxrate", "${targetVideoKbps}k", "-bufsize", "$($targetVideoKbps * 2)k",
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-c:a", "aac", "-b:a", "${AudioKbps}k", "-movflags", "+faststart", $localOut
+        )
     }
 
-    if (!(Test-Path $localOut) -or ((Get-Item $localOut).Length -le 0)) {
+    $rEnc = Invoke-External -FilePath "ffmpeg" -ArgumentList $ffArgs -TimeoutSec 7200 -Label "ffmpeg-encode"
+    if ($rEnc.ExitCode -ne 0 -or !(Test-Path $localOut) -or ((Get-Item $localOut).Length -le 0)) {
         $countFail++
-        $report.Add([PSCustomObject]@{asset_id=$asset;status="ffmpeg_failed";source_path=$src;dest_cache_path=$dst;note=""})
+        $report.Add([PSCustomObject]@{asset_id=$asset;status="ffmpeg_failed";source_path=$src;dest_cache_path=$dst;note=(Safe-Text $rEnc.StdErr)})
         Remove-Item $localIn, $localOut -Force -ErrorAction SilentlyContinue
         continue
     }
@@ -191,7 +212,7 @@ foreach ($row in $rows) {
     $rMk = Invoke-External -FilePath "ssh" -ArgumentList ($sshOpts + @("${RemoteUser}@${RemoteHost}", "mkdir -p $qDir")) -TimeoutSec 60 -Label "ssh-mkdir"
     if ($rMk.ExitCode -ne 0) {
         $countFail++
-        $report.Add([PSCustomObject]@{asset_id=$asset;status="mkdir_failed";source_path=$src;dest_cache_path=$dst;note=$rMk.StdErr.Trim()})
+        $report.Add([PSCustomObject]@{asset_id=$asset;status="mkdir_failed";source_path=$src;dest_cache_path=$dst;note=(Safe-Text $rMk.StdErr)})
         Remove-Item $localIn, $localOut -Force -ErrorAction SilentlyContinue
         continue
     }
@@ -199,7 +220,7 @@ foreach ($row in $rows) {
     $rUl = Invoke-External -FilePath "scp" -ArgumentList (@("-q") + $sshOpts + @($localOut, "${RemoteUser}@${RemoteHost}:$tmpRemote")) -TimeoutSec 7200 -Label "scp-upload"
     if ($rUl.ExitCode -ne 0) {
         $countFail++
-        $report.Add([PSCustomObject]@{asset_id=$asset;status="upload_failed";source_path=$src;dest_cache_path=$dst;note=$rUl.StdErr.Trim()})
+        $report.Add([PSCustomObject]@{asset_id=$asset;status="upload_failed";source_path=$src;dest_cache_path=$dst;note=(Safe-Text $rUl.StdErr)})
         Remove-Item $localIn, $localOut -Force -ErrorAction SilentlyContinue
         continue
     }
@@ -207,7 +228,7 @@ foreach ($row in $rows) {
     $rMv = Invoke-External -FilePath "ssh" -ArgumentList ($sshOpts + @("${RemoteUser}@${RemoteHost}", "mv -f $qTmp $qDst")) -TimeoutSec 60 -Label "ssh-move"
     if ($rMv.ExitCode -ne 0) {
         $countFail++
-        $report.Add([PSCustomObject]@{asset_id=$asset;status="remote_move_failed";source_path=$src;dest_cache_path=$dst;note=$rMv.StdErr.Trim()})
+        $report.Add([PSCustomObject]@{asset_id=$asset;status="remote_move_failed";source_path=$src;dest_cache_path=$dst;note=(Safe-Text $rMv.StdErr)})
         Remove-Item $localIn, $localOut -Force -ErrorAction SilentlyContinue
         continue
     }
