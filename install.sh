@@ -1059,6 +1059,7 @@ SCRIPTS=(
     "cache-monitor.sh"   # Vigilancia de tamaño del cache (no borra)
     "night-run.sh"       # Orquestador nocturno (cola + cool_down + flock)
     "video-reprocess-nightly.sh" # Reproceso nocturno ligero y cola manual para pesados
+    "playback-audit-autoheal.sh" # Auditoria HTTP playback + autocorreccion automatica
     "rebuild-video-cache.sh" # Recuperacion total de cache (prepare/light-only/tvbox-all)
     "mount-guard.sh"     # Detecta desmontajes/remontajes y notifica Telegram
     "post-upload-check.sh" # Verificacion puntual del flujo tras subir un asset
@@ -1132,6 +1133,18 @@ VIDEO_REPROCESS_AUDIO_BITRATE_K=${VIDEO_REPROCESS_AUDIO_BITRATE_K:-128}
 VIDEO_REPROCESS_TARGET_MAXRATE_K=${VIDEO_REPROCESS_TARGET_MAXRATE_K:-5200}
 VIDEO_REPROCESS_ATTEMPTS_DB=${VIDEO_REPROCESS_ATTEMPTS_DB:-/var/lib/nas-retry/video-reprocess-light.attempts.tsv}
 VIDEO_REPROCESS_MANUAL_QUEUE=${VIDEO_REPROCESS_MANUAL_QUEUE:-/var/lib/nas-retry/video-reprocess-manual.tsv}
+PLAYBACK_AUDIT_ENABLED=${PLAYBACK_AUDIT_ENABLED:-1}
+PLAYBACK_AUDIT_MAX_MIN=${PLAYBACK_AUDIT_MAX_MIN:-45}
+PLAYBACK_AUDIT_IMMICH_API=${PLAYBACK_AUDIT_IMMICH_API:-http://127.0.0.1:2283}
+PLAYBACK_AUDIT_BASE=${PLAYBACK_AUDIT_BASE:-http://127.0.0.1}
+PLAYBACK_AUDIT_OUTPUT_DIR=${PLAYBACK_AUDIT_OUTPUT_DIR:-/var/lib/nas-health}
+PLAYBACK_AUDIT_WORKERS=${PLAYBACK_AUDIT_WORKERS:-24}
+PLAYBACK_AUDIT_TIMEOUT_SEC=${PLAYBACK_AUDIT_TIMEOUT_SEC:-20}
+PLAYBACK_AUDIT_SAMPLE_BYTES=${PLAYBACK_AUDIT_SAMPLE_BYTES:-256}
+PLAYBACK_AUDIT_AUTOHEAL_ENABLED=${PLAYBACK_AUDIT_AUTOHEAL_ENABLED:-1}
+PLAYBACK_AUDIT_AUTOHEAL_LIMIT=${PLAYBACK_AUDIT_AUTOHEAL_LIMIT:-200}
+PLAYBACK_AUDIT_AUTOHEAL_MAX_ATTEMPTS=${PLAYBACK_AUDIT_AUTOHEAL_MAX_ATTEMPTS:-3}
+PLAYBACK_AUDIT_AUTOHEAL_CLASSES="${PLAYBACK_AUDIT_AUTOHEAL_CLASSES:-not_found http_error unexpected_content placeholder_missing placeholder_damaged placeholder_error}"
 VIDEO_OPTIMIZE_MAX_MIN=${VIDEO_OPTIMIZE_MAX_MIN:-180}
 EOF
 chmod 0644 /etc/default/nas-video-policy
@@ -1186,18 +1199,28 @@ log_ok "Resolutor de playback web instalado (placeholder de dia, cache nocturno)
 # estar en el .env de Docker ni en variables de entorno públicas.
 log_step "Configurando secretos Telegram"
 
-if [ -n "${TELEGRAM_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+EXISTING_TELEGRAM_TOKEN="$(awk -F= '$1=="TELEGRAM_TOKEN"{gsub(/"/,"",$2); print $2}' /etc/nas-secrets 2>/dev/null | head -1)"
+EXISTING_TELEGRAM_CHAT_ID="$(awk -F= '$1=="TELEGRAM_CHAT_ID"{gsub(/"/,"",$2); print $2}' /etc/nas-secrets 2>/dev/null | head -1)"
+EXISTING_IMMICH_API_KEY="$(awk -F= '$1=="IMMICH_API_KEY"{sub(/^[^=]*=/,""); gsub(/^[[:space:]]*"/,"",$0); gsub(/"$/,"",$0); print $0}' /etc/nas-secrets 2>/dev/null | head -1)"
+EXISTING_IMMICH_ADMIN_EMAIL="$(awk -F= '$1=="IMMICH_ADMIN_EMAIL"{gsub(/"/,"",$2); print $2}' /etc/nas-secrets 2>/dev/null | head -1)"
+EXISTING_IMMICH_ADMIN_PASSWORD="$(awk -F= '$1=="IMMICH_ADMIN_PASSWORD"{sub(/^[^=]*=/,""); gsub(/^[[:space:]]*"/,"",$0); gsub(/"$/,"",$0); print $0}' /etc/nas-secrets 2>/dev/null | head -1)"
+
+FINAL_TELEGRAM_TOKEN="${TELEGRAM_TOKEN:-$EXISTING_TELEGRAM_TOKEN}"
+FINAL_TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-$EXISTING_TELEGRAM_CHAT_ID}"
+FINAL_IMMICH_API_KEY="${IMMICH_API_KEY:-$EXISTING_IMMICH_API_KEY}"
+FINAL_IMMICH_ADMIN_EMAIL="${IMMICH_ADMIN_EMAIL:-$EXISTING_IMMICH_ADMIN_EMAIL}"
+FINAL_IMMICH_ADMIN_PASSWORD="${IMMICH_ADMIN_PASSWORD:-$EXISTING_IMMICH_ADMIN_PASSWORD}"
+
+if [ -n "$FINAL_TELEGRAM_TOKEN" ] && [ -n "$FINAL_TELEGRAM_CHAT_ID" ]; then
     cat > /etc/nas-secrets << EOF
-TELEGRAM_TOKEN="$TELEGRAM_TOKEN"
-TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID"
+TELEGRAM_TOKEN="$FINAL_TELEGRAM_TOKEN"
+TELEGRAM_CHAT_ID="$FINAL_TELEGRAM_CHAT_ID"
+IMMICH_API_KEY="$FINAL_IMMICH_API_KEY"
+IMMICH_ADMIN_EMAIL="$FINAL_IMMICH_ADMIN_EMAIL"
+IMMICH_ADMIN_PASSWORD="$FINAL_IMMICH_ADMIN_PASSWORD"
 EOF
     chmod 600 /etc/nas-secrets
-    log_ok "Secretos Telegram guardados en /etc/nas-secrets"
-elif [ -f /etc/nas-secrets ] && \
-     awk -F= '$1=="TELEGRAM_TOKEN"{gsub(/"/,"",$2); print $2}' /etc/nas-secrets | grep -q . && \
-     awk -F= '$1=="TELEGRAM_CHAT_ID"{gsub(/"/,"",$2); print $2}' /etc/nas-secrets | grep -q .; then
-    chmod 600 /etc/nas-secrets
-    log_ok "Secretos Telegram existentes preservados en /etc/nas-secrets"
+    log_ok "Secretos Telegram/Immich guardados en /etc/nas-secrets"
 else
     cat > /etc/nas-secrets << 'EOF'
 # Completar para activar alertas Telegram
@@ -1205,9 +1228,20 @@ else
 # Obtener CHAT_ID: enviar mensaje al bot y consultar /getUpdates
 TELEGRAM_TOKEN=""
 TELEGRAM_CHAT_ID=""
+
+# Para auditoría/autocorrección de playback:
+# Opción recomendada:
+# IMMICH_API_KEY="..."
+#
+# Opción alternativa:
+# IMMICH_ADMIN_EMAIL="..."
+# IMMICH_ADMIN_PASSWORD="..."
+IMMICH_API_KEY=""
+IMMICH_ADMIN_EMAIL=""
+IMMICH_ADMIN_PASSWORD=""
 EOF
     chmod 600 /etc/nas-secrets
-    log_warn "Telegram no configurado — editar /etc/nas-secrets para activar alertas"
+    log_warn "Secretos incompletos — editar /etc/nas-secrets para activar Telegram y auditoría playback"
 fi
 
 # Inyectar umbrales de cache desde nas.conf en cache-monitor.sh

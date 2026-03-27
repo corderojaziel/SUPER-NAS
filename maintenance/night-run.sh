@@ -15,6 +15,7 @@ LOCK="/var/lock/night-run.lock"
 LOG="/var/log/night-run.log"
 HEALTH_DIR="/var/lib/nas-health"
 VIDEO_SUMMARY_FILE="$HEALTH_DIR/video-optimize-summary.env"
+PLAYBACK_AUDIT_SUMMARY_FILE="$HEALTH_DIR/playback-audit-summary.env"
 NAS_ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
 EMMC_DF_TARGET="${EMMC_DF_TARGET:-/var/lib/immich}"
 DOCKER_BIN="${DOCKER_BIN:-/usr/bin/docker}"
@@ -25,6 +26,7 @@ ML_STOP_HOUR="${ML_STOP_HOUR:-6}"
 ML_WINDOW_HOUR="${ML_WINDOW_HOUR:-${NAS_CURRENT_HOUR:-$(date +%H)}}"
 NAS_CURRENT_HOUR="${NAS_CURRENT_HOUR:-$ML_WINDOW_HOUR}"
 VIDEO_OPTIMIZE_MAX_MIN="${VIDEO_OPTIMIZE_MAX_MIN:-180}"
+PLAYBACK_AUDIT_MAX_MIN="${PLAYBACK_AUDIT_MAX_MIN:-45}"
 export NAS_CURRENT_HOUR
 mkdir -p "$HEALTH_DIR" "$(dirname "$LOCK")"
 
@@ -65,6 +67,7 @@ friendly_mount_list() {
 task_label() {
   case "$1" in
     "Video optimize") echo "la optimización de videos" ;;
+    "Playback audit") echo "la auditoría de reproducción de videos" ;;
     "SMART semanal") echo "la revisión profunda de los discos" ;;
     "Backup") echo "la copia de seguridad" ;;
     "Cache monitor") echo "la revisión del tamaño del cache" ;;
@@ -155,6 +158,7 @@ build_summary_notes() {
   esac
 
   [ "$VIDEO_RES" = "FAIL" ] && add_summary_note "La optimización de videos no pudo terminar esta noche."
+  [ "$PLAYBACK_AUDIT_RES" = "FAIL" ] && add_summary_note "La auditoría de playback falló y no pude autocorregir videos rotos."
   [ "$BACKUP_RES" = "FAIL" ] && add_summary_note "La copia de seguridad del día no pudo completarse."
   [ "$CACHE_MONITOR_RES" = "FAIL" ] && add_summary_note "No pude revisar el tamaño del cache de videos."
   [ "$CACHE_CLEAN_RES" = "FAIL" ] && add_summary_note "No pude limpiar el cache de videos."
@@ -175,6 +179,11 @@ build_summary_notes() {
       parts="${parts%%; }"
       [ -n "$parts" ] && add_summary_note "En videos: $parts."
     fi
+  fi
+
+  if [ "$PLAYBACK_AUDIT_RES" = "OK" ] && [ -f "$PLAYBACK_AUDIT_SUMMARY_FILE" ]; then
+    load_status_env "$PLAYBACK_AUDIT_SUMMARY_FILE"
+    add_summary_note "Auditoría playback: ${PLAYBACK_AUDIT_PLAYABLE:-0}/${PLAYBACK_AUDIT_TOTAL:-0} playables; rotos detectados ${PLAYBACK_AUDIT_BROKEN:-0}; autocorregidos ${PLAYBACK_AUDIT_AUTOHEAL_CONVERTED:-0}."
   fi
 
   [ -n "$SUMMARY_NOTES" ] || add_summary_note "El NAS terminó estable y las tareas principales salieron como se esperaba."
@@ -346,6 +355,7 @@ NAS_ALERT_SUPPRESS=1 /usr/local/bin/smart-check.sh daily >/dev/null 2>&1 || true
 load_status_env "$HEALTH_DIR/smart-status.env"
 
 VIDEO_RES="SKIPPED"
+PLAYBACK_AUDIT_RES="SKIPPED"
 BACKUP_RES="SKIPPED"
 SMART_RES="OK"
 DBDUMP_RES="SKIPPED"
@@ -362,6 +372,11 @@ else
   fi
   run_task "Video optimize" "$VIDEO_OPTIMIZE_CMD" "$VIDEO_OPTIMIZE_MAX_MIN" && VIDEO_RES="OK" || VIDEO_RES="FAIL"
   sleep 180
+
+  if [ -x /usr/local/bin/playback-audit-autoheal.sh ]; then
+    run_task "Playback audit" "/usr/local/bin/playback-audit-autoheal.sh" "$PLAYBACK_AUDIT_MAX_MIN" && PLAYBACK_AUDIT_RES="OK" || PLAYBACK_AUDIT_RES="FAIL"
+    sleep 60
+  fi
 
   DOW=$(date +%u)
   if [ "$DOW" -eq 7 ]; then
@@ -443,6 +458,7 @@ alert "🌙 Resumen de la noche
 💽 Memoria interna: $(pretty_status "${EMMC_STATUS:-OK}")
 🐘 Base de datos de Immich: $(pretty_status "${DB_STATUS:-OK}")
 🎬 Optimización de videos: $(pretty_status "${VIDEO_RES}")
+🎥 Auditoría playback: $(pretty_status "${PLAYBACK_AUDIT_RES}")
 💾 Copia de seguridad: $(pretty_status "${BACKUP_RES}")
 📦 Revisión del cache: $(pretty_status "${CACHE_MONITOR_RES}")
 🧹 Limpieza del cache: $(pretty_status "${CACHE_CLEAN_RES}")

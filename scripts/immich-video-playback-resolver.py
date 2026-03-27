@@ -481,6 +481,9 @@ class PlaybackResolverHandler(BaseHTTPRequestHandler):
         authorization = self.headers.get("Authorization")
         if authorization:
             request.add_header("Authorization", authorization)
+        x_api_key = self.headers.get("X-API-Key")
+        if x_api_key:
+            request.add_header("X-API-Key", x_api_key)
 
         try:
             with urlopen(request, timeout=10) as response:

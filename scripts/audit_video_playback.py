@@ -14,8 +14,9 @@ from pathlib import Path
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Audit HTTP playback for all video asset IDs.")
-    p.add_argument("--email", required=True)
-    p.add_argument("--password", required=True)
+    p.add_argument("--email", default="")
+    p.add_argument("--password", default="")
+    p.add_argument("--api-key", default="")
     p.add_argument("--immich-api", default="http://127.0.0.1:2283")
     p.add_argument("--playback-base", default="http://127.0.0.1")
     p.add_argument("--output-dir", default="/var/lib/nas-health")
@@ -66,10 +67,17 @@ def fetch_video_ids(compose_dir: str) -> list[str]:
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-def classify(status: int, content_type: str, cache_control: str) -> str:
+def classify(status: int, content_type: str, cache_control: str, x_video_source: str) -> str:
     if status in (200, 206):
         if "no-store" in cache_control:
-            return "placeholder"
+            src = (x_video_source or "").strip().lower()
+            if src.startswith("placeholder-missing"):
+                return "placeholder_missing"
+            if src.startswith("placeholder-damaged"):
+                return "placeholder_damaged"
+            if src.startswith("placeholder-error"):
+                return "placeholder_error"
+            return "placeholder_processing"
         if "video/mp4" in content_type.lower():
             return "playable"
         return "unexpected_content"
@@ -84,19 +92,21 @@ def probe_one(
     aid: str,
     playback_base: str,
     token: str,
+    api_key: str,
     timeout_sec: float,
     sample_bytes: int,
 ) -> dict[str, str | int]:
     t = int(time.time())
     end_byte = max(sample_bytes - 1, 0)
     url = f"{playback_base.rstrip('/')}/api/assets/{aid}/video/playback?t={t}"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Range": f"bytes=0-{end_byte}",
-        },
-    )
+    headers = {
+        "Range": f"bytes=0-{end_byte}",
+    }
+    if api_key:
+        headers["X-API-Key"] = api_key
+    else:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
 
     status = 0
     content_type = ""
@@ -128,7 +138,7 @@ def probe_one(
     return {
         "asset_id": aid,
         "status": status,
-        "class": classify(status, content_type, cache_control),
+        "class": classify(status, content_type, cache_control, x_video_source),
         "content_type": content_type,
         "cache_control": cache_control,
         "content_range": content_range,
@@ -147,7 +157,11 @@ def main() -> int:
     out_csv = out_dir / f"playback-audit-{ts}.csv"
     out_json = out_dir / f"playback-audit-{ts}.json"
 
-    token = login_token(args.immich_api, args.email, args.password, args.timeout_sec)
+    token = ""
+    if not args.api_key:
+        if not args.email or not args.password:
+            raise SystemExit("ERROR: usar --api-key o bien --email + --password")
+        token = login_token(args.immich_api, args.email, args.password, args.timeout_sec)
     ids = fetch_video_ids(args.compose_dir)
 
     rows: list[dict[str, str | int]] = []
@@ -158,6 +172,7 @@ def main() -> int:
                 aid,
                 args.playback_base,
                 token,
+                args.api_key,
                 args.timeout_sec,
                 args.sample_bytes,
             )

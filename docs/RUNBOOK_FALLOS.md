@@ -1,8 +1,8 @@
 # RUNBOOK DE FALLOS (TV BOX + PC)
 
-Versión: `v2.0`  
+Versión: `v2.1`  
 Fecha: `2026-03-27`  
-PDF versionado: `docs/RUNBOOK_FALLOS_v2.0_2026-03-27.pdf`
+PDF versionado: `docs/RUNBOOK_FALLOS_v2.1_2026-03-27.pdf`
 
 Este documento define qué hacer cuando llegue una alerta de Telegram.
 
@@ -66,6 +66,16 @@ powershell -ExecutionPolicy Bypass -File C:\Users\jazie\SUPERNAS\powershell\repr
 python3 /usr/local/bin/audit_video_playback.py --email "TU_EMAIL" --password "TU_PASSWORD"
 python3 /usr/local/bin/video-reprocess-manager.py plan --output-dir /var/lib/nas-health/reprocess
 ```
+
+### 4.1) Auditoría playback automática (nuevo)
+- Script: `/usr/local/bin/playback-audit-autoheal.sh`
+- Qué hace:
+  - audita por HTTP todos los videos (`playable/processing/error`)
+  - notifica resultado por Telegram
+  - si detecta rotos, corre autocorrección automática en TV Box para candidatos ligeros
+- Insumo:
+  - automático
+  - requiere `IMMICH_API_KEY` o `IMMICH_ADMIN_EMAIL` + `IMMICH_ADMIN_PASSWORD` en `/etc/nas-secrets`
 
 ### 5) Alerta SMART WARN / CRIT
 - Telegram esperado: `⚠️ Conviene revisar ...` o `🚨 ... necesita atención`
@@ -153,5 +163,5 @@ python3 /usr/local/bin/audit_video_playback.py --email "TU_EMAIL" --password "TU
 
 ## Cómo generar nueva versión del PDF
 ```bash
-python3 tools/build_runbook_pdf.py --input docs/RUNBOOK_FALLOS.md --output docs/RUNBOOK_FALLOS_v2.0_2026-03-27.pdf --title "RUNBOOK DE FALLOS v2.0 (2026-03-27)"
+python3 tools/build_runbook_pdf.py --input docs/RUNBOOK_FALLOS.md --output docs/RUNBOOK_FALLOS_v2.1_2026-03-27.pdf --title "RUNBOOK DE FALLOS v2.1 (2026-03-27)"
 ```
