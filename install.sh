@@ -1059,6 +1059,7 @@ SCRIPTS=(
     "cache-monitor.sh"   # Vigilancia de tamaño del cache (no borra)
     "night-run.sh"       # Orquestador nocturno (cola + cool_down + flock)
     "video-reprocess-nightly.sh" # Reproceso nocturno ligero y cola manual para pesados
+    "rebuild-video-cache.sh" # Recuperacion total de cache (prepare/light-only/tvbox-all)
     "mount-guard.sh"     # Detecta desmontajes/remontajes y notifica Telegram
     "post-upload-check.sh" # Verificacion puntual del flujo tras subir un asset
 )
@@ -1105,6 +1106,12 @@ if [ -f "$SCRIPT_DIR/scripts/backfill-heavy-cache.py" ]; then
     log_ok "Instalado: /usr/local/bin/backfill-heavy-cache.py"
 fi
 
+if [ -f "$SCRIPT_DIR/scripts/audit_video_playback.py" ]; then
+    install -m 0755 "$SCRIPT_DIR/scripts/audit_video_playback.py" \
+        /usr/local/bin/audit_video_playback.py
+    log_ok "Instalado: /usr/local/bin/audit_video_playback.py"
+fi
+
 cat > /etc/default/nas-video-policy <<EOF
 VIDEO_STREAM_MAX_MB_PER_MIN=${VIDEO_STREAM_MAX_MB_PER_MIN:-40}
 VIDEO_STREAM_TARGET_MB_PER_MIN=${VIDEO_STREAM_TARGET_MB_PER_MIN:-38}
@@ -1119,12 +1126,13 @@ VIDEO_REPROCESS_IMMICH_ROOT=${VIDEO_REPROCESS_IMMICH_ROOT:-/var/lib/immich}
 VIDEO_REPROCESS_LOCAL_MAX_MB=${VIDEO_REPROCESS_LOCAL_MAX_MB:-220}
 VIDEO_REPROCESS_LOCAL_MAX_DURATION_SEC=${VIDEO_REPROCESS_LOCAL_MAX_DURATION_SEC:-150}
 VIDEO_REPROCESS_LOCAL_MAX_MB_MIN=${VIDEO_REPROCESS_LOCAL_MAX_MB_MIN:-120}
-VIDEO_REPROCESS_LIGHT_LIMIT=${VIDEO_REPROCESS_LIGHT_LIMIT:-80}
+VIDEO_REPROCESS_LIGHT_LIMIT=${VIDEO_REPROCESS_LIGHT_LIMIT:-0}
 VIDEO_REPROCESS_MAX_ATTEMPTS=${VIDEO_REPROCESS_MAX_ATTEMPTS:-3}
 VIDEO_REPROCESS_AUDIO_BITRATE_K=${VIDEO_REPROCESS_AUDIO_BITRATE_K:-128}
 VIDEO_REPROCESS_TARGET_MAXRATE_K=${VIDEO_REPROCESS_TARGET_MAXRATE_K:-5200}
 VIDEO_REPROCESS_ATTEMPTS_DB=${VIDEO_REPROCESS_ATTEMPTS_DB:-/var/lib/nas-retry/video-reprocess-light.attempts.tsv}
 VIDEO_REPROCESS_MANUAL_QUEUE=${VIDEO_REPROCESS_MANUAL_QUEUE:-/var/lib/nas-retry/video-reprocess-manual.tsv}
+VIDEO_OPTIMIZE_MAX_MIN=${VIDEO_OPTIMIZE_MAX_MIN:-180}
 EOF
 chmod 0644 /etc/default/nas-video-policy
 log_ok "Politica de video instalada (/etc/default/nas-video-policy)"

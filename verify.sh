@@ -96,7 +96,7 @@ else
 fi
 
 section "SCRIPTS DE MANTENIMIENTO"
-for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/backup.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh; do
+for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh; do
   if [ -x "$f" ]; then bash -n "$f" >/dev/null 2>&1 && ok "$f instalado y sintaxis válida" || fail "$f con errores de sintaxis"; else fail "$f ausente"; fi
 done
 [ -x /usr/local/bin/immich-video-playback-resolver.py ] && python3 -m py_compile /usr/local/bin/immich-video-playback-resolver.py >/dev/null 2>&1 && ok "/usr/local/bin/immich-video-playback-resolver.py instalado y sintaxis válida" || fail "/usr/local/bin/immich-video-playback-resolver.py ausente o inválido"
@@ -109,6 +109,11 @@ if [ -x /usr/local/bin/video-reprocess-manager.py ]; then
   python3 -m py_compile /usr/local/bin/video-reprocess-manager.py >/dev/null 2>&1 && ok "/usr/local/bin/video-reprocess-manager.py instalado y sintaxis válida" || fail "/usr/local/bin/video-reprocess-manager.py con errores de sintaxis"
 else
   warn "/usr/local/bin/video-reprocess-manager.py no instalado"
+fi
+if [ -x /usr/local/bin/audit_video_playback.py ]; then
+  python3 -m py_compile /usr/local/bin/audit_video_playback.py >/dev/null 2>&1 && ok "/usr/local/bin/audit_video_playback.py instalado y sintaxis válida" || fail "/usr/local/bin/audit_video_playback.py con errores de sintaxis"
+else
+  warn "/usr/local/bin/audit_video_playback.py no instalado"
 fi
 
 section "HEALTH STATES"

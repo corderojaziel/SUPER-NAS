@@ -24,6 +24,7 @@ ML_START_HOUR="${ML_START_HOUR:-2}"
 ML_STOP_HOUR="${ML_STOP_HOUR:-6}"
 ML_WINDOW_HOUR="${ML_WINDOW_HOUR:-${NAS_CURRENT_HOUR:-$(date +%H)}}"
 NAS_CURRENT_HOUR="${NAS_CURRENT_HOUR:-$ML_WINDOW_HOUR}"
+VIDEO_OPTIMIZE_MAX_MIN="${VIDEO_OPTIMIZE_MAX_MIN:-180}"
 export NAS_CURRENT_HOUR
 mkdir -p "$HEALTH_DIR" "$(dirname "$LOCK")"
 
@@ -338,7 +339,7 @@ else
   if [ -x /usr/local/bin/video-reprocess-nightly.sh ]; then
     VIDEO_OPTIMIZE_CMD="/usr/local/bin/video-reprocess-nightly.sh"
   fi
-  run_task "Video optimize" "$VIDEO_OPTIMIZE_CMD" 60 && VIDEO_RES="OK" || VIDEO_RES="FAIL"
+  run_task "Video optimize" "$VIDEO_OPTIMIZE_CMD" "$VIDEO_OPTIMIZE_MAX_MIN" && VIDEO_RES="OK" || VIDEO_RES="FAIL"
   sleep 180
 
   DOW=$(date +%u)
