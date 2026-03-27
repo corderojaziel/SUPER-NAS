@@ -334,7 +334,11 @@ ML_RES="SKIPPED"
 if should_skip_heavy; then
   log "SKIP: Se pausaron tareas pesadas por estado crítico del NAS"
 else
-  run_task "Video optimize" "/usr/local/bin/video-optimize.sh" 60 && VIDEO_RES="OK" || VIDEO_RES="FAIL"
+  VIDEO_OPTIMIZE_CMD="/usr/local/bin/video-optimize.sh"
+  if [ -x /usr/local/bin/video-reprocess-nightly.sh ]; then
+    VIDEO_OPTIMIZE_CMD="/usr/local/bin/video-reprocess-nightly.sh"
+  fi
+  run_task "Video optimize" "$VIDEO_OPTIMIZE_CMD" 60 && VIDEO_RES="OK" || VIDEO_RES="FAIL"
   sleep 180
 
   DOW=$(date +%u)

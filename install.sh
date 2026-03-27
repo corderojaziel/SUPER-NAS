@@ -364,62 +364,11 @@ apt-get install -y -q \
     libimage-exiftool-perl \
     bc
 
-# cpufrequtils no existe en Debian Trixie/arm64 — usar linux-cpupower.
-# linux-cpupower provee cpupower frequency-set y frequency-info.
-# Fallback: si tampoco existe, escribir directamente en /sys/devices.
-if apt-cache show linux-cpupower >/dev/null 2>&1; then
-    apt-get install -y -q linux-cpupower
-    log_ok "linux-cpupower instalado"
-elif apt-cache show cpufrequtils >/dev/null 2>&1; then
+if apt-cache show cpufrequtils >/dev/null 2>&1; then
     apt-get install -y -q cpufrequtils
-    log_ok "cpufrequtils instalado (fallback)"
+    log_ok "cpufrequtils instalado"
 else
-    log_warn "cpupower no disponible — governor se aplicará directo via /sys"
-fi
-
-# Aplicar governor schedutil a todos los cores.
-# schedutil escala frecuencia desde el scheduler del kernel — mejor que ondemand
-# para NAS: reacciona rápido a carga y baja en reposo sin delay artificial.
-# Se escribe directamente en /sys para no depender del binario instalado.
-GOV_PATH="/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"
-if [ -f "$GOV_PATH" ]; then
-    AVAIL=$(cat "$GOV_PATH" 2>/dev/null || echo "")
-    if echo "$AVAIL" | grep -qw "schedutil"; then
-        TARGET_GOV="schedutil"
-    elif echo "$AVAIL" | grep -qw "ondemand"; then
-        TARGET_GOV="ondemand"
-    else
-        TARGET_GOV=""
-    fi
-
-    if [ -n "$TARGET_GOV" ]; then
-        for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-            [ -w "$f" ] && echo "$TARGET_GOV" > "$f" 2>/dev/null || true
-        done
-        log_ok "CPU governor: $TARGET_GOV aplicado a todos los cores"
-
-        # Persistir entre reinicios via systemd
-        cat > /etc/systemd/system/nas-cpugov.service << EOF
-[Unit]
-Description=NAS CPU governor — $TARGET_GOV
-After=sysinit.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/sh -c 'for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo $TARGET_GOV > \$f 2>/dev/null || true; done'
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        systemctl daemon-reload
-        systemctl enable nas-cpugov.service >/dev/null 2>&1 || true
-        log_ok "nas-cpugov.service habilitado (persiste entre reinicios)"
-    else
-        log_warn "Governors disponibles: $AVAIL — sin cambio de governor"
-    fi
-else
-    log_warn "cpufreq no disponible en este kernel"
+    log_warn "cpufrequtils no está disponible en esta distro; continúo sin él"
 fi
 
 log_ok "Dependencias instaladas"
@@ -968,13 +917,72 @@ server {
     sendfile on;
   }
 
+  location = /__static/video-damaged.mp4 {
+    alias /var/lib/immich/static/video-damaged.mp4;
+    types { video/mp4 mp4; }
+    default_type video/mp4;
+    add_header Cache-Control "public, max-age=300";
+    sendfile on;
+  }
+
+  location = /__static/video-damaged-portrait.mp4 {
+    alias /var/lib/immich/static/video-damaged-portrait.mp4;
+    types { video/mp4 mp4; }
+    default_type video/mp4;
+    add_header Cache-Control "public, max-age=300";
+    sendfile on;
+  }
+
+  location = /__static/video-missing.mp4 {
+    alias /var/lib/immich/static/video-missing.mp4;
+    types { video/mp4 mp4; }
+    default_type video/mp4;
+    add_header Cache-Control "public, max-age=300";
+    sendfile on;
+  }
+
+  location = /__static/video-missing-portrait.mp4 {
+    alias /var/lib/immich/static/video-missing-portrait.mp4;
+    types { video/mp4 mp4; }
+    default_type video/mp4;
+    add_header Cache-Control "public, max-age=300";
+    sendfile on;
+  }
+
+  location = /__static/video-error.mp4 {
+    alias /var/lib/immich/static/video-error.mp4;
+    types { video/mp4 mp4; }
+    default_type video/mp4;
+    add_header Cache-Control "public, max-age=300";
+    sendfile on;
+  }
+
+  location = /__static/video-error-portrait.mp4 {
+    alias /var/lib/immich/static/video-error-portrait.mp4;
+    types { video/mp4 mp4; }
+    default_type video/mp4;
+    add_header Cache-Control "public, max-age=300";
+    sendfile on;
+  }
+
   # ── Videos optimizados por la rutina nocturna ──────────────────────────
   location /__cache-video/ {
     internal;
     alias /var/lib/immich/cache/;
     types { video/mp4 mp4; }
     default_type video/mp4;
-    add_header Cache-Control "private, max-age=86400, no-transform";
+    add_header Cache-Control "private, max-age=300, no-transform";
+    sendfile on;
+  }
+
+  # Compatibilidad temporal: algunos laboratorios cargaron caches antiguos
+  # en HDD antes de mover la politica canonica al eMMC.
+  location /__cache-video-legacy/ {
+    internal;
+    alias /mnt/storage-main/cache/;
+    types { video/mp4 mp4; }
+    default_type video/mp4;
+    add_header Cache-Control "private, max-age=300, no-transform";
     sendfile on;
   }
 
@@ -1001,6 +1009,20 @@ server {
     proxy_set_header Authorization $http_authorization;
     proxy_buffering off;
     client_max_body_size 50G;
+  }
+
+  # WebSocket de Immich (socket.io) para eventos del portal.
+  # Sin upgrade HTTP/1.1 la UI muestra errores repetidos en consola.
+  location /api/socket.io/ {
+    proxy_pass http://localhost:2283;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header Cookie $http_cookie;
+    proxy_set_header Authorization $http_authorization;
+    proxy_read_timeout 86400;
+    proxy_buffering off;
   }
 
   # ── Resto de la API ─────────────────────────────────────────────────────
@@ -1036,6 +1058,7 @@ SCRIPTS=(
     "retry-quarantine.sh" # Reactiva videos en cuarentena (fallo 3/3)
     "cache-monitor.sh"   # Vigilancia de tamaño del cache (no borra)
     "night-run.sh"       # Orquestador nocturno (cola + cool_down + flock)
+    "video-reprocess-nightly.sh" # Reproceso nocturno ligero y cola manual para pesados
     "mount-guard.sh"     # Detecta desmontajes/remontajes y notifica Telegram
     "post-upload-check.sh" # Verificacion puntual del flujo tras subir un asset
 )
@@ -1062,10 +1085,46 @@ install -m 0755 "$SCRIPT_DIR/scripts/immich-video-playback-resolver.py" \
     /usr/local/bin/immich-video-playback-resolver.py
 log_ok "Instalado: /usr/local/bin/immich-video-playback-resolver.py"
 
+if [ -f "$SCRIPT_DIR/scripts/reconcile-emmc-cache.py" ]; then
+    install -m 0755 "$SCRIPT_DIR/scripts/reconcile-emmc-cache.py" \
+        /usr/local/bin/reconcile-emmc-cache.py
+    log_ok "Instalado: /usr/local/bin/reconcile-emmc-cache.py"
+fi
+
+if [ -f "$SCRIPT_DIR/scripts/video-reprocess-manager.py" ]; then
+    install -m 0755 "$SCRIPT_DIR/scripts/video-reprocess-manager.py" \
+        /usr/local/bin/video-reprocess-manager.py
+    log_ok "Instalado: /usr/local/bin/video-reprocess-manager.py"
+else
+    log_warn "No encontrado: scripts/video-reprocess-manager.py"
+fi
+
+if [ -f "$SCRIPT_DIR/scripts/backfill-heavy-cache.py" ]; then
+    install -m 0755 "$SCRIPT_DIR/scripts/backfill-heavy-cache.py" \
+        /usr/local/bin/backfill-heavy-cache.py
+    log_ok "Instalado: /usr/local/bin/backfill-heavy-cache.py"
+fi
+
 cat > /etc/default/nas-video-policy <<EOF
 VIDEO_STREAM_MAX_MB_PER_MIN=${VIDEO_STREAM_MAX_MB_PER_MIN:-40}
 VIDEO_STREAM_TARGET_MB_PER_MIN=${VIDEO_STREAM_TARGET_MB_PER_MIN:-38}
 VIDEO_STREAM_LIGHT_REENCODE_MAX_MB_PER_MIN=${VIDEO_STREAM_LIGHT_REENCODE_MAX_MB_PER_MIN:-55}
+VIDEO_PLAYBACK_BROWSER_CACHE_SEC=${VIDEO_PLAYBACK_BROWSER_CACHE_SEC:-300}
+VIDEO_REPROCESS_MANAGER_BIN=${VIDEO_REPROCESS_MANAGER_BIN:-/usr/local/bin/video-reprocess-manager.py}
+VIDEO_REPROCESS_OUTPUT_DIR=${VIDEO_REPROCESS_OUTPUT_DIR:-/var/lib/nas-health/reprocess}
+VIDEO_REPROCESS_CACHE_ROOT=${VIDEO_REPROCESS_CACHE_ROOT:-/var/lib/immich/cache}
+VIDEO_REPROCESS_LEGACY_ROOT=${VIDEO_REPROCESS_LEGACY_ROOT:-/mnt/storage-main/cache}
+VIDEO_REPROCESS_UPLOAD_ROOT=${VIDEO_REPROCESS_UPLOAD_ROOT:-/mnt/storage-main/photos}
+VIDEO_REPROCESS_IMMICH_ROOT=${VIDEO_REPROCESS_IMMICH_ROOT:-/var/lib/immich}
+VIDEO_REPROCESS_LOCAL_MAX_MB=${VIDEO_REPROCESS_LOCAL_MAX_MB:-220}
+VIDEO_REPROCESS_LOCAL_MAX_DURATION_SEC=${VIDEO_REPROCESS_LOCAL_MAX_DURATION_SEC:-150}
+VIDEO_REPROCESS_LOCAL_MAX_MB_MIN=${VIDEO_REPROCESS_LOCAL_MAX_MB_MIN:-120}
+VIDEO_REPROCESS_LIGHT_LIMIT=${VIDEO_REPROCESS_LIGHT_LIMIT:-80}
+VIDEO_REPROCESS_MAX_ATTEMPTS=${VIDEO_REPROCESS_MAX_ATTEMPTS:-3}
+VIDEO_REPROCESS_AUDIO_BITRATE_K=${VIDEO_REPROCESS_AUDIO_BITRATE_K:-128}
+VIDEO_REPROCESS_TARGET_MAXRATE_K=${VIDEO_REPROCESS_TARGET_MAXRATE_K:-5200}
+VIDEO_REPROCESS_ATTEMPTS_DB=${VIDEO_REPROCESS_ATTEMPTS_DB:-/var/lib/nas-retry/video-reprocess-light.attempts.tsv}
+VIDEO_REPROCESS_MANUAL_QUEUE=${VIDEO_REPROCESS_MANUAL_QUEUE:-/var/lib/nas-retry/video-reprocess-manual.tsv}
 EOF
 chmod 0644 /etc/default/nas-video-policy
 log_ok "Politica de video instalada (/etc/default/nas-video-policy)"
@@ -1086,11 +1145,20 @@ Environment=LISTEN_HOST=127.0.0.1
 Environment=LISTEN_PORT=2284
 Environment=IMMICH_API_BASE=http://127.0.0.1:2283
 Environment=CACHE_ROOT=/var/lib/immich/cache
+Environment=LEGACY_CACHE_ROOTS=/mnt/storage-main/cache
 Environment=UPLOAD_HOST_ROOT=/mnt/storage-main/photos
+Environment=IMMICH_LOCAL_ROOT=/var/lib/immich
 Environment=PLACEHOLDER_LANDSCAPE_URI=/__static/video-processing.mp4
 Environment=PLACEHOLDER_PORTRAIT_URI=/__static/video-processing-portrait.mp4
+Environment=PLACEHOLDER_DAMAGED_LANDSCAPE_URI=/__static/video-damaged.mp4
+Environment=PLACEHOLDER_DAMAGED_PORTRAIT_URI=/__static/video-damaged-portrait.mp4
+Environment=PLACEHOLDER_MISSING_LANDSCAPE_URI=/__static/video-missing.mp4
+Environment=PLACEHOLDER_MISSING_PORTRAIT_URI=/__static/video-missing-portrait.mp4
+Environment=PLACEHOLDER_ERROR_LANDSCAPE_URI=/__static/video-error.mp4
+Environment=PLACEHOLDER_ERROR_PORTRAIT_URI=/__static/video-error-portrait.mp4
 Environment=DIRECT_PLAY_INTERNAL_PREFIX=/__immich-direct/
 Environment=CACHE_INTERNAL_PREFIX=/__cache-video/
+Environment=LEGACY_CACHE_INTERNAL_PREFIX=/__cache-video-legacy/
 Environment=UPLOAD_PREFIX=/usr/src/app/upload/
 
 [Install]
@@ -1354,3 +1422,50 @@ else
     -vf "drawbox=x=40:y=120:w=640:h=210:color=0x0f172acc:t=fill,drawbox=x=40:y=905:w=640:h=150:color=0x1d4ed8cc:t=fill,drawtext=text='VIDEO AUN NO DISPONIBLE':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=170,drawtext=text='Vuelve manana':fontcolor=white:fontsize=58:x=(w-text_w)/2:y=235,drawtext=text='El NAS lo esta preparando':fontcolor=white:fontsize=28:x=(w-text_w)/2:y=950,drawtext=text='para verlo sin trabas':fontcolor=white:fontsize=28:x=(w-text_w)/2:y=995" \
     -c:v libx264 -pix_fmt yuv420p -movflags +faststart /var/lib/immich/static/video-processing-portrait.mp4 >/dev/null 2>&1 || true
 fi
+
+make_landscape_variant() {
+  local src="$1" out="$2" title="$3" subtitle="$4"
+  ffmpeg -y -i "$src" \
+    -vf "drawbox=x=80:y=500:w=1120:h=150:color=0x0f172add:t=fill,drawtext=text='$title':fontcolor=white:fontsize=56:x=(w-text_w)/2:y=535,drawtext=text='$subtitle':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=605" \
+    -an -c:v libx264 -pix_fmt yuv420p -movflags +faststart "$out" >/dev/null 2>&1 || true
+}
+
+make_portrait_variant() {
+  local src="$1" out="$2" title="$3" subtitle="$4"
+  ffmpeg -y -i "$src" \
+    -vf "drawbox=x=40:y=900:w=640:h=220:color=0x0f172add:t=fill,drawtext=text='$title':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=950,drawtext=text='$subtitle':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=1020" \
+    -an -c:v libx264 -pix_fmt yuv420p -movflags +faststart "$out" >/dev/null 2>&1 || true
+}
+
+make_landscape_variant \
+  /var/lib/immich/static/video-processing.mp4 \
+  /var/lib/immich/static/video-damaged.mp4 \
+  "ARCHIVO DANADO" \
+  "No se puede reproducir este video"
+make_portrait_variant \
+  /var/lib/immich/static/video-processing-portrait.mp4 \
+  /var/lib/immich/static/video-damaged-portrait.mp4 \
+  "ARCHIVO DANADO" \
+  "No se puede reproducir"
+
+make_landscape_variant \
+  /var/lib/immich/static/video-processing.mp4 \
+  /var/lib/immich/static/video-missing.mp4 \
+  "ARCHIVO NO ENCONTRADO" \
+  "El original no esta en el NAS"
+make_portrait_variant \
+  /var/lib/immich/static/video-processing-portrait.mp4 \
+  /var/lib/immich/static/video-missing-portrait.mp4 \
+  "ARCHIVO NO ENCONTRADO" \
+  "El original no esta en NAS"
+
+make_landscape_variant \
+  /var/lib/immich/static/video-processing.mp4 \
+  /var/lib/immich/static/video-error.mp4 \
+  "ERROR TEMPORAL" \
+  "Intenta de nuevo en unos minutos"
+make_portrait_variant \
+  /var/lib/immich/static/video-processing-portrait.mp4 \
+  /var/lib/immich/static/video-error-portrait.mp4 \
+  "ERROR TEMPORAL" \
+  "Intenta de nuevo"
