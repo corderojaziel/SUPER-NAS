@@ -16,6 +16,8 @@ touch "$STATE_FILE"
 MOUNT_MAIN="/mnt/storage-main"
 MOUNT_BACKUP="/mnt/storage-backup"
 MOUNT_MERGED="/mnt/merged"
+DISK_LIST="/dev/sda /dev/sdb"
+[ -f /etc/nas-disks ] && DISK_LIST=$(cat /etc/nas-disks)
 
 if [ -f "$MOUNTS_FILE" ]; then
     # shellcheck disable=SC1090
@@ -53,10 +55,23 @@ friendly_mount() {
     esac
 }
 
+device_for_mount() {
+    local mountpoint="$1" first second
+    first=$(echo "$DISK_LIST" | awk '{print $1}')
+    second=$(echo "$DISK_LIST" | awk '{print $2}')
+    case "$mountpoint" in
+        /mnt/storage-main) echo "${first:-desconocido}" ;;
+        /mnt/storage-backup) echo "${second:-desconocido}" ;;
+        /mnt/merged) echo "usa $MOUNT_MAIN + $MOUNT_BACKUP (mergerfs)" ;;
+        *) echo "desconocido" ;;
+    esac
+}
+
 notify_transition() {
     local key="$1" mountpoint="$2" prev="$3" curr="$4"
-    local label
+    local label device_hint
     label="$(friendly_mount "$mountpoint")"
+    device_hint="$(device_for_mount "$mountpoint")"
 
     # Primera ejecución: registrar estado sin alertar.
     if [ "$prev" = "unknown" ]; then
@@ -68,10 +83,22 @@ notify_transition() {
             NAS_ALERT_KEY="mount_down:${mountpoint}" NAS_ALERT_TTL=1800 \
                 /usr/local/bin/nas-alert.sh "🔴 Detecté un problema con el $label
 Intenté recuperarlo, pero sigue sin responder.
+Punto de montaje: $mountpoint
+Disco esperado: $device_hint
+Qué correr (TV Box):
+Insumo: no aplica.
+1) lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT
+2) mount | grep -E '/mnt/storage-main|/mnt/storage-backup|/mnt/merged'
+3) /usr/local/bin/verify.sh
 Mientras tanto, algunas tareas del NAS quedarán en pausa para proteger tus datos."
         else
             NAS_ALERT_KEY="mount_up:${mountpoint}" NAS_ALERT_TTL=900 \
                 /usr/local/bin/nas-alert.sh "✅ Se recuperó el $label
+Punto de montaje: $mountpoint
+Disco: $device_hint
+Qué contexto aplica:
+- Dónde correr: TV Box
+- Insumo: no aplica
 Volvió a estar disponible y el NAS puede seguir trabajando con normalidad."
         fi
     fi

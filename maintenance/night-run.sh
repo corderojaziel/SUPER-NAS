@@ -99,6 +99,19 @@ add_summary_note() {
 
 build_summary_notes() {
   SUMMARY_NOTES=""
+  local smart_hint=""
+  smart_hint=$(printf '%s' "${RISKY_DISKS:-}" | awk -F';' '
+    {
+      for (i = 1; i <= NF; i++) {
+        split($i, a, "|")
+        if (a[1] != "") {
+          if (out != "") out = out ", "
+          out = out a[1]
+        }
+      }
+    }
+    END { print out }
+  ')
 
   if [ "$MOUNT_RECOVERED" -eq 1 ] && [ "${GLOBAL_MOUNT_STATUS:-OK}" = "OK" ]; then
     add_summary_note "Hubo una pérdida temporal de acceso a ${LAST_BROKEN_FRIENDLY:-uno o más discos}, pero logré recuperarla y el NAS terminó estable."
@@ -108,10 +121,18 @@ build_summary_notes() {
 
   case "${GLOBAL_SMART_STATUS:-OK}" in
     WARN)
-      add_summary_note "Uno de los discos mostró una señal temprana de desgaste o temperatura alta. Conviene revisarlo pronto."
+      if [ -n "$smart_hint" ]; then
+        add_summary_note "Señal temprana en discos: $smart_hint. Conviene revisarlos pronto."
+      else
+        add_summary_note "Uno de los discos mostró una señal temprana de desgaste o temperatura alta. Conviene revisarlo pronto."
+      fi
       ;;
     CRIT)
-      add_summary_note "Uno de los discos mostró señales serias de salud. Mantengo las tareas pesadas en pausa hasta revisarlo."
+      if [ -n "$smart_hint" ]; then
+        add_summary_note "Problema serio en discos: $smart_hint. Mantengo tareas pesadas en pausa hasta revisarlos."
+      else
+        add_summary_note "Uno de los discos mostró señales serias de salud. Mantengo las tareas pesadas en pausa hasta revisarlo."
+      fi
       ;;
   esac
 

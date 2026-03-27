@@ -49,15 +49,25 @@ csv_count() {
 
 if [ ! -f "$MANAGER_BIN" ]; then
   log "ERROR: no existe manager: $MANAGER_BIN"
-  alert "❌ Reproceso nocturno de videos no pudo iniciar
-No encontré el script del gestor en el NAS."
+alert "❌ Reproceso nocturno de videos no pudo iniciar
+No encontré el script del gestor en el NAS.
+Dónde correr: TV Box
+Insumo: no aplica.
+Qué correr:
+1) ls -lah /usr/local/bin/video-reprocess-manager.py
+2) /usr/local/bin/verify.sh"
   exit 1
 fi
 
 if ! command -v python3 >/dev/null 2>&1; then
   log "ERROR: python3 no disponible"
-  alert "❌ Reproceso nocturno de videos no pudo iniciar
-Python3 no está disponible en el NAS."
+alert "❌ Reproceso nocturno de videos no pudo iniciar
+Python3 no está disponible en el NAS.
+Dónde correr: TV Box
+Insumo: no aplica.
+Qué correr:
+1) command -v python3
+2) /usr/local/bin/verify.sh"
   exit 1
 fi
 
@@ -74,7 +84,12 @@ if ! python3 "$MANAGER_BIN" plan \
   --local-max-mb-min "$VIDEO_REPROCESS_LOCAL_MAX_MB_MIN" \
   >> "$LOG_FILE" 2>&1; then
   alert "❌ Falló la planeación de reproceso de video
-No pude generar los insumos de noche."
+No pude generar los insumos de noche.
+Dónde correr: TV Box
+Insumo: automático (se genera solo en $VIDEO_REPROCESS_OUTPUT_DIR).
+Qué correr:
+1) python3 /usr/local/bin/video-reprocess-manager.py plan --output-dir $VIDEO_REPROCESS_OUTPUT_DIR
+2) /usr/local/bin/verify.sh"
   exit 1
 fi
 
@@ -143,7 +158,14 @@ if [ "$run_status" = "FAIL" ]; then
 Ligeros convertidos: $converted
 Fallidos: $failed
 Pendientes manuales: $manual_total
-Insumos: $VIDEO_REPROCESS_OUTPUT_DIR"
+Insumos: $VIDEO_REPROCESS_OUTPUT_DIR
+Qué correr:
+- TV Box (reintento ligero):
+  Insumo: automático (usa $VIDEO_REPROCESS_OUTPUT_DIR)
+  python3 /usr/local/bin/video-reprocess-manager.py run --class light --output-dir $VIDEO_REPROCESS_OUTPUT_DIR --limit 0
+- PC (pesados/manual, usa GPU):
+  Insumo: automático (descarga plan desde TV Box)
+  powershell -ExecutionPolicy Bypass -File C:\\Users\\jazie\\SUPERNAS\\powershell\\reprocess_heavy_from_server.ps1 -NoPlan -Limit 50"
   exit 1
 fi
 
@@ -152,5 +174,8 @@ Ligeros evaluados: $light_total
 Ligeros convertidos: $converted
 Pendientes para PC (pesados): $heavy_total
 Fuentes dañadas/faltantes: $broken_total
-Pendientes manuales acumulados: $manual_total"
+Pendientes manuales acumulados: $manual_total
+Qué sigue:
+- TV Box: no requiere insumo manual (se genera automático cada noche).
+- PC (si quieres adelantar pesados): powershell -ExecutionPolicy Bypass -File C:\\Users\\jazie\\SUPERNAS\\powershell\\reprocess_heavy_from_server.ps1 -NoPlan -Limit 50"
 exit 0

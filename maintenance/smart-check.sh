@@ -37,6 +37,20 @@ friendly_disk() {
   echo "uno de los discos configurados"
 }
 
+disk_detail() {
+  local disk="$1" opts="$2" info model serial
+  info=$("$SMARTCTL_BIN" $opts -i "$disk" 2>/dev/null || true)
+  model=$(printf '%s' "$info" | awk -F: '/Device Model|Model Number|Product/{sub(/^[[:space:]]+/, "", $2); if(length($2)) {print $2; exit}}')
+  serial=$(printf '%s' "$info" | awk -F: '/Serial Number|Unit serial number/{sub(/^[[:space:]]+/, "", $2); if(length($2)) {print $2; exit}}')
+  if [ -n "$model" ] && [ -n "$serial" ]; then
+    printf '%s (%s, S/N %s)\n' "$disk" "$model" "$serial"
+  elif [ -n "$model" ]; then
+    printf '%s (%s)\n' "$disk" "$model"
+  else
+    printf '%s\n' "$disk"
+  fi
+}
+
 rank() {
   case "$1" in
     OK) echo 0 ;;
@@ -63,15 +77,22 @@ for disk in $DISK_LIST; do
   elif "$SMARTCTL_BIN" -d scsi -i "$disk" 2>/dev/null | grep -q "SMART support is: Enabled"; then
     SMART_DEV_OPTS="-d scsi"
   else
+    DISK_DETAIL="$(disk_detail "$disk" "")"
     echo "$disk|WARN|SMART no disponible" >> "$RISKY_FILE"
     GLOBAL=$(merge_status "$GLOBAL" WARN)
     NAS_ALERT_KEY="smart_unavailable:${disk}" NAS_ALERT_TTL=21600 alert "⚠️ No pude leer la salud del $DISK_LABEL
 Algunos adaptadores no dejan pasar esta información.
-Lo seguiré vigilando, pero este resultado no es concluyente."
+Disco detectado: $DISK_DETAIL
+Qué correr (TV Box):
+Insumo: no aplica.
+1) lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT
+2) /usr/local/bin/smart-check.sh daily
+3) /usr/local/bin/verify.sh"
     continue
   fi
 
   OUT=$("$SMARTCTL_BIN" $SMART_DEV_OPTS -A -H "$disk" 2>/dev/null)
+  DISK_DETAIL="$(disk_detail "$disk" "$SMART_DEV_OPTS")"
   HEALTH=$(printf '%s' "$OUT" | grep -E 'SMART overall-health|SMART Health Status' || true)
   REALLOC=$(printf '%s' "$OUT" | awk '/Reallocated_Sector_Ct/{print $10}' | head -1)
   PENDING=$(printf '%s' "$OUT" | awk '/Current_Pending_Sector/{print $10}' | head -1)
@@ -124,13 +145,24 @@ Lo seguiré vigilando, pero este resultado no es concluyente."
     WARN)
       NAS_ALERT_KEY="smart_warn:${disk}" NAS_ALERT_TTL=21600 alert "⚠️ Conviene revisar el $DISK_LABEL
 Detecté una señal temprana de desgaste o temperatura alta.
-Detalle: $USER_REASON."
+Detalle: $USER_REASON.
+Disco exacto: $DISK_DETAIL
+Qué correr (TV Box):
+Insumo: no aplica.
+1) smartctl $SMART_DEV_OPTS -a $disk
+2) /usr/local/bin/smart-check.sh weekly"
       ;;
     CRIT)
       NAS_ALERT_KEY="smart_crit:${disk}" NAS_ALERT_TTL=21600 alert "🚨 El $DISK_LABEL necesita atención
 Detecté un problema serio.
 Detalle: $USER_REASON.
-Para cuidarlo, el NAS va a pausar tareas pesadas."
+Disco exacto: $DISK_DETAIL
+Para cuidarlo, el NAS va a pausar tareas pesadas.
+Qué correr ahora (TV Box):
+Insumo: no aplica.
+1) smartctl $SMART_DEV_OPTS -a $disk
+2) lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT
+3) /usr/local/bin/verify.sh"
       ;;
     *)
       if [ "$MODE" = "weekly" ]; then
