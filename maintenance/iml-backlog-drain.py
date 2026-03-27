@@ -24,8 +24,8 @@ from urllib import request
 
 
 API_URL = os.environ.get("IMMICH_API_URL", "http://127.0.0.1:2283/api")
-EMAIL = os.environ.get("IMMICH_ADMIN_EMAIL", "jazielcordero@live.com")
-PASSWORD = os.environ.get("IMMICH_ADMIN_PASSWORD", "S1santan")
+EMAIL = os.environ.get("IMMICH_ADMIN_EMAIL", "").strip()
+PASSWORD = os.environ.get("IMMICH_ADMIN_PASSWORD", "").strip()
 SLEEP_SEC = int(os.environ.get("IML_DRAIN_SLEEP_SEC", "20"))
 LOG_EVERY = int(os.environ.get("IML_DRAIN_LOG_EVERY", "15"))
 
@@ -88,6 +88,13 @@ def _ensure_queue_running(name: str, queue: dict, token: str) -> None:
 
 
 def main() -> int:
+    if not EMAIL or not PASSWORD:
+        print(
+            "ERROR: define IMMICH_ADMIN_EMAIL e IMMICH_ADMIN_PASSWORD antes de ejecutar.",
+            flush=True,
+        )
+        return 2
+
     token = _auth()
     started = time.time()
     loops = 0
