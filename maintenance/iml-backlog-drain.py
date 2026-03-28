@@ -38,6 +38,8 @@ DEFAULT_TARGETS = (
     "facialRecognition",
 )
 
+SAFE_QUEUE_COMMANDS = {"pause", "resume", "start"}
+
 DEFAULT_PHASE_ORDER = (
     ("library", "sidecar", "metadataExtraction"),
     ("smartSearch", "duplicateDetection", "ocr", "faceDetection"),
@@ -438,6 +440,10 @@ class ImmichClient:
         return out
 
     def queue_command(self, name: str, command: str) -> bool:
+        # Hard guard: este drenador solo puede pausar/reanudar/iniciar pendientes.
+        # Nunca ejecuta reset/clear/reprocess-all.
+        if command not in SAFE_QUEUE_COMMANDS:
+            raise RuntimeError(f"Comando de cola no permitido: {command}")
         try:
             put_json(
                 f"{self.api_url}/jobs/{name}",
@@ -607,7 +613,7 @@ def main() -> int:
             f"Objetivo: {', '.join(targets)}\n"
             f"{mode_line}\n"
             f"Orden por dependencias: {phase_line}\n"
-            "Accion: resume/start automatico hasta quedar en cero."
+            "Accion: resume/start solo de pendientes (sin reset global)."
         ),
     )
 
