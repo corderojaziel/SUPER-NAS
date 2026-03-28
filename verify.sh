@@ -107,7 +107,7 @@ else
 fi
 
 section "POLÍTICA FOTOS/VIDEOS"
-if grep -q -- '--delete' /usr/local/bin/backup.sh 2>/dev/null; then
+if grep -E '^[[:space:]]*[^#].*--delete' /usr/local/bin/backup.sh 2>/dev/null; then
   fail "backup.sh aún usa --delete sobre respaldos de fotos/videos"
 else
   ok "backup.sh no usa --delete (sin depuración automática de fotos/videos)"
