@@ -72,7 +72,14 @@ if [ "$(echo "$CACHE_GB >= $CRIT_GB" | bc)" -eq 1 ]; then
     if [ "$SHOULD_ALERT" -eq 1 ]; then
         if "$NAS_ALERT_BIN" "🔴 El cache de videos está muy grande
 Ahora ocupa ${CACHE_GB} GB y guarda ${CACHE_FILES} videos temporales.
-Eso equivale al ${RATIO}% del tamaño de tu biblioteca y quedan ${FREE_GB} GB libres en el disco principal."; then
+Eso equivale al ${RATIO}% del tamaño de tu biblioteca y quedan ${FREE_GB} GB libres en el disco principal.
+Qué correr:
+- TV Box: /usr/local/bin/cache-clean.sh
+  Insumo: no aplica.
+- TV Box (si sigue alto): /usr/local/bin/rebuild-video-cache.sh prepare
+  Insumo: automático (genera listas en /var/lib/nas-health/reprocess).
+- PC (pesados): powershell -ExecutionPolicy Bypass -File C:\\Users\\jazie\\SUPERNAS\\powershell\\reprocess_heavy_from_server.ps1 -NoPlan -Limit 50
+  Insumo: automático (descarga plan desde TV Box)."; then
             date +%s > "$LAST_CRIT"
         fi
     fi
@@ -80,11 +87,15 @@ Eso equivale al ${RATIO}% del tamaño de tu biblioteca y quedan ${FREE_GB} GB li
 elif [ "$(echo "$CACHE_GB >= $WARN_GB" | bc)" -eq 1 ]; then
     "$NAS_ALERT_BIN" "🟡 El cache de videos va creciendo
 Ahora ocupa ${CACHE_GB} GB y guarda ${CACHE_FILES} videos temporales.
-Todavía no borro nada, pero conviene vigilar el espacio."
+Todavía no borro nada, pero conviene vigilar el espacio.
+Qué correr (TV Box): /usr/local/bin/cache-monitor.sh
+Insumo: no aplica."
 
 elif [ "$RATIO" -ge "$RATIO_WARN" ]; then
     "$NAS_ALERT_BIN" "🟠 El cache ya es grande comparado con tu biblioteca
 Cache: ${CACHE_GB} GB
 Biblioteca: ${PHOTOS_GB} GB
-Relación actual: ${RATIO}%"
+Relación actual: ${RATIO}%
+Qué correr (TV Box): /usr/local/bin/cache-clean.sh
+Insumo: no aplica."
 fi

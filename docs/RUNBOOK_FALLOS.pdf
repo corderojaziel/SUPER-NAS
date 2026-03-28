@@ -1,0 +1,416 @@
+%PDF-1.4
+%âãÏÓ
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R 10 0 R] /Count 4 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 1889 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+48 750 Td
+(RUNBOOK DE FALLOS v2.1 \(2026-03-27\)) Tj
+T*
+(===================================) Tj
+T*
+() Tj
+T*
+(RUNBOOK DE FALLOS \(TV BOX + PC\)) Tj
+T*
+(-------------------------------) Tj
+T*
+() Tj
+T*
+(Versión: `v2.1`) Tj
+T*
+(Fecha: `2026-03-27`) Tj
+T*
+(PDF versionado: `docs/RUNBOOK_FALLOS_v2.1_2026-03-27.pdf`) Tj
+T*
+() Tj
+T*
+(Este documento define qué hacer cuando llegue una alerta de Telegram.) Tj
+T*
+() Tj
+T*
+(Objetivo:) Tj
+T*
+(? saber **dónde correr** \(TV Box o PC\),) Tj
+T*
+(? saber si el **insumo** es automático o manual,) Tj
+T*
+(? y ejecutar rápido el comando correcto.) Tj
+T*
+() Tj
+T*
+(REGLAS RÁPIDAS) Tj
+T*
+(--------------) Tj
+T*
+(? Si la alerta menciona **disco / temperatura / montajes / backup / cache monitor**: correr en ) Tj
+T*
+(**TV Box**.) Tj
+T*
+(? Si la alerta menciona **videos pesados** o backlog grande de cache: correr en **PC** con GPU.) Tj
+T*
+(? Insumos de video \(`light-latest.csv`, `heavy-latest.csv`, `broken-latest.csv`\) se generan ) Tj
+T*
+(automático en:) Tj
+T*
+(  - `/var/lib/nas-health/reprocess`) Tj
+T*
+() Tj
+T*
+(MATRIZ DE ACCIÓN) Tj
+T*
+(----------------) Tj
+T*
+(1\) REPROCESO NOCTURNO NO INICIA) Tj
+T*
+(-------------------------------) Tj
+T*
+(? Telegram esperado: `? Reproceso nocturno de videos no pudo iniciar`) Tj
+T*
+(? Dónde: TV Box) Tj
+T*
+(? Insumo: no aplica) Tj
+T*
+(? Correr:) Tj
+T*
+(/usr/local/bin/verify.sh) Tj
+T*
+(ls -lah /usr/local/bin/video-reprocess-manager.py) Tj
+T*
+(command -v python3) Tj
+T*
+() Tj
+T*
+(2\) FALLÓ PLANEACIÓN NOCTURNA DE VIDEO) Tj
+T*
+(-------------------------------------) Tj
+T*
+(? Telegram esperado: `? Falló la planeación de reproceso de video`) Tj
+T*
+(? Dónde: TV Box) Tj
+T*
+(? Insumo: automático) Tj
+T*
+(? Correr:) Tj
+T*
+(python3 /usr/local/bin/video-reprocess-manager.py plan --output-dir /var/lib/nas-) Tj
+T*
+(health/reprocess) Tj
+T*
+() Tj
+T*
+(3\) REPROCESO NOCTURNO TERMINÓ CON ERRORES) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 2142 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+48 750 Td
+(-----------------------------------------) Tj
+T*
+(? Telegram esperado: `?? Reproceso nocturno de videos terminó con errores`) Tj
+T*
+(? Dónde:) Tj
+T*
+(  - TV Box para ligeros) Tj
+T*
+(  - PC para pesados) Tj
+T*
+(? Insumo:) Tj
+T*
+(  - TV Box: automático) Tj
+T*
+(  - PC: automático \(se descarga desde server\)) Tj
+T*
+(? Correr:) Tj
+T*
+(TV BOX \(LIGEROS\)) Tj
+T*
+(----------------) Tj
+T*
+(python3 /usr/local/bin/video-reprocess-manager.py run --class light --output-dir /var/lib/nas-) Tj
+T*
+(health/reprocess --limit 0) Tj
+T*
+(PC \(PESADOS\)) Tj
+T*
+(------------) Tj
+T*
+(powershell -ExecutionPolicy Bypass -File ) Tj
+T*
+(C:\\Users\\jazie\\SUPERNAS\\powershell\\reprocess_heavy_from_server.ps1 -NoPlan -Limit 50) Tj
+T*
+() Tj
+T*
+(4\) PLACEHOLDER EXCESIVO / VIDEOS NO REPRODUCEN) Tj
+T*
+(----------------------------------------------) Tj
+T*
+(? Dónde: TV Box para auditoría, luego TV Box o PC según clase.) Tj
+T*
+(? Insumo:) Tj
+T*
+(  - auditoría: no aplica) Tj
+T*
+(  - plan de video: automático) Tj
+T*
+(? Correr:) Tj
+T*
+(python3 /usr/local/bin/audit_video_playback.py --email "TU_EMAIL" --password "TU_PASSWORD") Tj
+T*
+(python3 /usr/local/bin/video-reprocess-manager.py plan --output-dir /var/lib/nas-) Tj
+T*
+(health/reprocess) Tj
+T*
+() Tj
+T*
+(4.1\) AUDITORÍA PLAYBACK AUTOMÁTICA \(NUEVO\)) Tj
+T*
+(------------------------------------------) Tj
+T*
+(? Script: `/usr/local/bin/playback-audit-autoheal.sh`) Tj
+T*
+(? Qué hace:) Tj
+T*
+(  - audita por HTTP todos los videos \(`playable/processing/error`\)) Tj
+T*
+(  - notifica resultado por Telegram) Tj
+T*
+(  - si detecta rotos, corre autocorrección automática en TV Box para candidatos ligeros) Tj
+T*
+(? Insumo:) Tj
+T*
+(  - automático) Tj
+T*
+(  - requiere `IMMICH_API_KEY` o `IMMICH_ADMIN_EMAIL` + `IMMICH_ADMIN_PASSWORD` en `/etc/nas-) Tj
+T*
+(secrets`) Tj
+T*
+() Tj
+T*
+(5\) ALERTA SMART WARN / CRIT) Tj
+T*
+(---------------------------) Tj
+T*
+(? Telegram esperado: `?? Conviene revisar ...` o `? ... necesita atención`) Tj
+T*
+(? La alerta debe indicar: **disco exacto `/dev/...` + modelo/serial**.) Tj
+T*
+(? Dónde: TV Box) Tj
+T*
+(? Insumo: no aplica) Tj
+T*
+(? Correr:) Tj
+ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 1875 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+48 750 Td
+(smartctl -a /dev/sdX) Tj
+T*
+(/usr/local/bin/smart-check.sh daily) Tj
+T*
+(lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT) Tj
+T*
+(/usr/local/bin/verify.sh) Tj
+T*
+() Tj
+T*
+(6\) ALERTA DE MONTAJE CAÍDO) Tj
+T*
+(--------------------------) Tj
+T*
+(? Telegram esperado: `? Detecté un problema con ...`) Tj
+T*
+(? La alerta debe indicar: punto de montaje y disco esperado.) Tj
+T*
+(? Dónde: TV Box) Tj
+T*
+(? Insumo: no aplica) Tj
+T*
+(? Correr:) Tj
+T*
+(lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT) Tj
+T*
+(mount | grep -E '/mnt/storage-main|/mnt/storage-backup|/mnt/merged') Tj
+T*
+(/usr/local/bin/verify.sh) Tj
+T*
+() Tj
+T*
+(7\) ALERTA CACHE CRÍTICO) Tj
+T*
+(-----------------------) Tj
+T*
+(? Telegram esperado: `? El cache de videos está muy grande`) Tj
+T*
+(? Dónde:) Tj
+T*
+(  - TV Box para limpieza/plan) Tj
+T*
+(  - PC para pesados) Tj
+T*
+(? Insumo:) Tj
+T*
+(  - TV Box: automático) Tj
+T*
+(  - PC: automático \(pull desde server\)) Tj
+T*
+(? Correr:) Tj
+T*
+(/usr/local/bin/cache-clean.sh) Tj
+T*
+(/usr/local/bin/rebuild-video-cache.sh prepare) Tj
+T*
+(powershell -ExecutionPolicy Bypass -File ) Tj
+T*
+(C:\\Users\\jazie\\SUPERNAS\\powershell\\reprocess_heavy_from_server.ps1 -NoPlan -Limit 50) Tj
+T*
+() Tj
+T*
+(8\) TEMPERATURA ALTA / CRÍTICA) Tj
+T*
+(-----------------------------) Tj
+T*
+(? Telegram esperado: `?? ...` o `? Temperatura crítica ...`) Tj
+T*
+(? Dónde: TV Box) Tj
+T*
+(? Insumo: no aplica) Tj
+T*
+(? Correr:) Tj
+T*
+(/usr/local/bin/verify.sh) Tj
+T*
+(/usr/local/bin/immich-ml-window.sh day-off) Tj
+T*
+(cat /sys/class/thermal/thermal_zone*/temp) Tj
+T*
+() Tj
+T*
+(9\) BACKUP FALLÓ O FUE POSPUESTO) Tj
+T*
+(-------------------------------) Tj
+T*
+(? Telegram esperado: `?? Copia de seguridad pospuesta` o `? No se pudo completar...`) Tj
+T*
+(? Dónde: TV Box) Tj
+T*
+(? Insumo: no aplica) Tj
+T*
+(? Correr:) Tj
+T*
+(tail -n 120 /var/log/night-run.log) Tj
+ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 1095 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+48 750 Td
+(nice -n 15 ionice -c2 -n7 /usr/local/bin/backup.sh) Tj
+T*
+(/usr/local/bin/verify.sh) Tj
+T*
+() Tj
+T*
+(RECUPERACIÓN TOTAL DE CACHE \(DESASTRE\)) Tj
+T*
+(--------------------------------------) Tj
+T*
+(? Script: `/usr/local/bin/rebuild-video-cache.sh`) Tj
+T*
+(? Modos:) Tj
+T*
+(/usr/local/bin/rebuild-video-cache.sh prepare) Tj
+T*
+(/usr/local/bin/rebuild-video-cache.sh light-only) Tj
+T*
+(/usr/local/bin/rebuild-video-cache.sh tvbox-all) Tj
+T*
+() Tj
+T*
+(Recomendación:) Tj
+T*
+(1. `prepare`) Tj
+T*
+(2. `light-only` \(TV Box\)) Tj
+T*
+(3. pesados por lotes en PC \(`reprocess_heavy_from_server.ps1`\)) Tj
+T*
+() Tj
+T*
+(VALIDACIÓN FINAL) Tj
+T*
+(----------------) Tj
+T*
+(/usr/local/bin/verify.sh) Tj
+T*
+(python3 /usr/local/bin/audit_video_playback.py --email "TU_EMAIL" --password "TU_PASSWORD") Tj
+T*
+() Tj
+T*
+(CÓMO GENERAR NUEVA VERSIÓN DEL PDF) Tj
+T*
+(----------------------------------) Tj
+T*
+(python3 tools/build_runbook_pdf.py --input docs/RUNBOOK_FALLOS.md --output ) Tj
+T*
+(docs/RUNBOOK_FALLOS_v2.1_2026-03-27.pdf --title "RUNBOOK DE FALLOS v2.1 \(2026-03-27\)") Tj
+ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000140 00000 n 
+0000000210 00000 n 
+0000000336 00000 n 
+0000002276 00000 n 
+0000002402 00000 n 
+0000004595 00000 n 
+0000004721 00000 n 
+0000006647 00000 n 
+0000006775 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R >>
+startxref
+7922
+%%EOF

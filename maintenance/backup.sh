@@ -31,19 +31,31 @@ DB_STATUS="${DB_STATUS:-OK}"
 if [ "$MOUNT_STATUS" = "CRIT" ]; then
   alert "⏭️ Copia de seguridad pospuesta
 No pude ver bien los discos montados del NAS.
-Para evitar un respaldo incompleto, hoy no corrí la copia."
+Para evitar un respaldo incompleto, hoy no corrí la copia.
+Qué correr (TV Box, sin insumo):
+Insumo: no aplica.
+1) /usr/local/bin/verify.sh
+2) lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT"
   exit 0
 fi
 if [ "$SMART_STATUS" = "CRIT" ]; then
   alert "⏭️ Copia de seguridad pospuesta
 Uno de los discos reportó un problema serio.
-Para no forzarlo más, hoy no hice el respaldo."
+Para no forzarlo más, hoy no hice el respaldo.
+Qué correr (TV Box, sin insumo):
+Insumo: no aplica.
+1) /usr/local/bin/smart-check.sh daily
+2) /usr/local/bin/verify.sh"
   exit 0
 fi
 if [ "$EMMC_STATUS" = "CRIT" ]; then
   alert "⏭️ Copia de seguridad pospuesta
 La memoria interna del NAS está casi llena.
-Primero hay que estabilizar el equipo."
+Primero hay que estabilizar el equipo.
+Qué correr (TV Box, sin insumo):
+Insumo: no aplica.
+1) df -h /var/lib/immich
+2) /usr/local/bin/cache-monitor.sh"
   exit 0
 fi
 if [ "$DB_STATUS" = "CRIT" ]; then
@@ -67,7 +79,11 @@ Esto suele pasar si alguien estaba usando Immich al mismo tiempo."
     exit 0
   fi
   alert "❌ No se pudo completar la copia de seguridad
-El respaldo del día $TODAY terminó con un error."
+El respaldo del día $TODAY terminó con un error.
+Qué correr (TV Box, sin insumo):
+Insumo: no aplica.
+1) tail -n 120 /var/log/night-run.log
+2) nice -n 15 ionice -c2 -n7 /usr/local/bin/backup.sh"
   exit "$code"
 fi
 

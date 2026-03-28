@@ -96,10 +96,25 @@ else
 fi
 
 section "SCRIPTS DE MANTENIMIENTO"
-for f in /usr/local/bin/video-optimize.sh /usr/local/bin/backup.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh; do
+for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh; do
   if [ -x "$f" ]; then bash -n "$f" >/dev/null 2>&1 && ok "$f instalado y sintaxis válida" || fail "$f con errores de sintaxis"; else fail "$f ausente"; fi
 done
 [ -x /usr/local/bin/immich-video-playback-resolver.py ] && python3 -m py_compile /usr/local/bin/immich-video-playback-resolver.py >/dev/null 2>&1 && ok "/usr/local/bin/immich-video-playback-resolver.py instalado y sintaxis válida" || fail "/usr/local/bin/immich-video-playback-resolver.py ausente o inválido"
+if [ -x /usr/local/bin/reconcile-emmc-cache.py ]; then
+  python3 -m py_compile /usr/local/bin/reconcile-emmc-cache.py >/dev/null 2>&1 && ok "/usr/local/bin/reconcile-emmc-cache.py instalado y sintaxis válida" || fail "/usr/local/bin/reconcile-emmc-cache.py con errores de sintaxis"
+else
+  warn "/usr/local/bin/reconcile-emmc-cache.py no instalado"
+fi
+if [ -x /usr/local/bin/video-reprocess-manager.py ]; then
+  python3 -m py_compile /usr/local/bin/video-reprocess-manager.py >/dev/null 2>&1 && ok "/usr/local/bin/video-reprocess-manager.py instalado y sintaxis válida" || fail "/usr/local/bin/video-reprocess-manager.py con errores de sintaxis"
+else
+  warn "/usr/local/bin/video-reprocess-manager.py no instalado"
+fi
+if [ -x /usr/local/bin/audit_video_playback.py ]; then
+  python3 -m py_compile /usr/local/bin/audit_video_playback.py >/dev/null 2>&1 && ok "/usr/local/bin/audit_video_playback.py instalado y sintaxis válida" || fail "/usr/local/bin/audit_video_playback.py con errores de sintaxis"
+else
+  warn "/usr/local/bin/audit_video_playback.py no instalado"
+fi
 
 section "HEALTH STATES"
 for f in /var/lib/nas-health/mount-status.env /var/lib/nas-health/smart-status.env /var/lib/nas-health/storage-status.env /var/lib/nas-health/db-status.env; do
@@ -111,18 +126,62 @@ if [ -f /etc/nginx/sites-enabled/immich.conf ]; then
   grep -q 'video-processing.mp4' /etc/nginx/sites-enabled/immich.conf && ok "Placeholder de video cableado en nginx" || fail "Nginx no referencia video-processing.mp4"
   grep -q 'video-processing-portrait.mp4' /etc/nginx/sites-enabled/immich.conf && ok "Placeholder vertical cableado en nginx" || fail "Nginx no referencia video-processing-portrait.mp4"
   grep -q '__cache-video/' /etc/nginx/sites-enabled/immich.conf && ok "Alias interno del cache de video presente" || fail "Nginx no expone el cache de video interno"
+  if grep -q 'alias /var/lib/immich/cache/' /etc/nginx/sites-enabled/immich.conf; then
+    ok "Nginx sirve el cache de video desde eMMC"
+  else
+    fail "Nginx no apunta al cache canonico /var/lib/immich/cache"
+  fi
+  if grep -q 'location /__cache-video-legacy/' /etc/nginx/sites-enabled/immich.conf && grep -q 'alias /mnt/storage-main/cache/' /etc/nginx/sites-enabled/immich.conf; then
+    ok "Compatibilidad con cache legado en HDD presente"
+  else
+    warn "No encontre el fallback opcional al cache legado en HDD"
+  fi
   grep -q '__immich-direct/' /etc/nginx/sites-enabled/immich.conf && ok "Alias interno del playback directo presente" || fail "Nginx no expone el playback directo interno"
   grep -q '127.0.0.1:2284' /etc/nginx/sites-enabled/immich.conf && ok "Playback web pasa por el resolutor local" || fail "Playback web no pasa por el resolutor local"
+  if grep -q '/api/socket.io/' /etc/nginx/sites-enabled/immich.conf && grep -q 'proxy_set_header Upgrade' /etc/nginx/sites-enabled/immich.conf; then
+    ok "Proxy WebSocket de Immich presente"
+  else
+    warn "No encontre el proxy WebSocket de Immich en nginx"
+  fi
 else
   fail "immich.conf no existe en nginx"
 fi
 [ -f /var/lib/immich/static/video-processing.mp4 ] && ok "Placeholder MP4 presente" || warn "Placeholder MP4 no encontrado"
 [ -f /var/lib/immich/static/video-processing-portrait.mp4 ] && ok "Placeholder MP4 vertical presente" || warn "Placeholder MP4 vertical no encontrado"
+[ -f /var/lib/immich/static/video-damaged.mp4 ] && ok "Placeholder MP4 archivo danado presente" || warn "Placeholder archivo danado no encontrado"
+[ -f /var/lib/immich/static/video-damaged-portrait.mp4 ] && ok "Placeholder MP4 archivo danado vertical presente" || warn "Placeholder archivo danado vertical no encontrado"
+[ -f /var/lib/immich/static/video-missing.mp4 ] && ok "Placeholder MP4 archivo no encontrado presente" || warn "Placeholder archivo no encontrado no encontrado"
+[ -f /var/lib/immich/static/video-missing-portrait.mp4 ] && ok "Placeholder MP4 archivo no encontrado vertical presente" || warn "Placeholder archivo no encontrado vertical no encontrado"
+[ -f /var/lib/immich/static/video-error.mp4 ] && ok "Placeholder MP4 error temporal presente" || warn "Placeholder error temporal no encontrado"
+[ -f /var/lib/immich/static/video-error-portrait.mp4 ] && ok "Placeholder MP4 error temporal vertical presente" || warn "Placeholder error temporal vertical no encontrado"
 [ -f /etc/default/nas-video-policy ] && ok "Politica de video presente" || warn "No encontre /etc/default/nas-video-policy"
+if [ -f /etc/default/nas-video-policy ] && grep -q '^VIDEO_PLAYBACK_BROWSER_CACHE_SEC=' /etc/default/nas-video-policy; then
+  ok "Politica define VIDEO_PLAYBACK_BROWSER_CACHE_SEC"
+fi
+if [ -f /etc/default/nas-video-policy ] && grep -q '^VIDEO_REPROCESS_LIGHT_LIMIT=' /etc/default/nas-video-policy; then
+  ok "Politica define VIDEO_REPROCESS_LIGHT_LIMIT"
+else
+  warn "Politica no define VIDEO_REPROCESS_LIGHT_LIMIT"
+fi
+if [ -f /etc/default/nas-video-policy ] && grep -q '^VIDEO_REPROCESS_MANUAL_QUEUE=' /etc/default/nas-video-policy; then
+  ok "Politica define VIDEO_REPROCESS_MANUAL_QUEUE"
+else
+  warn "Politica no define VIDEO_REPROCESS_MANUAL_QUEUE"
+fi
 if systemctl is-active --quiet immich-video-playback-resolver 2>/dev/null; then
   ok "Resolutor de playback web activo"
 else
   fail "Resolutor de playback web no activo"
+fi
+if systemctl cat immich-video-playback-resolver 2>/dev/null | grep -q 'Environment=CACHE_ROOT=/var/lib/immich/cache'; then
+  ok "Resolutor usa el cache de video en eMMC"
+else
+  fail "No pude confirmar el CACHE_ROOT del resolutor"
+fi
+if systemctl cat immich-video-playback-resolver 2>/dev/null | grep -q 'Environment=LEGACY_CACHE_ROOTS=/mnt/storage-main/cache'; then
+  ok "Resolutor tiene fallback al cache legado en HDD"
+else
+  warn "No encontre fallback al cache legado en HDD en el resolutor"
 fi
 
 section "CRONTAB"
