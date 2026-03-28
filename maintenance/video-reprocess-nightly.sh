@@ -40,7 +40,11 @@ VIDEO_REPROCESS_MANUAL_QUEUE="${VIDEO_REPROCESS_MANUAL_QUEUE:-$STATE_DIR/video-r
 # Nuevos controles por carga
 VIDEO_REPROCESS_MAX_CPU_PCT="${VIDEO_REPROCESS_MAX_CPU_PCT:-72}"
 VIDEO_REPROCESS_MAX_MEM_PCT="${VIDEO_REPROCESS_MAX_MEM_PCT:-82}"
+VIDEO_REPROCESS_MAX_TEMP_C="${VIDEO_REPROCESS_MAX_TEMP_C:-75}"
 VIDEO_REPROCESS_CPU_SAMPLE_SEC="${VIDEO_REPROCESS_CPU_SAMPLE_SEC:-2}"
+VIDEO_REPROCESS_REQUEST_LOG_PATH="${VIDEO_REPROCESS_REQUEST_LOG_PATH:-/var/log/nginx/access.log}"
+VIDEO_REPROCESS_REQUEST_WINDOW_SEC="${VIDEO_REPROCESS_REQUEST_WINDOW_SEC:-20}"
+VIDEO_REPROCESS_MAX_REQUESTS_PER_WINDOW="${VIDEO_REPROCESS_MAX_REQUESTS_PER_WINDOW:-8}"
 VIDEO_REPROCESS_BATCH_LIGHT="${VIDEO_REPROCESS_BATCH_LIGHT:-35}"
 VIDEO_REPROCESS_BATCH_HEAVY="${VIDEO_REPROCESS_BATCH_HEAVY:-5}"
 VIDEO_REPROCESS_MAX_RUNTIME_MIN="${VIDEO_REPROCESS_MAX_RUNTIME_MIN:-170}"
@@ -146,15 +150,88 @@ mem_used_pct() {
   ' /proc/meminfo
 }
 
+cpu_temp_c() {
+  local z raw
+  for z in /sys/class/thermal/thermal_zone*/temp; do
+    [ -f "$z" ] || continue
+    raw="$(cat "$z" 2>/dev/null || true)"
+    [ -n "$raw" ] || continue
+    awk -v t="$raw" '
+      BEGIN {
+        v = t + 0
+        if (v > 1000) v = v / 1000.0
+        if (v > 0 && v < 130) { printf "%.1f\n", v; exit 0 }
+        exit 1
+      }' && return 0
+  done
+  if command -v sensors >/dev/null 2>&1; then
+    raw="$(sensors 2>/dev/null | grep -Eo '[+-]?[0-9]+(\.[0-9]+)?°C' | head -1 | tr -d '+°C' || true)"
+    if [ -n "$raw" ]; then
+      awk -v t="$raw" 'BEGIN{v=t+0; if(v>0 && v<130){printf "%.1f\n", v; exit 0} exit 1}' && return 0
+    fi
+  fi
+  echo "0.0"
+}
+
+recent_requests_count() {
+  python3 - "$VIDEO_REPROCESS_REQUEST_LOG_PATH" "$VIDEO_REPROCESS_REQUEST_WINDOW_SEC" <<'PY'
+import os
+import re
+import sys
+import subprocess
+from datetime import datetime, timezone
+
+path = sys.argv[1]
+window = int(float(sys.argv[2])) if len(sys.argv) > 2 else 0
+if window <= 0 or not path or not os.path.isfile(path):
+    print(0)
+    raise SystemExit(0)
+
+try:
+    out = subprocess.run(
+        ["tail", "-n", "1200", path],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ).stdout or ""
+except Exception:
+    print(0)
+    raise SystemExit(0)
+
+pat = re.compile(r"\[(\d{2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4})\]")
+now = datetime.now(timezone.utc)
+count = 0
+for line in out.splitlines():
+    m = pat.search(line)
+    if not m:
+        continue
+    try:
+        dt = datetime.strptime(m.group(1), "%d/%b/%Y:%H:%M:%S %z").astimezone(timezone.utc)
+    except ValueError:
+        continue
+    if (now - dt).total_seconds() <= window:
+        count += 1
+
+print(count)
+PY
+}
+
 is_busy_now() {
-  local cpu mem
+  local cpu mem req temp
   cpu="$(cpu_busy_pct)"
   mem="$(mem_used_pct)"
+  temp="$(cpu_temp_c)"
+  req="$(recent_requests_count)"
   LAST_CPU="$cpu"
   LAST_MEM="$mem"
-  awk -v cpu="$cpu" -v mem="$mem" -v cmax="$VIDEO_REPROCESS_MAX_CPU_PCT" -v mmax="$VIDEO_REPROCESS_MAX_MEM_PCT" '
+  LAST_TEMP="$temp"
+  LAST_REQ="$req"
+  awk -v cpu="$cpu" -v mem="$mem" -v temp="$temp" -v req="$req" -v cmax="$VIDEO_REPROCESS_MAX_CPU_PCT" -v mmax="$VIDEO_REPROCESS_MAX_MEM_PCT" -v tmax="$VIDEO_REPROCESS_MAX_TEMP_C" -v rmax="$VIDEO_REPROCESS_MAX_REQUESTS_PER_WINDOW" '
     BEGIN {
       if (cpu > cmax || mem > mmax) exit 0;
+      if (temp > tmax) exit 0;
+      if (rmax > 0 && req > rmax) exit 0;
       exit 1;
     }'
 }
@@ -304,13 +381,15 @@ Acción: continuará en la siguiente ventana automática."
     fi
 
     if is_busy_now; then
-      log "BUSY: cpu=${LAST_CPU}% mem=${LAST_MEM}% -> pausa"
+      log "BUSY: cpu=${LAST_CPU}% mem=${LAST_MEM}% temp=${LAST_TEMP}C req=${LAST_REQ}/${VIDEO_REPROCESS_REQUEST_WINDOW_SEC}s -> pausa"
       alert_throttled \
         "video_reprocess:busy" \
         "$VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC" \
         "⏸️ Reproceso de videos en pausa automática por carga
 CPU: ${LAST_CPU}% (umbral ${VIDEO_REPROCESS_MAX_CPU_PCT}%)
 RAM: ${LAST_MEM}% (umbral ${VIDEO_REPROCESS_MAX_MEM_PCT}%)
+Temp CPU: ${LAST_TEMP}°C (umbral ${VIDEO_REPROCESS_MAX_TEMP_C}°C)
+Requests: ${LAST_REQ}/${VIDEO_REPROCESS_REQUEST_WINDOW_SEC}s (umbral ${VIDEO_REPROCESS_MAX_REQUESTS_PER_WINDOW})
 Reanuda solo cuando baje la carga."
       sleep "$VIDEO_REPROCESS_IDLE_SLEEP_SEC"
       continue
@@ -327,7 +406,7 @@ Reanuda solo cuando baje la carga."
 
     if [ "$VIDEO_REPROCESS_HEAVY_ENABLED" = "1" ] && [ "$heavy_total" -gt 0 ]; then
       if is_busy_now; then
-        log "BUSY antes de heavy: cpu=${LAST_CPU}% mem=${LAST_MEM}% -> se difiere heavy"
+        log "BUSY antes de heavy: cpu=${LAST_CPU}% mem=${LAST_MEM}% temp=${LAST_TEMP}C req=${LAST_REQ}/${VIDEO_REPROCESS_REQUEST_WINDOW_SEC}s -> se difiere heavy"
       else
         limit_heavy="$VIDEO_REPROCESS_BATCH_HEAVY"
         if [ "$VIDEO_REPROCESS_HEAVY_LIMIT" -gt 0 ] && [ "$VIDEO_REPROCESS_HEAVY_LIMIT" -lt "$limit_heavy" ]; then
@@ -387,5 +466,5 @@ Pesados convertidos en TV Box: $HEAVY_CONVERTED
 Fallidos totales: $TOTAL_FAILED
 Pendientes manuales acumulados: $MANUAL_TOTAL
 Modo: $MODE_LABEL
-Control de carga (si está activo): CPU<=${VIDEO_REPROCESS_MAX_CPU_PCT}% RAM<=${VIDEO_REPROCESS_MAX_MEM_PCT}%."
+Control de carga (si está activo): CPU<=${VIDEO_REPROCESS_MAX_CPU_PCT}% RAM<=${VIDEO_REPROCESS_MAX_MEM_PCT}% TEMP<=${VIDEO_REPROCESS_MAX_TEMP_C}°C REQ<=${VIDEO_REPROCESS_MAX_REQUESTS_PER_WINDOW}/${VIDEO_REPROCESS_REQUEST_WINDOW_SEC}s."
 exit 0
