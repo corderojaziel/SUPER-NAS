@@ -433,7 +433,7 @@ if [ "${DB_STATUS:-OK}" != "CRIT" ] && [ "${GLOBAL_MOUNT_STATUS:-OK}" != "CRIT" 
   DB_TMP="$DB_FILE.tmp"
   DB_USER=$(db_username)
   mkdir -p "$DB_DEST"
-  if timeout 20m bash -lc "set -o pipefail; docker exec immich_postgres pg_dumpall --clean --if-exists --username='$DB_USER' | gzip > '$DB_TMP'"; then
+if timeout 20m bash -lc "set -o pipefail; \"$DOCKER_BIN\" exec immich_postgres pg_dumpall --clean --if-exists --username='$DB_USER' | gzip > '$DB_TMP'"; then
     mv -f "$DB_TMP" "$DB_FILE"
     find "$DB_DEST" -name '*.sql.gz' -mtime +7 -delete
     DBDUMP_RES="OK"

@@ -12,6 +12,7 @@ ALERT_MODE="${ALERT_MODE:-fake}"
 ALERT_THROTTLE_SEC="${ALERT_THROTTLE_SEC:-1}"
 REAL_TELEGRAM_TOKEN="${REAL_TELEGRAM_TOKEN:-}"
 REAL_TELEGRAM_CHAT_ID="${REAL_TELEGRAM_CHAT_ID:-}"
+TEST_ONLY="${TEST_ONLY:-all}"
 
 mkdir -p "$ROOT" "$FAKEBIN" "$MESSAGES_DIR" "$ORIG_DIR"
 : > "$BACKED_UP"
@@ -73,7 +74,13 @@ EOF
     write_file "/usr/local/bin/nas-alert.sh" <<EOF
 #!/bin/bash
 set -euo pipefail
-"$REPO_ROOT/scripts/nas-alert.sh" "\$@"
+ROOT="/tmp/nas-alert-coverage"
+SCENARIO="\${ALERT_SCENARIO:-unspecified}"
+DIR="\$ROOT/messages/\$SCENARIO"
+mkdir -p "\$DIR"
+STAMP="\$(date +%s%N)-\$\$"
+printf '%s\n' "\$1" > "\$DIR/\$STAMP.txt"
+bash "$REPO_ROOT/scripts/nas-alert.sh" "\$@"
 rc=\$?
 sleep "$ALERT_THROTTLE_SEC"
 exit \$rc
@@ -288,6 +295,7 @@ install_night_stubs() {
     /usr/local/bin/mount-guard.sh \
     /usr/local/bin/smart-check.sh \
     /usr/local/bin/video-optimize.sh \
+    /usr/local/bin/video-reprocess-nightly.sh \
     /usr/local/bin/backup.sh \
     /usr/local/bin/cache-monitor.sh \
     /usr/local/bin/cache-clean.sh; do
@@ -313,6 +321,15 @@ EOF
 
   write_file "/usr/local/bin/video-optimize.sh" <<'EOF'
 #!/bin/bash
+exit "${FAKE_VIDEO_RC:-0}"
+EOF
+
+  write_file "/usr/local/bin/video-reprocess-nightly.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+if [ -n "${FAKE_TIMEOUT_TARGET:-}" ] && [ "$FAKE_TIMEOUT_TARGET" = "/usr/local/bin/video-reprocess-nightly.sh" ]; then
+  exit 124
+fi
 exit "${FAKE_VIDEO_RC:-0}"
 EOF
 
@@ -437,12 +454,13 @@ run_cache_scenarios() {
   local monitor="$REPO_ROOT/maintenance/cache-monitor.sh"
   local cache_root="$ROOT/cache"
   local photos_root="$ROOT/photos"
-  local orphan_name="alert-coverage-$(date +%s%N).mp4"
+  local orphan_uuid
+  orphan_uuid="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "00000000-0000-0000-0000-000000000001")"
 
-  mkdir -p /var/lib/immich/cache/coverage
-  find /mnt/merged -type f -name "$orphan_name" -delete 2>/dev/null || true
-  rm -f "/var/lib/immich/cache/coverage/$orphan_name"
-  touch "/var/lib/immich/cache/coverage/$orphan_name"
+  mkdir -p "/var/lib/immich/cache/upload/aa/bb"
+  rm -f "/var/lib/immich/cache/upload/aa/bb/${orphan_uuid}.mp4"
+  rm -rf "/mnt/storage-main/photos/upload/aa/bb"
+  touch "/var/lib/immich/cache/upload/aa/bb/${orphan_uuid}.mp4"
   start_scenario "cache_clean"
   bash "$clean" || true
 
@@ -617,6 +635,7 @@ run_night_scenarios() {
 
   start_scenario "night_mount_crit"
   PATH="$FAKEBIN:$PATH" \
+    DOCKER_BIN="$FAKEBIN/docker" \
     FAKE_MOUNT_MODE=all_down \
     FAKE_DF_PCT=10 FAKE_DF_FREE_MB=5000 \
     FAKE_DOCKER_STATE=normal \
@@ -625,6 +644,7 @@ run_night_scenarios() {
 
   start_scenario "night_emmc_crit"
   PATH="$FAKEBIN:$PATH" \
+    DOCKER_BIN="$FAKEBIN/docker" \
     FAKE_MOUNT_MODE=all_up \
     FAKE_DF_PCT=91 FAKE_DF_FREE_MB=1000 \
     FAKE_DOCKER_STATE=normal \
@@ -633,6 +653,7 @@ run_night_scenarios() {
 
   start_scenario "night_emmc_warn"
   PATH="$FAKEBIN:$PATH" \
+    DOCKER_BIN="$FAKEBIN/docker" \
     FAKE_MOUNT_MODE=all_up \
     FAKE_DF_PCT=81 FAKE_DF_FREE_MB=2500 \
     FAKE_DOCKER_STATE=normal \
@@ -641,6 +662,7 @@ run_night_scenarios() {
 
   start_scenario "night_db_restart"
   PATH="$FAKEBIN:$PATH" \
+    DOCKER_BIN="$FAKEBIN/docker" \
     FAKE_MOUNT_MODE=all_up \
     FAKE_DF_PCT=10 FAKE_DF_FREE_MB=5000 \
     FAKE_DOCKER_STATE=restart \
@@ -649,6 +671,7 @@ run_night_scenarios() {
 
   start_scenario "night_db_down"
   PATH="$FAKEBIN:$PATH" \
+    DOCKER_BIN="$FAKEBIN/docker" \
     FAKE_MOUNT_MODE=all_up \
     FAKE_DF_PCT=10 FAKE_DF_FREE_MB=5000 \
     FAKE_DOCKER_STATE=down \
@@ -657,6 +680,7 @@ run_night_scenarios() {
 
   start_scenario "night_db_missing"
   PATH="$FAKEBIN:$PATH" \
+    DOCKER_BIN="$FAKEBIN/docker" \
     FAKE_MOUNT_MODE=all_up \
     FAKE_DF_PCT=10 FAKE_DF_FREE_MB=5000 \
     FAKE_DOCKER_STATE=missing \
@@ -665,15 +689,17 @@ run_night_scenarios() {
 
   start_scenario "night_task_timeout"
   PATH="$FAKEBIN:$PATH" \
+    DOCKER_BIN="$FAKEBIN/docker" \
     FAKE_MOUNT_MODE=all_up \
     FAKE_DF_PCT=10 FAKE_DF_FREE_MB=5000 \
     FAKE_DOCKER_STATE=normal \
-    FAKE_TIMEOUT_TARGET="/usr/local/bin/video-optimize.sh" \
+    FAKE_TIMEOUT_TARGET="/usr/local/bin/video-reprocess-nightly.sh" \
     FAKE_NIGHT_SMART_STATUS=OK \
     bash "$script" || true
 
   start_scenario "night_task_fail"
   PATH="$FAKEBIN:$PATH" \
+    DOCKER_BIN="$FAKEBIN/docker" \
     FAKE_MOUNT_MODE=all_up \
     FAKE_DF_PCT=10 FAKE_DF_FREE_MB=5000 \
     FAKE_DOCKER_STATE=normal \
@@ -683,6 +709,7 @@ run_night_scenarios() {
 
   start_scenario "night_dbdump_fail"
   PATH="$FAKEBIN:$PATH" \
+    DOCKER_BIN="$FAKEBIN/docker" \
     FAKE_MOUNT_MODE=all_up \
     FAKE_DF_PCT=10 FAKE_DF_FREE_MB=5000 \
     FAKE_DOCKER_STATE=dumpfail \
@@ -691,6 +718,7 @@ run_night_scenarios() {
 
   start_scenario "night_ok"
   PATH="$FAKEBIN:$PATH" \
+    DOCKER_BIN="$FAKEBIN/docker" \
     FAKE_MOUNT_MODE=all_up \
     FAKE_DF_PCT=10 FAKE_DF_FREE_MB=5000 \
     FAKE_DOCKER_STATE=normal \
@@ -713,14 +741,25 @@ main() {
   install_alert_backend
   install_fake_tools
 
-  run_backup_scenarios
-  run_cache_scenarios
-  run_ml_scenarios
-  run_mount_scenarios
-  run_retry_scenarios
-  run_smart_scenarios
-  run_video_scenarios
-  run_night_scenarios
+  case "$TEST_ONLY" in
+    all)
+      run_backup_scenarios
+      run_cache_scenarios
+      run_ml_scenarios
+      run_mount_scenarios
+      run_retry_scenarios
+      run_smart_scenarios
+      run_video_scenarios
+      run_night_scenarios
+      ;;
+    night)
+      run_night_scenarios
+      ;;
+    *)
+      echo "TEST_ONLY inválido: $TEST_ONLY (usa: all|night)" >&2
+      exit 2
+      ;;
+  esac
 
   local total=0 covered=0
   while IFS='|' read -r key pattern; do
