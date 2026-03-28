@@ -1071,6 +1071,7 @@ SCRIPTS=(
     "manual-retention.sh" # Depuracion manual de respaldos (sin auto-borrado)
     "mount-guard.sh"     # Detecta desmontajes/remontajes y notifica Telegram
     "post-upload-check.sh" # Verificacion puntual del flujo tras subir un asset
+    "audit-snapshot.sh"  # Bitacora operativa periodica (CPU/RAM/colas/montajes)
 )
 
 for script in "${SCRIPTS[@]}"; do
@@ -1368,6 +1369,10 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 # automáticamente según CPU/RAM/temperatura/requests.
 */10 * * * * /usr/local/bin/video-autopilot.sh
 
+# ── Auditoría operativa continua ───────────────────────────────────────────
+# Deja traza histórica para diagnóstico (sin depurar fotos/videos).
+*/5 * * * * /usr/local/bin/audit-snapshot.sh
+
 # ── Mantenimiento mensual — día 1: SMART extendido ───────────────────────
 # Test corto no destructivo (~2 min). El disco sigue operando normalmente.
 # Verifica superficie del disco y monitorea Load/Unload cycles.
@@ -1394,7 +1399,7 @@ if crontab -l 2>/dev/null | grep -q "night-run"; then
     log_warn "Crontab ya tiene night-run — omitiendo (revisar manualmente con: crontab -e)"
 else
     { crontab -l 2>/dev/null || true; echo "$CRON_CONTENT"; } | crontab -
-    log_ok "Crontab configurado (10 entradas)"
+    log_ok "Crontab configurado (11 entradas)"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
