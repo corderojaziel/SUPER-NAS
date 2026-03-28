@@ -4,6 +4,51 @@ Infraestructura NAS casera basada en TV Box S905X3, optimizada para ingestión, 
 
 ---
 
+## ✅ Prerrequisitos de instalación
+
+Antes de ejecutar `install.sh`, confirma lo siguiente:
+
+* TV Box con Armbian/Ubuntu Linux (acceso por `root` o usuario con `sudo`)
+* 2 discos detectados por el sistema (`DISK_PHOTOS` y `DISK_BACKUP`)
+* Conectividad a internet (instalación de Docker, paquetes y Tailscale)
+* Repositorio clonado localmente
+* Archivo `config/nas.conf` editado con valores reales de discos (`/dev/sdX`), `DB_PASSWORD`, `TIMEZONE` y `ALLOW_FORMAT`
+* Opcional: `TELEGRAM_TOKEN` y `TELEGRAM_CHAT_ID` para alertas
+
+---
+
+## 🚀 Instalación (paso a paso)
+
+```bash
+# 1) Clonar
+git clone https://github.com/corderojaziel/SUPER-NAS.git
+cd SUPER-NAS
+
+# 2) Editar configuración
+nano config/nas.conf
+
+# 3) Validar discos y nombres reales
+lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT
+
+# 4) Precheck (recomendado)
+chmod +x precheck.sh install.sh verify.sh
+sudo ./precheck.sh
+
+# 5) Instalar
+sudo ./install.sh
+
+# 6) Verificación post-instalación
+sudo /usr/local/bin/verify.sh
+```
+
+Si quieres usar otro perfil de configuración:
+
+```bash
+sudo NAS_CONFIG_FILE=/ruta/a/otro-perfil.conf ./install.sh
+```
+
+---
+
 ## 🏗️ Arquitectura del sistema
 
 El sistema está dividido en **3 capas físicas con roles definidos**:
