@@ -70,3 +70,13 @@
 - Integridad base: `verify.sh` en TV Box -> `PASS 90 / WARN 0 / FAIL 0`.
 - Túnel ML: apagado y caja en modo normal al cierre de prueba.
 - Logs: activos y listos para auditoría diferida.
+
+## 8) Notificaciones Telegram (ajuste de tono + ruido)
+- Mensajes simplificados:
+  - `iml-autopilot.sh`, `video-autopilot.sh`, `iml-backlog-drain.py`, `iml-drain-finalize.py`.
+  - Se redujo texto técnico y se dejó formato corto: estado + acción esperada.
+- Regla nueva de alerta temprana IML:
+  - Si el pendiente crece sostenidamente en varias corridas (no baja), dispara alerta de atasco.
+  - Variables nuevas: `IML_TREND_WINDOW_SAMPLES`, `IML_TREND_MIN_GROWTH`, `IML_TREND_MIN_UP_STEPS`, `IML_TREND_ALERT_TTL_SEC`.
+- Resumen nocturno:
+  - `night-run.sh` ahora incluye `Resumen corto` antes del detalle completo.

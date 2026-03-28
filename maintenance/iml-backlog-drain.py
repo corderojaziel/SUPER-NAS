@@ -603,11 +603,11 @@ def main() -> int:
     send_alert(
         args.alert_bin,
         (
-            "🔄 Inicio drenado IML multi-cola\n"
+            "🔄 IML: inicio de procesamiento\n"
             f"Objetivo: {', '.join(targets)}\n"
             f"{mode_line}\n"
-            f"Orden por dependencias: {phase_line}\n"
-            "Accion: resume/start automatico hasta quedar en cero."
+            f"Orden: {phase_line}\n"
+            "Acción: reanuda y procesa hasta dejar pendiente en cero."
         ),
     )
 
@@ -628,9 +628,9 @@ def main() -> int:
             send_alert(
                 args.alert_bin,
                 (
-                    "✅ Drenado IML completado\n"
-                    f"Colas objetivo en cero: {', '.join(targets)}\n"
-                    f"Duracion: {mins} min."
+                    "✅ IML completado\n"
+                    f"Pendiente en cero para: {', '.join(targets)}\n"
+                    f"Duración: {mins} min."
                 ),
             )
             return 0
@@ -659,12 +659,12 @@ def main() -> int:
                     "iml_drain:busy",
                     args.busy_alert_ttl_sec,
                     (
-                        "⏸️ IML en pausa automática por actividad/carga\n"
+                        "⏸️ IML en pausa por carga alta\n"
                         f"Motivo: {reason}\n"
-                        f"CPU: {cpu:.1f}%  RAM: {mem:.1f}%\n"
+                        f"CPU: {cpu:.1f}% | RAM: {mem:.1f}%\n"
                         f"Temp CPU: {temp:.1f}°C\n"
                         f"Requests: {req} en {args.request_window_sec}s\n"
-                        "Reanuda solo cuando baje la carga."
+                        "Se reanuda solo cuando la carga baje."
                     ),
                 )
                 time.sleep(max(args.sleep_sec, 1))
@@ -696,10 +696,10 @@ def main() -> int:
                 send_alert(
                     args.alert_bin,
                     (
-                        "⚠️ Drenado IML alcanzó timeout\n"
+                        "⚠️ IML sigue pendiente y llegó al tiempo máximo\n"
                         f"Timeout: {args.timeout_min} min\n"
                         f"Estado actual: {summary}\n"
-                        "Continuará en siguiente ciclo."
+                        "Continuará en el siguiente ciclo automático."
                     ),
                 )
                 return 0 if args.timeout_soft else 1

@@ -37,10 +37,9 @@ iml_pending_count() {
 if [ -x "$ALERT_BIN" ]; then
   NAS_ALERT_KEY="video_autopilot:tick" \
   NAS_ALERT_TTL="$VIDEO_AUTOPILOT_ALERT_TTL_SEC" \
-  "$ALERT_BIN" "🤖 Autopiloto de video activo
-Modo: ejecución continua por carga (CPU/RAM/temperatura/requests) en slices de ${VIDEO_AUTOPILOT_SLICE_MIN} min.
-Secuencia: primero IML, después video.
-Se pausa si la caja se ocupa y retoma automáticamente." || true
+  "$ALERT_BIN" "🎬 Video automático activo
+Primero termina IML y luego procesa videos.
+Si la caja se ocupa, pausa y retoma solo." || true
 fi
 
 if [ "$VIDEO_AUTOPILOT_REQUIRE_IML_DRAIN" = "1" ]; then
@@ -52,9 +51,9 @@ if [ "$VIDEO_AUTOPILOT_REQUIRE_IML_DRAIN" = "1" ]; then
     if [ -x "$ALERT_BIN" ]; then
       NAS_ALERT_KEY="video_autopilot:wait_iml" \
       NAS_ALERT_TTL="$VIDEO_AUTOPILOT_ALERT_TTL_SEC" \
-      "$ALERT_BIN" "⏳ Video autopilot en espera
-IML pendiente: $pending colas/elementos.
-Primero termina IML y luego continúa compresión de videos." || true
+      "$ALERT_BIN" "⏳ Video en espera
+IML todavía tiene pendiente: $pending.
+Reintento automático en el siguiente ciclo." || true
     fi
     exit 0
   fi

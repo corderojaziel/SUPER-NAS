@@ -251,8 +251,8 @@ def main() -> int:
     log_line(args.log_file, f"START targets={targets}")
     send_alert(
         args.alert_bin,
-        "🛠️ Inicio monitoreo IML final\n"
-        "Me quedo vigilando hasta terminar y luego cierro túnel/GPU para volver a normalidad.",
+        "🛠️ Monitoreo final IML iniciado\n"
+        "Voy a vigilar hasta terminar y luego cerrar túnel/GPU para volver a modo normal.",
     )
 
     headers = auth_headers(args.api_url, secrets)
@@ -265,7 +265,7 @@ def main() -> int:
             qm = queue_map(args.api_url, headers)
             state = queue_state_line(qm, targets)
             log_line(args.log_file, f"TIMEOUT after {args.timeout_min} min {state}")
-            send_alert(args.alert_bin, f"⚠️ Monitoreo IML llegó a timeout\nEstado:\n{state}")
+            send_alert(args.alert_bin, f"⚠️ Monitoreo IML llegó a timeout\nEstado actual:\n{state}")
             return 1
 
         try:
@@ -291,7 +291,7 @@ def main() -> int:
         time.sleep(max(args.sleep_sec, 1))
 
     log_line(args.log_file, "Queues drained. Starting tunnel shutdown/normalization")
-    send_alert(args.alert_bin, "✅ IML terminó de procesar\nIniciando cierre de túnel y regreso a modo normal.")
+    send_alert(args.alert_bin, "✅ IML terminó de procesar\nInicio cierre de túnel y regreso a modo normal.")
 
     run_cmd(["/usr/local/bin/immich-ml-window.sh", "day-off"], check=False)
     set_ml_url_local(args.log_file)
@@ -327,13 +327,12 @@ def main() -> int:
 
     send_alert(
         args.alert_bin,
-        "🏁 Cierre completo IML/túnel\n"
-        f"- Pendiente colas objetivo: {final_pending}\n"
-        f"- Puerto 13003 activo: {p13003}\n"
-        f"- Puerto 13031 activo: {p13031}\n"
-        f"- PIDs túnel cerrados: {killed}\n"
-        "- TV Box en modo normal (day-off + ML URL local).\n"
-        "Logs preservados para auditoría futura.",
+        "🏁 Cierre IML/túnel completado\n"
+        f"Pendiente colas objetivo: {final_pending}\n"
+        f"Puerto 13003 activo: {p13003}\n"
+        f"Puerto 13031 activo: {p13031}\n"
+        f"PIDs de túnel cerrados: {killed}\n"
+        "TV Box en modo normal y logs guardados.",
     )
     if final_pending < 0:
         return 1
