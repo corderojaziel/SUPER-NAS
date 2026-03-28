@@ -173,17 +173,73 @@ tail -n 80 /var/log/playback-watchdog.log 2>/dev/null || true
     Invoke-Ssh $cmd | ForEach-Object { Write-Host $_.Output }
 }
 
-function Start-MlTunnel {
-    if (Test-Path $cfg.MlTunnelPidFile) {
-        $oldPid = Get-Content $cfg.MlTunnelPidFile -ErrorAction SilentlyContinue
-        if ($oldPid) {
-            try {
-                $p = Get-Process -Id ([int]$oldPid) -ErrorAction Stop
-                Write-Info "Ya existe túnel activo (PID $($p.Id))." Yellow
-                return
-            }
-            catch { }
+function Get-MlTunnelLocalSshProcesses {
+    $route = "$($cfg.MlTunnelRemoteBind):$($cfg.MlTunnelLocalTarget)"
+    $routeEsc = [regex]::Escape($route)
+    $hostEsc = [regex]::Escape($cfg.ServerHost)
+    Get-CimInstance Win32_Process |
+        Where-Object {
+            $_.Name -eq "ssh.exe" -and
+            $_.CommandLine -match $routeEsc -and
+            $_.CommandLine -match $hostEsc
         }
+}
+
+function Stop-MlTunnelLocalProcesses {
+    param([switch]$Quiet)
+
+    $stopped = New-Object System.Collections.Generic.HashSet[int]
+
+    if (Test-Path $cfg.MlTunnelPidFile) {
+        $pidText = Get-Content $cfg.MlTunnelPidFile -ErrorAction SilentlyContinue
+        if ($pidText -and ($pidText -match '^\d+$')) {
+            try {
+                Stop-Process -Id ([int]$pidText) -Force -ErrorAction Stop
+                [void]$stopped.Add([int]$pidText)
+                if (-not $Quiet) { Write-Info "Túnel detenido por PID file ($pidText)." Green }
+            }
+            catch {
+                if (-not $Quiet) { Write-Info "PID file presente pero proceso no activo: $pidText" Yellow }
+            }
+        }
+        Remove-Item $cfg.MlTunnelPidFile -Force -ErrorAction SilentlyContinue
+    }
+
+    foreach ($p in (Get-MlTunnelLocalSshProcesses)) {
+        try {
+            Stop-Process -Id ([int]$p.ProcessId) -Force -ErrorAction Stop
+            [void]$stopped.Add([int]$p.ProcessId)
+            if (-not $Quiet) { Write-Info "Detuve ssh túnel huérfano PID=$($p.ProcessId)." Green }
+        }
+        catch {
+            if (-not $Quiet) { Write-Info "No pude detener PID $($p.ProcessId)." Yellow }
+        }
+    }
+
+    return [PSCustomObject]@{
+        StoppedCount = $stopped.Count
+        StoppedPids  = @($stopped)
+    }
+}
+
+function Stop-MlTunnelRemoteSide {
+    $cmd = @'
+docker stop ml_tunnel_proxy >/dev/null 2>&1 || true
+PIDS=$(ss -ltnp 2>/dev/null | grep -E ':13003|:13031' | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | sort -u || true)
+if [ -n "$PIDS" ]; then
+  kill -TERM $PIDS >/dev/null 2>&1 || true
+  sleep 1
+fi
+ss -ltnp 2>/dev/null | grep -E ':13003|:13031' || true
+'@
+    return (Invoke-Ssh $cmd -Quiet)
+}
+
+function Start-MlTunnel {
+    $existing = Get-MlTunnelLocalSshProcesses
+    if ($existing) {
+        Write-Info "Encontré túnel previo; limpio primero procesos locales huérfanos..." Yellow
+        Stop-MlTunnelLocalProcesses -Quiet | Out-Null
     }
 
     $argList = @(
@@ -197,26 +253,29 @@ function Start-MlTunnel {
     $proc = Start-Process -FilePath $cfg.SshExe -ArgumentList $argList -PassThru -WindowStyle Minimized
     Set-Content -Path $cfg.MlTunnelPidFile -Value $proc.Id -Encoding ASCII
     Write-Info "Túnel ML iniciado. PID=$($proc.Id)" Green
+    Start-Sleep -Seconds 2
+    $remoteCheck = Invoke-Ssh "ss -ltnp | grep ':13003 ' || true" -Quiet
+    if ($remoteCheck.Output.Trim()) {
+        Write-Info "Túnel remoto activo en 13003 (TV Box)." Green
+    } else {
+        Write-Info "No confirmé 13003 aún; revisar conectividad si IML no procesa." Yellow
+    }
     Send-StepTelegram "🧠 Túnel ML PC->NAS iniciado`nRemote: $($cfg.MlTunnelRemoteBind)`nLocal: $($cfg.MlTunnelLocalTarget)"
 }
 
 function Stop-MlTunnel {
-    if (!(Test-Path $cfg.MlTunnelPidFile)) {
-        Write-Info "No hay PID de túnel para detener." Yellow
-        return
+    $local = Stop-MlTunnelLocalProcesses
+    $remote = Stop-MlTunnelRemoteSide
+    $remainingLocal = @(Get-MlTunnelLocalSshProcesses).Count
+
+    if ($remainingLocal -eq 0 -and [string]::IsNullOrWhiteSpace($remote.Output)) {
+        Write-Info "Túnel apagado y sin procesos colgados (PC + TV Box)." Green
+    } else {
+        Write-Info "Se limpió el túnel, pero detecté residuos. Revisar manualmente." Yellow
+        if ($remote.Output) { Write-Host $remote.Output }
     }
-    $pidText = Get-Content $cfg.MlTunnelPidFile -ErrorAction SilentlyContinue
-    if ($pidText) {
-        try {
-            Stop-Process -Id ([int]$pidText) -Force -ErrorAction Stop
-            Write-Info "Túnel detenido (PID $pidText)." Green
-            Send-StepTelegram "🧠 Túnel ML PC->NAS detenido (PID $pidText)."
-        }
-        catch {
-            Write-Info "No pude detener PID $pidText (quizá ya terminó)." Yellow
-        }
-    }
-    Remove-Item $cfg.MlTunnelPidFile -Force -ErrorAction SilentlyContinue
+
+    Send-StepTelegram "🧠 Túnel ML PC->NAS detenido.`nPIDs locales cerrados: $($local.StoppedCount)`nResiduos locales: $remainingLocal"
 }
 
 function Send-TestTelegram {
