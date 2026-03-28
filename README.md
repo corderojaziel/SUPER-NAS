@@ -57,7 +57,7 @@ Celular → nginx → Immich → /upload → rename → /library
 
 ---
 
-### 🎬 Optimización diferida (pipeline nocturno)
+### 🎬 Optimización diferida (pipeline nocturno + autopiloto por carga)
 
 ```text
 /library → video-optimize.sh → /cache (720p)
@@ -69,7 +69,7 @@ Celular → nginx → Immich → /upload → rename → /library
 * evita reprocesar (verificación en cache)
 
 👉 clave:
-los videos **no se optimizan en tiempo real**
+la conversión se prioriza en ventana nocturna, pero ahora también puede drenar por carga durante el día (pausa/reanuda automática)
 
 ---
 
@@ -112,6 +112,12 @@ Cliente → nginx → cache eMMC (thumbnails)
 * `night-run.sh`
   👉 orquestador principal (ejecuta tareas nocturnas)
 
+* `iml-autopilot.sh`
+  👉 drena colas IML cuando CPU/RAM/temperatura/requests lo permiten
+
+* `video-autopilot.sh`
+  👉 drena cola de video sin esperar a la noche, con pausado automático por carga
+
 * `video-optimize.sh`
   👉 convierte videos a formato optimizado (cache)
 
@@ -139,7 +145,13 @@ Cliente → nginx → cache eMMC (thumbnails)
   👉 sincroniza datos hacia el disco de respaldo
 
 * `cache-clean.sh`
-  👉 limpia archivos innecesarios del cache
+  👉 audita huérfanos del cache (no borra)
+
+* `cache-migrate-to-disk.sh`
+  👉 migra cache de eMMC a HDD con symlinks (manual)
+
+* `manual-retention.sh`
+  👉 depura respaldos solo bajo decisión manual
 
 * `smart-check.sh`
   👉 monitorea salud de discos
@@ -180,7 +192,8 @@ Cliente → nginx → cache eMMC (thumbnails)
 
 * procesamiento secuencial
 * workers limitados
-* ML fuera de horario activo
+* colas IML/video pausadas por carga
+* Smart Search disponible en horario diurno
 
 ---
 
@@ -218,14 +231,14 @@ Cliente → nginx → cache eMMC (thumbnails)
 * procesamiento diferido
 * rename atómico
 * validación de mounts
-* limpieza automática
+* auditoría sin borrado automático de fotos/videos
 
 ---
 
 ## ⚠️ Limitaciones
 
 * sin transcodificación en tiempo real
-* dependencia de procesamiento nocturno
+* los lotes grandes siguen siendo más eficientes en ventana nocturna
 * sin RAID
 * limitado por RAM (4GB)
 
@@ -350,8 +363,12 @@ Mantener ingestión estable y reproducción eficiente mediante:
 ### 💽 Mantenimiento
 
 * `backup.sh` → sincronización de datos
-* `cache-clean.sh` → limpieza de cache
+* `cache-clean.sh` → auditoría de cache (sin borrado)
+* `cache-migrate-to-disk.sh` → migración manual de cache a HDD
+* `manual-retention.sh` → depuración manual de respaldos
 * `smart-check.sh` → salud de discos
+
+👉 Regla operativa: no hay depuración automática de fotos/videos productivos.
 
 ---
 

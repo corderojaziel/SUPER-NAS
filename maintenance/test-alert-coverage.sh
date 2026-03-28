@@ -737,7 +737,7 @@ backup_db|La base de datos de Immich está con problemas
 backup_ok|se completó correctamente.
 backup_live|hubo archivos cambiando mientras copiaba
 backup_fail|No se pudo completar la copia de seguridad
-cache_clean|Limpieza del cache terminada
+cache_clean|Auditoría del cache terminada
 cache_crit|El cache de videos está muy grande
 cache_warn|El cache de videos va creciendo
 cache_ratio|El cache ya es grande comparado con tu biblioteca

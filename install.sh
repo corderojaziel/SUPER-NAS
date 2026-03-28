@@ -1051,13 +1051,15 @@ SCRIPTS=(
     "nas-alert.sh"       # Alertas Telegram — prerequisito de todos los demás
     "ml-temp-guard.sh"   # Guardia térmica 3 niveles (ventilador, throttle, crítico)
     "smart-check.sh"     # Monitoreo SMART diario + test mensual de superficie
-    "cache-clean.sh"     # Limpieza automática cache videos > 7 días
+    "cache-clean.sh"     # Auditoría de huérfanos de cache (no borra)
+    "cache-migrate-to-disk.sh" # Migración manual de cache eMMC -> HDD (sin perder playback)
     "immich-ml-window.sh" # Enciende/apaga IA visual de Immich según horario
     "backup.sh"          # Backup incremental rsync con hard-links
     "video-optimize.sh"  # Compresión 4K→720p CRF28 ultrafast NEON
     "retry-quarantine.sh" # Reactiva videos en cuarentena (fallo 3/3)
     "cache-monitor.sh"   # Vigilancia de tamaño del cache (no borra)
     "night-run.sh"       # Orquestador nocturno (cola + cool_down + flock)
+    "iml-autopilot.sh"   # Drenado continuo de colas IML según carga/requsts/temperatura
     "video-autopilot.sh" # Reproceso continuo por carga CPU/RAM (pausa/reanuda)
     "video-reprocess-nightly.sh" # Reproceso nocturno ligero y cola manual para pesados
     "playback-audit-autoheal.sh" # Auditoria HTTP playback + autocorreccion automatica
@@ -1066,6 +1068,7 @@ SCRIPTS=(
     "rebuild-video-cache.sh" # Recuperacion total de cache (prepare/light-only/tvbox-all)
     "state-backup.sh"    # Backup rapido de estado (DB + config + inventario)
     "state-restore.sh"   # Restauracion rapida desde snapshot de estado
+    "manual-retention.sh" # Depuracion manual de respaldos (sin auto-borrado)
     "mount-guard.sh"     # Detecta desmontajes/remontajes y notifica Telegram
     "post-upload-check.sh" # Verificacion puntual del flujo tras subir un asset
 )
@@ -1146,18 +1149,47 @@ VIDEO_REPROCESS_ATTEMPTS_DB=${VIDEO_REPROCESS_ATTEMPTS_DB:-/var/lib/nas-retry/vi
 VIDEO_REPROCESS_MANUAL_QUEUE=${VIDEO_REPROCESS_MANUAL_QUEUE:-/var/lib/nas-retry/video-reprocess-manual.tsv}
 VIDEO_REPROCESS_HEAVY_ENABLED=${VIDEO_REPROCESS_HEAVY_ENABLED:-1}
 VIDEO_REPROCESS_HEAVY_LIMIT=${VIDEO_REPROCESS_HEAVY_LIMIT:-0}
-VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED=${VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED:-0}
+VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED=${VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED:-1}
 VIDEO_REPROCESS_MAX_CPU_PCT=${VIDEO_REPROCESS_MAX_CPU_PCT:-72}
 VIDEO_REPROCESS_MAX_MEM_PCT=${VIDEO_REPROCESS_MAX_MEM_PCT:-82}
+VIDEO_REPROCESS_MAX_TEMP_C=${VIDEO_REPROCESS_MAX_TEMP_C:-75}
 VIDEO_REPROCESS_CPU_SAMPLE_SEC=${VIDEO_REPROCESS_CPU_SAMPLE_SEC:-2}
+VIDEO_REPROCESS_REQUEST_LOG_PATH=${VIDEO_REPROCESS_REQUEST_LOG_PATH:-/var/log/nginx/access.log}
+VIDEO_REPROCESS_REQUEST_WINDOW_SEC=${VIDEO_REPROCESS_REQUEST_WINDOW_SEC:-20}
+VIDEO_REPROCESS_MAX_REQUESTS_PER_WINDOW=${VIDEO_REPROCESS_MAX_REQUESTS_PER_WINDOW:-8}
 VIDEO_REPROCESS_BATCH_LIGHT=${VIDEO_REPROCESS_BATCH_LIGHT:-35}
 VIDEO_REPROCESS_BATCH_HEAVY=${VIDEO_REPROCESS_BATCH_HEAVY:-5}
 VIDEO_REPROCESS_MAX_RUNTIME_MIN=${VIDEO_REPROCESS_MAX_RUNTIME_MIN:-170}
 VIDEO_REPROCESS_IDLE_SLEEP_SEC=${VIDEO_REPROCESS_IDLE_SLEEP_SEC:-45}
 VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC=${VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC:-1800}
-VIDEO_AUTOPILOT_ENABLED=${VIDEO_AUTOPILOT_ENABLED:-0}
+VIDEO_AUTOPILOT_ENABLED=${VIDEO_AUTOPILOT_ENABLED:-1}
 VIDEO_AUTOPILOT_SLICE_MIN=${VIDEO_AUTOPILOT_SLICE_MIN:-8}
 VIDEO_AUTOPILOT_ALERT_TTL_SEC=${VIDEO_AUTOPILOT_ALERT_TTL_SEC:-3600}
+VIDEO_AUTOPILOT_REQUIRE_IML_DRAIN=${VIDEO_AUTOPILOT_REQUIRE_IML_DRAIN:-1}
+VIDEO_AUTOPILOT_IML_TARGETS="${VIDEO_AUTOPILOT_IML_TARGETS:-duplicateDetection,ocr,sidecar,metadataExtraction,library,smartSearch,faceDetection,facialRecognition}"
+VIDEO_AUTOPILOT_IML_API_URL=${VIDEO_AUTOPILOT_IML_API_URL:-http://127.0.0.1:2283/api}
+VIDEO_AUTOPILOT_IML_SECRETS_FILE=${VIDEO_AUTOPILOT_IML_SECRETS_FILE:-/etc/nas-secrets}
+IML_AUTOPILOT_ENABLED=${IML_AUTOPILOT_ENABLED:-1}
+IML_AUTOPILOT_SLICE_MIN=${IML_AUTOPILOT_SLICE_MIN:-8}
+IML_AUTOPILOT_ALERT_TTL_SEC=${IML_AUTOPILOT_ALERT_TTL_SEC:-3600}
+IML_DYNAMIC_LOAD_ENABLED=${IML_DYNAMIC_LOAD_ENABLED:-1}
+IML_TARGETS="${IML_TARGETS:-duplicateDetection,ocr,sidecar,metadataExtraction,library,smartSearch,faceDetection,facialRecognition}"
+IML_PHASE_ORDER="${IML_PHASE_ORDER:-library|sidecar|metadataExtraction;smartSearch|duplicateDetection|ocr|faceDetection;facialRecognition}"
+IML_API_URL=${IML_API_URL:-http://127.0.0.1:2283/api}
+IML_SECRETS_FILE=${IML_SECRETS_FILE:-/etc/nas-secrets}
+IML_SLEEP_SEC=${IML_SLEEP_SEC:-20}
+IML_LOG_EVERY=${IML_LOG_EVERY:-6}
+IML_MAX_CPU_PCT=${IML_MAX_CPU_PCT:-72}
+IML_MAX_MEM_PCT=${IML_MAX_MEM_PCT:-82}
+IML_MAX_TEMP_C=${IML_MAX_TEMP_C:-75}
+IML_CPU_SAMPLE_SEC=${IML_CPU_SAMPLE_SEC:-2}
+IML_REQUEST_LOG_PATH=${IML_REQUEST_LOG_PATH:-/var/log/nginx/access.log}
+IML_REQUEST_WINDOW_SEC=${IML_REQUEST_WINDOW_SEC:-20}
+IML_MAX_REQUESTS_PER_WINDOW=${IML_MAX_REQUESTS_PER_WINDOW:-8}
+IML_BUSY_ALERT_TTL_SEC=${IML_BUSY_ALERT_TTL_SEC:-1800}
+IML_AUTOPILOT_START_ML_IF_PENDING=${IML_AUTOPILOT_START_ML_IF_PENDING:-1}
+IML_AUTOPILOT_STOP_ML_WHEN_IDLE=${IML_AUTOPILOT_STOP_ML_WHEN_IDLE:-0}
+IML_ML_CONTAINER_NAME=${IML_ML_CONTAINER_NAME:-immich_machine_learning}
 PLAYBACK_AUDIT_ENABLED=${PLAYBACK_AUDIT_ENABLED:-1}
 PLAYBACK_AUDIT_MAX_MIN=${PLAYBACK_AUDIT_MAX_MIN:-45}
 PLAYBACK_AUDIT_IMMICH_API=${PLAYBACK_AUDIT_IMMICH_API:-http://127.0.0.1:2283}
@@ -1310,9 +1342,9 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 # 4 horas de margen antes de las 6 AM para completar todo.
 0 2 * * * /usr/local/bin/night-run.sh
 
-# ── Red de seguridad ML ───────────────────────────────────────────────────
-# Si la IA siguió trabajando más de la cuenta, este cron garantiza que
-# el contenedor ML no se quede activo durante el día.
+# ── Política diurna de IA visual ──────────────────────────────────────────
+# Mantiene Smart Search disponible, pero apaga cargas pesadas (caras/OCR/
+# duplicados) para priorizar UX durante el día.
 0 6 * * * /usr/local/bin/immich-ml-window.sh day-off
 
 # ── Guardia térmica reactiva ──────────────────────────────────────────────
@@ -1327,9 +1359,13 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 #   up   -> alerta de recuperación
 */3 * * * * /usr/local/bin/mount-guard.sh
 
-# ── Reproceso continuo opcional por carga (desactivado por default) ──────
-# Si VIDEO_AUTOPILOT_ENABLED=1, este cron permite ir drenando videos nuevos
-# durante el dia sin cambiar el flujo nocturno base.
+# ── IML continuo por carga (activo por default) ───────────────────────────
+# Drena colas de IML cuando la caja está libre y se pausa en picos de uso.
+*/10 * * * * /usr/local/bin/iml-autopilot.sh
+
+# ── Reproceso continuo por carga (activo por default) ─────────────────────
+# Convierte videos pendientes sin esperar a la noche y se pausa/reanuda
+# automáticamente según CPU/RAM/temperatura/requests.
 */10 * * * * /usr/local/bin/video-autopilot.sh
 
 # ── Mantenimiento mensual — día 1: SMART extendido ───────────────────────
@@ -1358,7 +1394,7 @@ if crontab -l 2>/dev/null | grep -q "night-run"; then
     log_warn "Crontab ya tiene night-run — omitiendo (revisar manualmente con: crontab -e)"
 else
     { crontab -l 2>/dev/null || true; echo "$CRON_CONTENT"; } | crontab -
-    log_ok "Crontab configurado (9 entradas)"
+    log_ok "Crontab configurado (10 entradas)"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════

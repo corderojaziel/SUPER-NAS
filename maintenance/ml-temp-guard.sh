@@ -110,7 +110,7 @@ Conviene revisar ventilación o ventilador cuanto antes.
 Qué correr (TV Box, sin insumo):
 Insumo: no aplica.
 1) /usr/local/bin/verify.sh
-2) /usr/local/bin/immich-ml-window.sh day-off" || true
+2) /usr/local/bin/immich-ml-window.sh thermal-off" || true
   exit 0
 fi
 
@@ -120,6 +120,6 @@ if [ "$TEMP_C" -ge "$ML_TEMP_HIGH_C" ]; then
   NAS_ALERT_KEY="ml_temp_high" "$NAS_ALERT_BIN" "🌡️ El NAS se calentó más de lo normal
 Temperatura actual: ${TEMP_C}°C
 Detuve temporalmente el reconocimiento inteligente de Immich para que el equipo se enfríe solo.
-Qué correr (TV Box): /usr/local/bin/immich-ml-window.sh day-off
+Qué correr (TV Box): /usr/local/bin/immich-ml-window.sh thermal-off
 Insumo: no aplica." || true
 fi

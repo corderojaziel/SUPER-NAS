@@ -1,12 +1,16 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
-# backup.sh — Backup incremental con snapshots por hard-links
+# backup.sh — Backup incremental con snapshots (sin depuración automática)
 # Guía Maestra NAS V58
 #
 # ENDURECIMIENTO
 #   Este script ahora obedece el estado de salud del sistema:
 #   SMART, mounts, eMMC y DB. Si algún estado está en CRIT, el backup se
 #   omite para no empeorar la situación. Además se ejecuta con nice+ionice.
+#   Política de datos productivos:
+#   - no usa --delete sobre fotos/videos de origen
+#   - no borra snapshots automáticamente
+#   - cualquier depuración de snapshots es manual con manual-retention.sh
 # ═══════════════════════════════════════════════════════════════════════════
 
 SOURCE="/mnt/storage-main/photos/"
@@ -14,6 +18,7 @@ DEST="/mnt/storage-backup/snapshots"
 HEALTH_DIR="/var/lib/nas-health"
 TODAY=$(date +%F)
 YESTERDAY=$(date -d yesterday +%F)
+RETENTION_DAYS="$(cat /etc/nas-retention 2>/dev/null || echo 7)"
 
 alert() { /usr/local/bin/nas-alert.sh "$1"; }
 load_status_env() { [ -f "$1" ] && . "$1"; }
@@ -64,10 +69,10 @@ Haré solo lo seguro y evitaré lo que dependa del stack."
 fi
 
 mkdir -p "$DEST/$TODAY"
-LAST_LINK=""
-[ -d "$DEST/$YESTERDAY" ] && LAST_LINK="--link-dest=$DEST/$YESTERDAY"
+RSYNC_OPTS=(-a)
+[ -d "$DEST/$YESTERDAY" ] && RSYNC_OPTS+=("--link-dest=$DEST/$YESTERDAY")
 
-if nice -n 15 ionice -c2 -n7 rsync -a --delete $LAST_LINK "$SOURCE" "$DEST/$TODAY/"; then
+if nice -n 15 ionice -c2 -n7 rsync "${RSYNC_OPTS[@]}" "$SOURCE" "$DEST/$TODAY/"; then
   alert "✅ Copia de seguridad terminada
 El respaldo del día $TODAY se completó correctamente."
 else
@@ -87,5 +92,13 @@ Insumo: no aplica.
   exit "$code"
 fi
 
-find "$DEST" -mindepth 1 -maxdepth 1 -type d | sort | head -n -7 | xargs -r rm -rf
+SNAPSHOT_COUNT="$(find "$DEST" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+if [ "$SNAPSHOT_COUNT" -gt "$RETENTION_DAYS" ]; then
+  alert "🟡 Backups acumulados: $SNAPSHOT_COUNT snapshots
+No borré nada (política de seguridad).
+Si quieres depurar manualmente:
+/usr/local/bin/manual-retention.sh --plan --snapshots-keep $RETENTION_DAYS
+/usr/local/bin/manual-retention.sh --apply --snapshots-keep $RETENTION_DAYS"
+fi
+
 exit 0

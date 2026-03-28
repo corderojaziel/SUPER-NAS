@@ -126,7 +126,7 @@ powershell -ExecutionPolicy Bypass -File C:\Users\jazie\SUPERNAS\powershell\repr
 - Correr:
 ```bash
 /usr/local/bin/verify.sh
-/usr/local/bin/immich-ml-window.sh day-off
+/usr/local/bin/immich-ml-window.sh thermal-off
 cat /sys/class/thermal/thermal_zone*/temp
 ```
 

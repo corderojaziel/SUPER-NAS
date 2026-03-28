@@ -11,6 +11,7 @@ usage() {
 Uso:
   immich-ml-window.sh night-on
   immich-ml-window.sh day-off
+  immich-ml-window.sh thermal-off
   immich-ml-window.sh status
 EOF
 }
@@ -146,6 +147,15 @@ case "$ACTION" in
     start_ml_container
     ;;
   day-off)
+    wait_for_postgres
+    apply_policy false false false false
+    restart_server
+    wait_for_server_ready
+    # Modo diurno: desactiva colas pesadas de IA, pero mantiene el
+    # servicio ML disponible para Smart Search bajo demanda.
+    start_ml_container
+    ;;
+  thermal-off)
     wait_for_postgres
     apply_policy false false false false
     restart_server

@@ -71,7 +71,7 @@ task_label() {
     "SMART semanal") echo "la revisión profunda de los discos" ;;
     "Backup") echo "la copia de seguridad" ;;
     "Cache monitor") echo "la revisión del tamaño del cache" ;;
-    "Cache clean") echo "la limpieza del cache" ;;
+    "Cache clean") echo "la auditoría del cache" ;;
     *) echo "$1" ;;
   esac
 }
@@ -161,7 +161,7 @@ build_summary_notes() {
   [ "$PLAYBACK_AUDIT_RES" = "FAIL" ] && add_summary_note "La auditoría de playback falló y no pude autocorregir videos rotos."
   [ "$BACKUP_RES" = "FAIL" ] && add_summary_note "La copia de seguridad del día no pudo completarse."
   [ "$CACHE_MONITOR_RES" = "FAIL" ] && add_summary_note "No pude revisar el tamaño del cache de videos."
-  [ "$CACHE_CLEAN_RES" = "FAIL" ] && add_summary_note "No pude limpiar el cache de videos."
+  [ "$CACHE_CLEAN_RES" = "FAIL" ] && add_summary_note "No pude auditar el cache de videos."
   [ "$ML_RES" = "FAIL" ] && add_summary_note "No pude encender la IA nocturna de Immich."
   [ "$DBDUMP_RES" = "FAIL" ] && add_summary_note "No pude guardar la copia lógica de la base de datos."
 
@@ -461,7 +461,7 @@ alert "🌙 Resumen de la noche
 🎥 Auditoría playback: $(pretty_status "${PLAYBACK_AUDIT_RES}")
 💾 Copia de seguridad: $(pretty_status "${BACKUP_RES}")
 📦 Revisión del cache: $(pretty_status "${CACHE_MONITOR_RES}")
-🧹 Limpieza del cache: $(pretty_status "${CACHE_CLEAN_RES}")
+🧹 Auditoría del cache: $(pretty_status "${CACHE_CLEAN_RES}")
 🧠 IA nocturna: $(pretty_status "${ML_RES}")
 🔬 Revisión profunda de discos: $(pretty_status "${SMART_RES}")
 🗄️ Copia de la base de datos: $(pretty_status "${DBDUMP_RES}")

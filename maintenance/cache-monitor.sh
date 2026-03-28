@@ -6,23 +6,23 @@
 # ── QUÉ HACE ─────────────────────────────────────────────────────────────
 # Mide el tamaño del cache de videos 720p en la eMMC y avisa por Telegram
 # si supera los umbrales configurados. NO borra nada — solo observa.
-# La limpieza automática la hace cache-clean.sh (videos > 7 días).
+# La auditoría de huérfanos la hace cache-clean.sh (sin borrar).
 #
 # ── POR QUÉ NO BORRA AUTOMÁTICAMENTE ─────────────────────────────────────
 # El cache es valiosos: representa horas de procesamiento ffmpeg nocturno.
 # Una limpieza agresiva automática podría borrar videos que el usuario
 # acaba de ver o está por ver. Mejor avisar y dejar que el usuario decida.
-# cache-clean.sh borra solo los videos que llevan > 7 días sin acceso.
+# cache-clean.sh solo detecta huérfanos; no elimina archivos.
 #
 # ── UMBRALES (configurados desde nas.conf vía install.sh) ────────────────
 # WARN_GB=20:    El cache está creciendo — normal si hay muchos videos nuevos
-# CRIT_GB=40:    El cache es muy grande — considerar ajustar cache-clean.sh
+# CRIT_GB=40:    El cache es muy grande — considerar migrar parte al HDD
 # RATIO_WARN=30: El cache representa >30% del espacio de fotos — inusual
 #
 # ── CACHE EN eMMC (128 GB) ───────────────────────────────────────────────
 # Con ~32 GB usados por el sistema, quedan ~96 GB libres.
 # A 80 MB por video de 1:40 min, CRIT_GB=40 equivale a ~500 videos.
-# Con 200–500 videos en biblioteca y retención de 7 días, este umbral
+# Con 200–500 videos en biblioteca, este umbral
 # raramente se alcanza en uso normal.
 #
 # ── ANTI-SPAM ────────────────────────────────────────────────────────────
@@ -75,6 +75,10 @@ Ahora ocupa ${CACHE_GB} GB y guarda ${CACHE_FILES} videos temporales.
 Eso equivale al ${RATIO}% del tamaño de tu biblioteca y quedan ${FREE_GB} GB libres en el disco principal.
 Qué correr:
 - TV Box: /usr/local/bin/cache-clean.sh
+  Insumo: no aplica (solo auditoría, no borra).
+- TV Box: /usr/local/bin/cache-migrate-to-disk.sh --plan
+  Insumo: no aplica.
+- TV Box (si decides aplicar): /usr/local/bin/cache-migrate-to-disk.sh --apply --target-free-gb 20
   Insumo: no aplica.
 - TV Box (si sigue alto): /usr/local/bin/rebuild-video-cache.sh prepare
   Insumo: automático (genera listas en /var/lib/nas-health/reprocess).
@@ -87,7 +91,7 @@ Qué correr:
 elif [ "$(echo "$CACHE_GB >= $WARN_GB" | bc)" -eq 1 ]; then
     "$NAS_ALERT_BIN" "🟡 El cache de videos va creciendo
 Ahora ocupa ${CACHE_GB} GB y guarda ${CACHE_FILES} videos temporales.
-Todavía no borro nada, pero conviene vigilar el espacio.
+No se borra cache automáticamente; conviene vigilar el espacio.
 Qué correr (TV Box): /usr/local/bin/cache-monitor.sh
 Insumo: no aplica."
 
@@ -96,6 +100,8 @@ elif [ "$RATIO" -ge "$RATIO_WARN" ]; then
 Cache: ${CACHE_GB} GB
 Biblioteca: ${PHOTOS_GB} GB
 Relación actual: ${RATIO}%
-Qué correr (TV Box): /usr/local/bin/cache-clean.sh
+Qué correr:
+- TV Box: /usr/local/bin/cache-clean.sh (auditoría)
+- TV Box: /usr/local/bin/cache-migrate-to-disk.sh --plan
 Insumo: no aplica."
 fi

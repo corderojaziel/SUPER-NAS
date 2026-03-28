@@ -12,7 +12,7 @@ LOG_FILE="/var/log/iml-autopilot.log"
 
 [ -f "$POLICY_FILE" ] && . "$POLICY_FILE"
 
-IML_AUTOPILOT_ENABLED="${IML_AUTOPILOT_ENABLED:-0}"
+IML_AUTOPILOT_ENABLED="${IML_AUTOPILOT_ENABLED:-1}"
 IML_AUTOPILOT_SLICE_MIN="${IML_AUTOPILOT_SLICE_MIN:-8}"
 IML_AUTOPILOT_ALERT_TTL_SEC="${IML_AUTOPILOT_ALERT_TTL_SEC:-3600}"
 IML_DYNAMIC_LOAD_ENABLED="${IML_DYNAMIC_LOAD_ENABLED:-1}"
@@ -68,6 +68,17 @@ container_running() {
   docker ps --format '{{.Names}}' | grep -Fxq "$IML_ML_CONTAINER_NAME"
 }
 
+wait_ml_ready() {
+  local attempt
+  for attempt in $(seq 1 30); do
+    if docker exec immich_server sh -lc 'curl -fsS --max-time 3 http://immich-machine-learning:3003/ping >/dev/null' >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
 pending_now="$(iml_pending_count)"
 case "$pending_now" in
   ''|*[!0-9]*) pending_now=0 ;;
@@ -81,6 +92,15 @@ if [ "$pending_now" -gt 0 ] && [ "$IML_AUTOPILOT_START_ML_IF_PENDING" = "1" ]; t
       NAS_ALERT_TTL=900 \
       "$ALERT_BIN" "⚙️ IML autopilot encendió Machine Learning para drenar colas pendientes (${pending_now})." || true
     fi
+  fi
+  if ! wait_ml_ready; then
+    if [ -x "$ALERT_BIN" ]; then
+      NAS_ALERT_KEY="iml_autopilot:ml_unreachable" \
+      NAS_ALERT_TTL=900 \
+      "$ALERT_BIN" "⚠️ IML autopilot detectó ML no disponible en este momento.
+Acción: difiere el drenado y reintenta en el siguiente ciclo." || true
+    fi
+    exit 0
   fi
 fi
 

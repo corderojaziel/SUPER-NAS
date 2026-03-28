@@ -382,7 +382,8 @@ check_cron() {
 
 check_cron "night-run"           "Orquestador nocturno"
 check_cron "ml-temp-guard"       "Guardia térmica ML"
-check_cron "immich-ml-window.sh day-off" "Apagar IA visual y ML a las 6 AM"
+check_cron "immich-ml-window.sh day-off" "Aplicar modo diurno de IA visual a las 6 AM"
+check_cron "iml-autopilot.sh"     "Autopiloto IML por carga"
 
 # Verificar hora del night-run
 NIGHT_HOUR=$(echo "$CRON" | grep night-run | awk '{print $2}' | head -1)

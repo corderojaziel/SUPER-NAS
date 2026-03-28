@@ -96,7 +96,7 @@ else
 fi
 
 section "SCRIPTS DE MANTENIMIENTO"
-for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/video-autopilot.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/playback-watchdog.sh /usr/local/bin/state-backup.sh /usr/local/bin/state-restore.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh; do
+for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/video-autopilot.sh /usr/local/bin/iml-autopilot.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/manual-retention.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/playback-watchdog.sh /usr/local/bin/state-backup.sh /usr/local/bin/state-restore.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh; do
   if [ -x "$f" ]; then bash -n "$f" >/dev/null 2>&1 && ok "$f instalado y sintaxis válida" || fail "$f con errores de sintaxis"; else fail "$f ausente"; fi
 done
 [ -x /usr/local/bin/immich-video-playback-resolver.py ] && python3 -m py_compile /usr/local/bin/immich-video-playback-resolver.py >/dev/null 2>&1 && ok "/usr/local/bin/immich-video-playback-resolver.py instalado y sintaxis válida" || fail "/usr/local/bin/immich-video-playback-resolver.py ausente o inválido"
@@ -104,6 +104,28 @@ if [ -x /usr/local/bin/reconcile-emmc-cache.py ]; then
   python3 -m py_compile /usr/local/bin/reconcile-emmc-cache.py >/dev/null 2>&1 && ok "/usr/local/bin/reconcile-emmc-cache.py instalado y sintaxis válida" || fail "/usr/local/bin/reconcile-emmc-cache.py con errores de sintaxis"
 else
   warn "/usr/local/bin/reconcile-emmc-cache.py no instalado"
+fi
+
+section "POLÍTICA FOTOS/VIDEOS"
+if grep -q -- '--delete' /usr/local/bin/backup.sh 2>/dev/null; then
+  fail "backup.sh aún usa --delete sobre respaldos de fotos/videos"
+else
+  ok "backup.sh no usa --delete (sin depuración automática de fotos/videos)"
+fi
+if grep -Eq 'rm -rf .*snapshots|head -n -[0-9]+' /usr/local/bin/backup.sh 2>/dev/null; then
+  fail "backup.sh aún contiene poda automática de snapshots"
+else
+  ok "backup.sh no contiene poda automática de snapshots"
+fi
+if grep -q 'Huérfano eliminado' /usr/local/bin/cache-clean.sh 2>/dev/null; then
+  fail "cache-clean.sh sigue en modo borrado automático"
+else
+  ok "cache-clean.sh está en modo auditoría (sin borrado automático)"
+fi
+if crontab -l 2>/dev/null | grep -q 'manual-retention.sh.*--apply'; then
+  fail "Existe depuración automática manual-retention.sh --apply en crontab"
+else
+  ok "No hay depuración automática de fotos/videos vía crontab"
 fi
 if [ -x /usr/local/bin/video-reprocess-manager.py ]; then
   python3 -m py_compile /usr/local/bin/video-reprocess-manager.py >/dev/null 2>&1 && ok "/usr/local/bin/video-reprocess-manager.py instalado y sintaxis válida" || fail "/usr/local/bin/video-reprocess-manager.py con errores de sintaxis"
@@ -183,6 +205,11 @@ if [ -f /etc/default/nas-video-policy ] && grep -q '^VIDEO_AUTOPILOT_ENABLED=' /
 else
   warn "Politica no define VIDEO_AUTOPILOT_ENABLED"
 fi
+if [ -f /etc/default/nas-video-policy ] && grep -q '^IML_AUTOPILOT_ENABLED=' /etc/default/nas-video-policy; then
+  ok "Politica define IML_AUTOPILOT_ENABLED"
+else
+  warn "Politica no define IML_AUTOPILOT_ENABLED"
+fi
 if [ -f /etc/default/nas-video-policy ] && grep -q '^VIDEO_REPROCESS_MANUAL_QUEUE=' /etc/default/nas-video-policy; then
   ok "Politica define VIDEO_REPROCESS_MANUAL_QUEUE"
 else
@@ -206,6 +233,8 @@ fi
 
 section "CRONTAB"
 crontab -l 2>/dev/null | grep -q 'night-run.sh' && ok "Cron night-run presente" || fail "Cron night-run ausente"
+crontab -l 2>/dev/null | grep -q 'immich-ml-window.sh day-off' && ok "Cron day-off IA visual presente" || warn "Cron day-off IA visual ausente"
+crontab -l 2>/dev/null | grep -q 'iml-autopilot.sh' && ok "Cron iml-autopilot presente" || warn "Cron iml-autopilot ausente"
 crontab -l 2>/dev/null | grep -q 'video-autopilot.sh' && ok "Cron video-autopilot presente" || warn "Cron video-autopilot ausente"
 crontab -l 2>/dev/null | grep -q 'ml-temp-guard' && ok "Cron ml-temp-guard presente" || warn "Cron ml-temp-guard ausente"
 crontab -l 2>/dev/null | grep -q 'playback-watchdog.sh' && ok "Cron playback-watchdog presente" || warn "Cron playback-watchdog ausente"

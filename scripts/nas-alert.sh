@@ -12,7 +12,7 @@
 # smart-check.sh:    problemas SMART en HDDs
 # backup.sh:         resultado del backup diario
 # cache-monitor.sh:  cache de video demasiado grande
-# cache-clean.sh:    videos eliminados del cache
+# cache-clean.sh:    auditoría de huérfanos de cache (sin borrar)
 #
 # ── CREDENCIALES ─────────────────────────────────────────────────────────
 # Se leen de /etc/nas-secrets (permisos 600 — solo root puede leer).
