@@ -1062,6 +1062,7 @@ SCRIPTS=(
     "video-reprocess-nightly.sh" # Reproceso nocturno ligero y cola manual para pesados
     "playback-audit-autoheal.sh" # Auditoria HTTP playback + autocorreccion automatica
     "playback-watchdog.sh" # Vigilancia activa de playback para detectar estancamientos
+    "iml-drain-finalize.py" # Monitorea fin de IML y deja el sistema en estado normal
     "rebuild-video-cache.sh" # Recuperacion total de cache (prepare/light-only/tvbox-all)
     "state-backup.sh"    # Backup rapido de estado (DB + config + inventario)
     "state-restore.sh"   # Restauracion rapida desde snapshot de estado

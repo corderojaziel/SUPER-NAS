@@ -120,6 +120,11 @@ if [ -x /usr/local/bin/iml-backlog-drain.py ]; then
 else
   warn "/usr/local/bin/iml-backlog-drain.py no instalado"
 fi
+if [ -x /usr/local/bin/iml-drain-finalize.py ]; then
+  python3 -m py_compile /usr/local/bin/iml-drain-finalize.py >/dev/null 2>&1 && ok "/usr/local/bin/iml-drain-finalize.py instalado y sintaxis válida" || fail "/usr/local/bin/iml-drain-finalize.py con errores de sintaxis"
+else
+  warn "/usr/local/bin/iml-drain-finalize.py no instalado"
+fi
 
 section "HEALTH STATES"
 for f in /var/lib/nas-health/mount-status.env /var/lib/nas-health/smart-status.env /var/lib/nas-health/storage-status.env /var/lib/nas-health/db-status.env; do

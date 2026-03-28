@@ -39,6 +39,7 @@ for src in "$ENV_FILE" "$COMPOSE_FILE" "$POLICY_FILE" /etc/nas-disks /etc/nas-re
     cp -a "$src" "$snap_dir/config/"
   fi
 done
+crontab -l > "$snap_dir/config/root-crontab" 2>/dev/null || true
 if [ -f "$SECRETS_FILE" ]; then
   cp -a "$SECRETS_FILE" "$snap_dir/config/"
   chmod 600 "$snap_dir/config/$(basename "$SECRETS_FILE")" || true
@@ -75,6 +76,7 @@ fi
   echo "include_cache=$INCLUDE_CACHE"
   echo "db_dump=$( [ -f "$db_dump" ] && echo yes || echo no )"
   echo "cache_archive=$( [ -f "$snap_dir/cache/cache.tar.gz" ] && echo yes || echo no )"
+  echo "root_crontab=$( [ -s "$snap_dir/config/root-crontab" ] && echo yes || echo no )"
 } > "$snap_dir/manifest.env"
 
 ln -sfn "$snap_dir" "$BACKUP_ROOT/latest"

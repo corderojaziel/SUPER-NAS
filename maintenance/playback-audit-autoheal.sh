@@ -19,14 +19,24 @@ MANAGER_BIN="${VIDEO_REPROCESS_MANAGER_BIN:-/usr/local/bin/video-reprocess-manag
 PLAYBACK_AUDIT_ENABLED="${PLAYBACK_AUDIT_ENABLED:-1}"
 PLAYBACK_AUDIT_AUTOHEAL_ENABLED="${PLAYBACK_AUDIT_AUTOHEAL_ENABLED:-1}"
 PLAYBACK_AUDIT_IMMICH_API="${PLAYBACK_AUDIT_IMMICH_API:-http://127.0.0.1:2283}"
+PLAYBACK_AUDIT_RESOLVER_BASE="${PLAYBACK_AUDIT_RESOLVER_BASE:-http://127.0.0.1:2284}"
 PLAYBACK_AUDIT_BASE="${PLAYBACK_AUDIT_BASE:-http://127.0.0.1}"
 PLAYBACK_AUDIT_OUTPUT_DIR="${PLAYBACK_AUDIT_OUTPUT_DIR:-$HEALTH_DIR}"
 PLAYBACK_AUDIT_WORKERS="${PLAYBACK_AUDIT_WORKERS:-24}"
 PLAYBACK_AUDIT_TIMEOUT_SEC="${PLAYBACK_AUDIT_TIMEOUT_SEC:-20}"
 PLAYBACK_AUDIT_SAMPLE_BYTES="${PLAYBACK_AUDIT_SAMPLE_BYTES:-256}"
+PLAYBACK_AUDIT_APPEND_TS="${PLAYBACK_AUDIT_APPEND_TS:-1}"
+PLAYBACK_AUDIT_DEEP_FFPROBE="${PLAYBACK_AUDIT_DEEP_FFPROBE:-0}"
+PLAYBACK_AUDIT_FFPROBE_WORKERS="${PLAYBACK_AUDIT_FFPROBE_WORKERS:-4}"
+PLAYBACK_AUDIT_FFPROBE_TIMEOUT_SEC="${PLAYBACK_AUDIT_FFPROBE_TIMEOUT_SEC:-20}"
+PLAYBACK_AUDIT_FFPROBE_SAMPLE_SEC="${PLAYBACK_AUDIT_FFPROBE_SAMPLE_SEC:-2}"
+PLAYBACK_AUDIT_FFPROBE_RETRIES="${PLAYBACK_AUDIT_FFPROBE_RETRIES:-2}"
+PLAYBACK_AUDIT_FFPROBE_RETRY_SLEEP_SEC="${PLAYBACK_AUDIT_FFPROBE_RETRY_SLEEP_SEC:-1.5}"
 PLAYBACK_AUDIT_AUTOHEAL_CLASSES="${PLAYBACK_AUDIT_AUTOHEAL_CLASSES:-not_found http_error unexpected_content placeholder_missing placeholder_damaged placeholder_error}"
 PLAYBACK_AUDIT_AUTOHEAL_LIMIT="${PLAYBACK_AUDIT_AUTOHEAL_LIMIT:-200}"
 PLAYBACK_AUDIT_AUTOHEAL_MAX_ATTEMPTS="${PLAYBACK_AUDIT_AUTOHEAL_MAX_ATTEMPTS:-3}"
+PLAYBACK_AUDIT_TRIGGER_WATCHDOG_ON_PROCESSING="${PLAYBACK_AUDIT_TRIGGER_WATCHDOG_ON_PROCESSING:-1}"
+PLAYBACK_WATCHDOG_BIN="${PLAYBACK_WATCHDOG_BIN:-/usr/local/bin/playback-watchdog.sh}"
 
 VIDEO_REPROCESS_OUTPUT_DIR="${VIDEO_REPROCESS_OUTPUT_DIR:-$HEALTH_DIR/reprocess}"
 VIDEO_REPROCESS_CACHE_ROOT="${VIDEO_REPROCESS_CACHE_ROOT:-/var/lib/immich/cache}"
@@ -134,20 +144,36 @@ Campos requeridos:
 fi
 
 log "INICIO: auditoría HTTP playback"
+AUDIT_ARGS=(
+  --immich-api "$PLAYBACK_AUDIT_IMMICH_API"
+  --resolver-base "$PLAYBACK_AUDIT_RESOLVER_BASE"
+  --playback-base "$PLAYBACK_AUDIT_BASE"
+  --output-dir "$PLAYBACK_AUDIT_OUTPUT_DIR"
+  --workers "$PLAYBACK_AUDIT_WORKERS"
+  --timeout-sec "$PLAYBACK_AUDIT_TIMEOUT_SEC"
+  --sample-bytes "$PLAYBACK_AUDIT_SAMPLE_BYTES"
+  --ffprobe-workers "$PLAYBACK_AUDIT_FFPROBE_WORKERS"
+  --ffprobe-timeout-sec "$PLAYBACK_AUDIT_FFPROBE_TIMEOUT_SEC"
+  --ffprobe-sample-sec "$PLAYBACK_AUDIT_FFPROBE_SAMPLE_SEC"
+  --ffprobe-retries "$PLAYBACK_AUDIT_FFPROBE_RETRIES"
+  --ffprobe-retry-sleep-sec "$PLAYBACK_AUDIT_FFPROBE_RETRY_SLEEP_SEC"
+)
+if [ "$PLAYBACK_AUDIT_APPEND_TS" = "1" ]; then
+  AUDIT_ARGS+=(--append-ts)
+fi
+if [ "$PLAYBACK_AUDIT_DEEP_FFPROBE" = "1" ]; then
+  AUDIT_ARGS+=(--deep-ffprobe)
+fi
+
 if ! python3 "$AUDIT_BIN" \
   "${AUTH_ARGS[@]}" \
-  --immich-api "$PLAYBACK_AUDIT_IMMICH_API" \
-  --playback-base "$PLAYBACK_AUDIT_BASE" \
-  --output-dir "$PLAYBACK_AUDIT_OUTPUT_DIR" \
-  --workers "$PLAYBACK_AUDIT_WORKERS" \
-  --timeout-sec "$PLAYBACK_AUDIT_TIMEOUT_SEC" \
-  --sample-bytes "$PLAYBACK_AUDIT_SAMPLE_BYTES" \
+  "${AUDIT_ARGS[@]}" \
   >> "$AUDIT_STDOUT" 2>> "$LOG_FILE"; then
-  alert "⚠️ Falló la auditoría de playback
+ alert "⚠️ Falló la auditoría de playback
 No pude completar el barrido HTTP de videos.
 Qué correr (TV Box):
 Insumo: no aplica.
-1) python3 /usr/local/bin/audit_video_playback.py --immich-api $PLAYBACK_AUDIT_IMMICH_API --playback-base $PLAYBACK_AUDIT_BASE --output-dir $PLAYBACK_AUDIT_OUTPUT_DIR --workers $PLAYBACK_AUDIT_WORKERS"
+1) python3 /usr/local/bin/audit_video_playback.py --immich-api $PLAYBACK_AUDIT_IMMICH_API --resolver-base $PLAYBACK_AUDIT_RESOLVER_BASE --playback-base $PLAYBACK_AUDIT_BASE --output-dir $PLAYBACK_AUDIT_OUTPUT_DIR --workers $PLAYBACK_AUDIT_WORKERS"
   write_summary "FAIL" 0 0 0 0 0 0 0 0
   exit 1
 fi
@@ -221,12 +247,22 @@ skipped=0
 candidates=0
 
 if [ "$broken" -le 0 ]; then
+  action_msg="no hizo falta autocorrección."
+  if [ "$processing" -gt 0 ] && [ "$PLAYBACK_AUDIT_TRIGGER_WATCHDOG_ON_PROCESSING" = "1" ] && [ -x "$PLAYBACK_WATCHDOG_BIN" ]; then
+    log "processing_detected=$processing -> lanzando watchdog"
+    if timeout 900 "$PLAYBACK_WATCHDOG_BIN" >> "$LOG_FILE" 2>&1; then
+      action_msg="se lanzó watchdog de playback para vigilar/reintentar pendientes."
+    else
+      action_msg="intenté lanzar watchdog de playback, revisar /var/log/playback-watchdog.log."
+    fi
+  fi
+
   alert "✅ Auditoría playback completada
 Total revisados: $total
 Playables: $playable
 En procesamiento normal: $processing
 Rotos detectados: 0
-Acción: no hizo falta autocorrección."
+Acción: $action_msg"
   write_summary "OK" "$total" "$playable" "$processing" 0 0 0 0 0
   exit 0
 fi

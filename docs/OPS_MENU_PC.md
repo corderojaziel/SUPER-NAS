@@ -16,8 +16,15 @@ powershell -ExecutionPolicy Bypass -File .\powershell\nas-ops-menu.ps1
 - Estado de colas Immich.
 - Drenado IML por grupos:
   - completo
-  - OCR + duplicados
-  - sidecar + metadata + library + smart search
+  - OCR
+  - duplicados
+  - sidecar
+  - metadata extraction
+  - library
+  - smart search
+  - face detection
+  - facial recognition
+- Monitoreo IML hasta terminar + cierre de túnel y normalización (`iml-drain-finalize.py`).
 - Ejecución manual de:
   - `video-autopilot.sh`
   - `playback-audit-autoheal.sh`

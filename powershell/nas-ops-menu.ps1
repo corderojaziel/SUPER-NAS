@@ -102,6 +102,23 @@ function Run-ImlDrain {
     }
 }
 
+function Run-ImlSingle {
+    param(
+        [Parameter(Mandatory = $true)][string]$Target,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    Write-Info "Drenando cola IML: $Label"
+    Run-ImlDrain -Targets $Target
+}
+
+function Run-ImlFinalize {
+    Send-StepTelegram "🏁 Inicio monitoreo IML hasta cierre final (colas->0 y regreso a normalidad)"
+    Write-Info "Corriendo iml-drain-finalize.py (monitorea hasta terminar y cierra túnel)..."
+    Invoke-Ssh "python3 /usr/local/bin/iml-drain-finalize.py --timeout-min 720 --sleep-sec 20" | ForEach-Object {
+        Write-Host $_.Output
+    }
+}
+
 function Run-VideoAutopilotOnce {
     Send-StepTelegram "🎬 Ejecución manual de video-autopilot desde menú PC"
     Write-Info "Corriendo video-autopilot..."
@@ -215,16 +232,23 @@ while ($true) {
     Write-Host "1) Estado general NAS"
     Write-Host "2) Estado de colas Immich"
     Write-Host "3) Drenar IML completo (OCR/Duplicados/Sidecar/Metadata/Library/Smart/Caras)"
-    Write-Host "4) Drenar IML OCR + Duplicados"
-    Write-Host "5) Drenar IML Sidecar + Metadata + Library + SmartSearch"
-    Write-Host "6) Ejecutar video-autopilot (una corrida)"
-    Write-Host "7) Ejecutar playback-audit-autoheal"
-    Write-Host "8) Crear backup de estado"
-    Write-Host "9) Restaurar estado"
-    Write-Host "10) Ver logs clave"
-    Write-Host "11) Iniciar túnel ML (usar GPU PC)"
-    Write-Host "12) Detener túnel ML"
-    Write-Host "13) Enviar Telegram de prueba"
+    Write-Host "4) Drenar IML OCR"
+    Write-Host "5) Drenar IML Detección de duplicados"
+    Write-Host "6) Drenar IML Sidecar metadata"
+    Write-Host "7) Drenar IML Extracción de metadata"
+    Write-Host "8) Drenar IML Bibliotecas externas"
+    Write-Host "9) Drenar IML Búsqueda inteligente (Smart Search)"
+    Write-Host "10) Drenar IML Detección de caras"
+    Write-Host "11) Drenar IML Reconocimiento facial"
+    Write-Host "12) Monitorear IML hasta fin + cierre túnel/normalización"
+    Write-Host "13) Ejecutar video-autopilot (una corrida)"
+    Write-Host "14) Ejecutar playback-audit-autoheal"
+    Write-Host "15) Crear backup de estado"
+    Write-Host "16) Restaurar estado"
+    Write-Host "17) Ver logs clave"
+    Write-Host "18) Iniciar túnel ML (usar GPU PC)"
+    Write-Host "19) Detener túnel ML"
+    Write-Host "20) Enviar Telegram de prueba"
     Write-Host "0) Salir"
     $opt = Read-Host "Elige opción"
 
@@ -233,16 +257,23 @@ while ($true) {
             "1" { Show-Overview }
             "2" { Show-Queues }
             "3" { Run-ImlDrain -Targets "duplicateDetection,ocr,sidecar,metadataExtraction,library,smartSearch,faceDetection,facialRecognition" }
-            "4" { Run-ImlDrain -Targets "duplicateDetection,ocr" }
-            "5" { Run-ImlDrain -Targets "sidecar,metadataExtraction,library,smartSearch" }
-            "6" { Run-VideoAutopilotOnce }
-            "7" { Run-PlaybackAudit }
-            "8" { Run-StateBackup }
-            "9" { Run-StateRestore }
-            "10" { Show-KeyLogs }
-            "11" { Start-MlTunnel }
-            "12" { Stop-MlTunnel }
-            "13" { Send-TestTelegram }
+            "4" { Run-ImlSingle -Target "ocr" -Label "OCR" }
+            "5" { Run-ImlSingle -Target "duplicateDetection" -Label "Detección de duplicados" }
+            "6" { Run-ImlSingle -Target "sidecar" -Label "Sidecar metadata" }
+            "7" { Run-ImlSingle -Target "metadataExtraction" -Label "Extracción de metadata" }
+            "8" { Run-ImlSingle -Target "library" -Label "Bibliotecas externas" }
+            "9" { Run-ImlSingle -Target "smartSearch" -Label "Búsqueda inteligente" }
+            "10" { Run-ImlSingle -Target "faceDetection" -Label "Detección de caras" }
+            "11" { Run-ImlSingle -Target "facialRecognition" -Label "Reconocimiento facial" }
+            "12" { Run-ImlFinalize }
+            "13" { Run-VideoAutopilotOnce }
+            "14" { Run-PlaybackAudit }
+            "15" { Run-StateBackup }
+            "16" { Run-StateRestore }
+            "17" { Show-KeyLogs }
+            "18" { Start-MlTunnel }
+            "19" { Stop-MlTunnel }
+            "20" { Send-TestTelegram }
             "0" { break }
             default { Write-Info "Opción no válida." Yellow }
         }

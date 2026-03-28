@@ -50,12 +50,15 @@ for item in .env docker-compose.yml; do
     cp -a "$src" "$COMPOSE_DIR/$item"
   fi
 done
-for item in nas-video-policy nas-disks nas-retention; do
-  src="$SNAP_DIR/config/$item"
-  if [ -f "$src" ]; then
-    cp -a "$src" "/etc/default/$item"
-  fi
-done
+if [ -f "$SNAP_DIR/config/nas-video-policy" ]; then
+  cp -a "$SNAP_DIR/config/nas-video-policy" /etc/default/nas-video-policy
+fi
+if [ -f "$SNAP_DIR/config/nas-disks" ]; then
+  cp -a "$SNAP_DIR/config/nas-disks" /etc/nas-disks
+fi
+if [ -f "$SNAP_DIR/config/nas-retention" ]; then
+  cp -a "$SNAP_DIR/config/nas-retention" /etc/nas-retention
+fi
 if [ -f "$SNAP_DIR/config/nas-secrets" ]; then
   cp -a "$SNAP_DIR/config/nas-secrets" "$SECRETS_FILE"
   chmod 600 "$SECRETS_FILE" || true
@@ -63,6 +66,12 @@ fi
 if [ -f "$SNAP_DIR/config/immich.conf" ]; then
   cp -a "$SNAP_DIR/config/immich.conf" /etc/nginx/sites-enabled/immich.conf
   nginx -t >/dev/null 2>&1 && systemctl restart nginx || true
+fi
+if [ -f "$SNAP_DIR/config/crontab" ]; then
+  cp -a "$SNAP_DIR/config/crontab" /etc/crontab
+fi
+if [ -s "$SNAP_DIR/config/root-crontab" ]; then
+  crontab "$SNAP_DIR/config/root-crontab" || true
 fi
 
 # Reiniciar stack para tomar .env/docker-compose restaurados
