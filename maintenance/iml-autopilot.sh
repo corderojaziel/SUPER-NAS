@@ -33,11 +33,6 @@ IML_BUSY_ALERT_TTL_SEC="${IML_BUSY_ALERT_TTL_SEC:-1800}"
 IML_AUTOPILOT_START_ML_IF_PENDING="${IML_AUTOPILOT_START_ML_IF_PENDING:-1}"
 IML_AUTOPILOT_STOP_ML_WHEN_IDLE="${IML_AUTOPILOT_STOP_ML_WHEN_IDLE:-0}"
 IML_ML_CONTAINER_NAME="${IML_ML_CONTAINER_NAME:-immich_machine_learning}"
-IML_TREND_STATE_FILE="${IML_TREND_STATE_FILE:-/var/lib/nas-health/iml-autopilot-trend.tsv}"
-IML_TREND_WINDOW_SAMPLES="${IML_TREND_WINDOW_SAMPLES:-8}"
-IML_TREND_MIN_GROWTH="${IML_TREND_MIN_GROWTH:-40}"
-IML_TREND_MIN_UP_STEPS="${IML_TREND_MIN_UP_STEPS:-5}"
-IML_TREND_ALERT_TTL_SEC="${IML_TREND_ALERT_TTL_SEC:-3600}"
 
 if [ "$IML_AUTOPILOT_ENABLED" != "1" ]; then
   exit 0
@@ -56,8 +51,9 @@ fi
 if [ -x "$ALERT_BIN" ]; then
   NAS_ALERT_KEY="iml_autopilot:tick" \
   NAS_ALERT_TTL="$IML_AUTOPILOT_ALERT_TTL_SEC" \
-  "$ALERT_BIN" "🧠 IML automático activo
-Pausa si la caja se ocupa y se reanuda solo cuando baja la carga." || true
+  "$ALERT_BIN" "🧠 Autopiloto IML activo
+Modo: pausado/reanudado por CPU/RAM/requests.
+Orden: library/sidecar/metadata -> smart/ocr/duplicados/caras -> reconocimiento facial." || true
 fi
 
 iml_pending_count() {
@@ -72,55 +68,6 @@ container_running() {
   docker ps --format '{{.Names}}' | grep -Fxq "$IML_ML_CONTAINER_NAME"
 }
 
-record_pending_sample() {
-  local pending="$1"
-  local dir keep tmp
-  dir="$(dirname "$IML_TREND_STATE_FILE")"
-  mkdir -p "$dir"
-  printf '%s\t%s\n' "$(date +%s)" "$pending" >> "$IML_TREND_STATE_FILE"
-  keep=$((IML_TREND_WINDOW_SAMPLES * 3))
-  [ "$keep" -lt 24 ] && keep=24
-  tmp="${IML_TREND_STATE_FILE}.tmp"
-  tail -n "$keep" "$IML_TREND_STATE_FILE" > "$tmp" 2>/dev/null || true
-  [ -s "$tmp" ] && mv -f "$tmp" "$IML_TREND_STATE_FILE" || rm -f "$tmp"
-}
-
-check_pending_trend() {
-  local lines first last growth up_steps sample_count metrics
-  record_pending_sample "$1"
-  [ -f "$IML_TREND_STATE_FILE" ] || return 0
-  lines="$(wc -l < "$IML_TREND_STATE_FILE" 2>/dev/null || echo 0)"
-  [ "$lines" -ge "$IML_TREND_WINDOW_SAMPLES" ] || return 0
-  metrics="$(
-    tail -n "$IML_TREND_WINDOW_SAMPLES" "$IML_TREND_STATE_FILE" | awk '
-      NR == 1 { first = $2 + 0; prev = first }
-      {
-        curr = $2 + 0
-        if (NR > 1 && curr > prev) {
-          up_steps++
-        }
-        prev = curr
-        last = curr
-      }
-      END {
-        growth = last - first
-        printf "%d %d %d %d %d\n", first, last, growth, up_steps + 0, NR + 0
-      }
-    '
-  )"
-  read -r first last growth up_steps sample_count <<< "$metrics"
-  case "$growth" in ''|*[!0-9-]*) growth=0 ;; esac
-  case "$up_steps" in ''|*[!0-9]*) up_steps=0 ;; esac
-  case "$sample_count" in ''|*[!0-9]*) sample_count=0 ;; esac
-  if [ "$growth" -ge "$IML_TREND_MIN_GROWTH" ] && [ "$up_steps" -ge "$IML_TREND_MIN_UP_STEPS" ]; then
-    NAS_ALERT_KEY="iml_autopilot:trend_up" \
-    NAS_ALERT_TTL="$IML_TREND_ALERT_TTL_SEC" \
-    "$ALERT_BIN" "⚠️ IML con atasco probable
-Pendientes subieron de $first a $last en las últimas $sample_count revisiones.
-Sugerencia: revisar colas, ML y logs (/var/log/iml-autopilot.log)." || true
-  fi
-}
-
 pending_now="$(iml_pending_count)"
 case "$pending_now" in
   ''|*[!0-9]*) pending_now=0 ;;
@@ -132,7 +79,7 @@ if [ "$pending_now" -gt 0 ] && [ "$IML_AUTOPILOT_START_ML_IF_PENDING" = "1" ]; t
     if [ -x "$ALERT_BIN" ]; then
       NAS_ALERT_KEY="iml_autopilot:ml_start" \
       NAS_ALERT_TTL=900 \
-      "$ALERT_BIN" "⚙️ IML: encendí Machine Learning para procesar pendientes ($pending_now)." || true
+      "$ALERT_BIN" "⚙️ IML autopilot encendió Machine Learning para drenar colas pendientes (${pending_now})." || true
     fi
   fi
 fi
@@ -173,10 +120,6 @@ case "$pending_after" in
   ''|*[!0-9]*) pending_after=0 ;;
 esac
 
-if [ -x "$ALERT_BIN" ] && [ "$pending_after" -gt 0 ]; then
-  check_pending_trend "$pending_after"
-fi
-
 if [ "$pending_after" -eq 0 ] && [ "$IML_AUTOPILOT_STOP_ML_WHEN_IDLE" = "1" ]; then
   docker stop "$IML_ML_CONTAINER_NAME" >/dev/null 2>&1 || true
 fi
@@ -184,8 +127,8 @@ fi
 if [ "$rc" -ne 0 ] && [ -x "$ALERT_BIN" ]; then
   NAS_ALERT_KEY="iml_autopilot:fail" \
   NAS_ALERT_TTL=900 \
-  "$ALERT_BIN" "⚠️ IML automático terminó con error (rc=$rc).
-Revisa /var/log/iml-autopilot.log." || true
+  "$ALERT_BIN" "⚠️ IML autopilot terminó con error (rc=$rc)
+Revisa: /var/log/iml-autopilot.log" || true
 fi
 
 exit 0

@@ -190,40 +190,6 @@ build_summary_notes() {
   printf '%s\n' "$SUMMARY_NOTES"
 }
 
-build_short_summary_line() {
-  local bad=0 warn=0 status
-  for status in \
-    "${GLOBAL_MOUNT_STATUS:-OK}" \
-    "${GLOBAL_SMART_STATUS:-OK}" \
-    "${EMMC_STATUS:-OK}" \
-    "${DB_STATUS:-OK}" \
-    "$VIDEO_RES" \
-    "$PLAYBACK_AUDIT_RES" \
-    "$BACKUP_RES" \
-    "$CACHE_MONITOR_RES" \
-    "$CACHE_CLEAN_RES" \
-    "$ML_RES" \
-    "$SMART_RES" \
-    "$DBDUMP_RES"; do
-    case "$status" in
-      CRIT|FAIL) bad=$((bad + 1)) ;;
-      WARN) warn=$((warn + 1)) ;;
-    esac
-  done
-
-  if [ "$bad" -gt 0 ]; then
-    printf 'Hay %s punto(s) críticos/fallidos para revisar.\n' "$bad"
-    return 0
-  fi
-
-  if [ "$warn" -gt 0 ]; then
-    printf 'Noche estable, con %s aviso(s) preventivo(s).\n' "$warn"
-    return 0
-  fi
-
-  printf 'Todo principal terminó en verde.\n'
-}
-
 db_username() {
   local env_file="/opt/immich-app/.env" user=""
   if [ -f "$env_file" ]; then
@@ -485,10 +451,8 @@ load_status_env "$HEALTH_DIR/storage-status.env"
 load_status_env "$HEALTH_DIR/db-status.env"
 
 SUMMARY_NOTES="$(build_summary_notes)"
-SHORT_SUMMARY="$(build_short_summary_line)"
 
 alert "🌙 Resumen de la noche
-📌 Resumen corto: ${SHORT_SUMMARY}
 🗂️ Discos montados: $(pretty_status "${GLOBAL_MOUNT_STATUS:-OK}")
 🩺 Salud de los discos: $(pretty_status "${GLOBAL_SMART_STATUS:-OK}")
 💽 Memoria interna: $(pretty_status "${EMMC_STATUS:-OK}")

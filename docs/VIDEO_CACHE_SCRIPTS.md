@@ -51,37 +51,6 @@ powershell -ExecutionPolicy Bypass -File C:\Users\jazie\SUPERNAS\powershell\repr
 powershell -ExecutionPolicy Bypass -File C:\Users\jazie\SUPERNAS\powershell\reprocess_heavy_from_server.ps1 -NoPlan -Limit 50
 ```
 
-## 6) Modo por carga CPU/RAM (opcional, sin romper flujo base)
-- Script base: `maintenance/video-reprocess-nightly.sh`
-- Bandera de activación: `VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED=1`
-- Qué hace:
-  - procesa por lotes pequeños,
-  - se pausa si CPU/RAM superan umbral,
-  - reanuda cuando baja carga.
-- Default: `0` (legacy, mismo comportamiento actual).
-
-## 7) Autopiloto continuo opcional
-- Script: `maintenance/video-autopilot.sh`
-- Uso recomendado: cron cada 10 min.
-- Bandera: `VIDEO_AUTOPILOT_ENABLED=1`
-- Nota: solo activa slices cortos de reproceso; no reemplaza el flujo nocturno.
-
-## 8) Menú operativo desde PC
-- Script: `powershell/nas-ops-menu.ps1`
-- Config: `powershell/nas-ops.config.ps1`
-- Permite:
-  - drenar IML por cola,
-  - lanzar playback audit,
-  - correr autopiloto,
-  - backup/restore de estado,
-  - abrir/cerrar túnel ML PC→NAS.
-
-## 9) Backup/restore rápido de estado
-- Backup: `maintenance/state-backup.sh`
-- Restore: `maintenance/state-restore.sh`
-- Incluye: DB (dump lógico), política, secretos, compose/.env, inventario.
-- Cache completa: opcional (`INCLUDE_CACHE=1` / `--with-cache`).
-
 ## Recomendación operativa
 1. Noche diaria: dejar `night-run.sh` (ya integrado con `video-reprocess-nightly.sh`).
 2. Si hay backlog grande:

@@ -1058,7 +1058,6 @@ SCRIPTS=(
     "retry-quarantine.sh" # Reactiva videos en cuarentena (fallo 3/3)
     "cache-monitor.sh"   # Vigilancia de tamaño del cache (no borra)
     "night-run.sh"       # Orquestador nocturno (cola + cool_down + flock)
-    "iml-autopilot.sh"   # Drenado continuo IML por fases y carga (CPU/RAM/requests)
     "video-autopilot.sh" # Reproceso continuo por carga CPU/RAM (pausa/reanuda)
     "video-reprocess-nightly.sh" # Reproceso nocturno ligero y cola manual para pesados
     "playback-audit-autoheal.sh" # Auditoria HTTP playback + autocorreccion automatica
@@ -1150,44 +1149,15 @@ VIDEO_REPROCESS_HEAVY_LIMIT=${VIDEO_REPROCESS_HEAVY_LIMIT:-0}
 VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED=${VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED:-0}
 VIDEO_REPROCESS_MAX_CPU_PCT=${VIDEO_REPROCESS_MAX_CPU_PCT:-72}
 VIDEO_REPROCESS_MAX_MEM_PCT=${VIDEO_REPROCESS_MAX_MEM_PCT:-82}
-VIDEO_REPROCESS_MAX_TEMP_C=${VIDEO_REPROCESS_MAX_TEMP_C:-75}
 VIDEO_REPROCESS_CPU_SAMPLE_SEC=${VIDEO_REPROCESS_CPU_SAMPLE_SEC:-2}
-VIDEO_REPROCESS_REQUEST_LOG_PATH=${VIDEO_REPROCESS_REQUEST_LOG_PATH:-/var/log/nginx/access.log}
-VIDEO_REPROCESS_REQUEST_WINDOW_SEC=${VIDEO_REPROCESS_REQUEST_WINDOW_SEC:-20}
-VIDEO_REPROCESS_MAX_REQUESTS_PER_WINDOW=${VIDEO_REPROCESS_MAX_REQUESTS_PER_WINDOW:-8}
 VIDEO_REPROCESS_BATCH_LIGHT=${VIDEO_REPROCESS_BATCH_LIGHT:-35}
 VIDEO_REPROCESS_BATCH_HEAVY=${VIDEO_REPROCESS_BATCH_HEAVY:-5}
 VIDEO_REPROCESS_MAX_RUNTIME_MIN=${VIDEO_REPROCESS_MAX_RUNTIME_MIN:-170}
 VIDEO_REPROCESS_IDLE_SLEEP_SEC=${VIDEO_REPROCESS_IDLE_SLEEP_SEC:-45}
 VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC=${VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC:-1800}
-IML_AUTOPILOT_ENABLED=${IML_AUTOPILOT_ENABLED:-0}
-IML_AUTOPILOT_SLICE_MIN=${IML_AUTOPILOT_SLICE_MIN:-8}
-IML_AUTOPILOT_ALERT_TTL_SEC=${IML_AUTOPILOT_ALERT_TTL_SEC:-3600}
-IML_DYNAMIC_LOAD_ENABLED=${IML_DYNAMIC_LOAD_ENABLED:-1}
-IML_TARGETS="${IML_TARGETS:-duplicateDetection,ocr,sidecar,metadataExtraction,library,smartSearch,faceDetection,facialRecognition}"
-IML_PHASE_ORDER="${IML_PHASE_ORDER:-library|sidecar|metadataExtraction;smartSearch|duplicateDetection|ocr|faceDetection;facialRecognition}"
-IML_API_URL=${IML_API_URL:-http://127.0.0.1:2283/api}
-IML_SECRETS_FILE=${IML_SECRETS_FILE:-/etc/nas-secrets}
-IML_SLEEP_SEC=${IML_SLEEP_SEC:-20}
-IML_LOG_EVERY=${IML_LOG_EVERY:-6}
-IML_MAX_CPU_PCT=${IML_MAX_CPU_PCT:-72}
-IML_MAX_MEM_PCT=${IML_MAX_MEM_PCT:-82}
-IML_MAX_TEMP_C=${IML_MAX_TEMP_C:-75}
-IML_CPU_SAMPLE_SEC=${IML_CPU_SAMPLE_SEC:-2}
-IML_REQUEST_LOG_PATH=${IML_REQUEST_LOG_PATH:-/var/log/nginx/access.log}
-IML_REQUEST_WINDOW_SEC=${IML_REQUEST_WINDOW_SEC:-20}
-IML_MAX_REQUESTS_PER_WINDOW=${IML_MAX_REQUESTS_PER_WINDOW:-8}
-IML_BUSY_ALERT_TTL_SEC=${IML_BUSY_ALERT_TTL_SEC:-1800}
-IML_AUTOPILOT_START_ML_IF_PENDING=${IML_AUTOPILOT_START_ML_IF_PENDING:-1}
-IML_AUTOPILOT_STOP_ML_WHEN_IDLE=${IML_AUTOPILOT_STOP_ML_WHEN_IDLE:-0}
-IML_ML_CONTAINER_NAME=${IML_ML_CONTAINER_NAME:-immich_machine_learning}
 VIDEO_AUTOPILOT_ENABLED=${VIDEO_AUTOPILOT_ENABLED:-0}
 VIDEO_AUTOPILOT_SLICE_MIN=${VIDEO_AUTOPILOT_SLICE_MIN:-8}
 VIDEO_AUTOPILOT_ALERT_TTL_SEC=${VIDEO_AUTOPILOT_ALERT_TTL_SEC:-3600}
-VIDEO_AUTOPILOT_REQUIRE_IML_DRAIN=${VIDEO_AUTOPILOT_REQUIRE_IML_DRAIN:-1}
-VIDEO_AUTOPILOT_IML_TARGETS="${VIDEO_AUTOPILOT_IML_TARGETS:-duplicateDetection,ocr,sidecar,metadataExtraction,library,smartSearch,faceDetection,facialRecognition}"
-VIDEO_AUTOPILOT_IML_API_URL=${VIDEO_AUTOPILOT_IML_API_URL:-http://127.0.0.1:2283/api}
-VIDEO_AUTOPILOT_IML_SECRETS_FILE=${VIDEO_AUTOPILOT_IML_SECRETS_FILE:-/etc/nas-secrets}
 PLAYBACK_AUDIT_ENABLED=${PLAYBACK_AUDIT_ENABLED:-1}
 PLAYBACK_AUDIT_MAX_MIN=${PLAYBACK_AUDIT_MAX_MIN:-45}
 PLAYBACK_AUDIT_IMMICH_API=${PLAYBACK_AUDIT_IMMICH_API:-http://127.0.0.1:2283}
@@ -1362,11 +1332,6 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 # durante el dia sin cambiar el flujo nocturno base.
 */10 * * * * /usr/local/bin/video-autopilot.sh
 
-# ── IML continuo opcional por carga + requests (desactivado por default) ─
-# Si IML_AUTOPILOT_ENABLED=1, drena colas IML en orden de dependencias:
-# metadata/library -> smart/ocr/duplicados/caras -> reconocimiento facial.
-*/5 * * * * /usr/local/bin/iml-autopilot.sh
-
 # ── Mantenimiento mensual — día 1: SMART extendido ───────────────────────
 # Test corto no destructivo (~2 min). El disco sigue operando normalmente.
 # Verifica superficie del disco y monitorea Load/Unload cycles.
@@ -1393,7 +1358,7 @@ if crontab -l 2>/dev/null | grep -q "night-run"; then
     log_warn "Crontab ya tiene night-run — omitiendo (revisar manualmente con: crontab -e)"
 else
     { crontab -l 2>/dev/null || true; echo "$CRON_CONTENT"; } | crontab -
-    log_ok "Crontab configurado (10 entradas)"
+    log_ok "Crontab configurado (9 entradas)"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════

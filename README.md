@@ -60,18 +60,16 @@ Celular → nginx → Immich → /upload → rename → /library
 ### 🎬 Optimización diferida (pipeline nocturno)
 
 ```text
-/library → video-reprocess-nightly.sh → /cache (proxy de reproducción)
+/library → video-optimize.sh → /cache (720p)
 ```
 
-* regla de decisión por red mínima: **40 MB/min**
-* si el video ya cumple regla: no transcodifica y conserva calidad
-* si excede regla: genera versión ligera para reproducción remota
-* conversión GPU (`h264_nvenc`) con fallback CPU (`libx264`)
-* control adaptativo por carga (CPU/RAM/temperatura/requests)
+* conversión GPU (`h264_nvenc`)
+* fallback automático a CPU (`libx264`)
+* reducción de resolución + bitrate
 * evita reprocesar (verificación en cache)
 
 👉 clave:
-los videos pesados **no se optimizan en tiempo real**, pero el sistema puede procesar por slices durante el día cuando la caja está libre
+los videos **no se optimizan en tiempo real**
 
 ---
 
@@ -114,17 +112,8 @@ Cliente → nginx → cache eMMC (thumbnails)
 * `night-run.sh`
   👉 orquestador principal (ejecuta tareas nocturnas)
 
-* `video-reprocess-nightly.sh`
-  👉 convierte videos pesados a formato optimizado (cache)
-
-* `video-autopilot.sh`
-  👉 ejecuta reproceso por slices y espera IML antes de video
-
-* `iml-autopilot.sh`
-  👉 drena colas IML por fases, pausando/reanudando por carga
-
-* `playback-audit-autoheal.sh`
-  👉 audita playback real y autocorrige faltantes/rotos
+* `video-optimize.sh`
+  👉 convierte videos a formato optimizado (cache)
 
 * `nas-alert.sh`
   👉 envía alertas a Telegram
@@ -139,7 +128,7 @@ Cliente → nginx → cache eMMC (thumbnails)
 * `ml-temp-guard.sh`
   👉 controla carga/temperatura del sistema
 
-* `retry-quarantine.sh`
+* `retry-quarantine.sh` *(en integración)*
   👉 reintenta archivos fallidos
 
 ---
@@ -148,12 +137,6 @@ Cliente → nginx → cache eMMC (thumbnails)
 
 * `backup.sh`
   👉 sincroniza datos hacia el disco de respaldo
-
-* `state-backup.sh`
-  👉 respaldo de estado operativo (DB/config/cron/políticas)
-
-* `state-restore.sh`
-  👉 restauración rápida de estado ante contingencia
 
 * `cache-clean.sh`
   👉 limpia archivos innecesarios del cache
@@ -177,11 +160,10 @@ Cliente → nginx → cache eMMC (thumbnails)
 ### 2️⃣ Cache de video obligatorio
 
 * 4K original → 40–60 Mbps
-* red mínima objetivo → ~6 Mbps
+* red disponible → ~12 Mbps
 
 👉 sin cache: ❌ no reproducible
 👉 con cache: ✅ estable
-👉 regla aplicada: si el video está en **≤40 MB/min**, no se recomprime
 
 ---
 
@@ -196,10 +178,9 @@ Cliente → nginx → cache eMMC (thumbnails)
 
 ### 4️⃣ Control de carga
 
-* pausa/reanuda automática por CPU/RAM/temperatura/requests
-* procesamiento por lotes pequeños (slices)
-* IML por fases con dependencias
-* alerta por tendencia cuando el backlog de IML crece sostenidamente
+* procesamiento secuencial
+* workers limitados
+* ML fuera de horario activo
 
 ---
 
@@ -231,23 +212,20 @@ Cliente → nginx → cache eMMC (thumbnails)
 * separación física de I/O
 * cache en eMMC
 * conversión GPU + fallback CPU
-* regla de 40 MB/min (skip inteligente de transcodificación)
 * filtrado por tamaño
 * detección de duplicados
 * control de bitrate/resolución
-* procesamiento diferido + modo adaptativo por carga
+* procesamiento diferido
 * rename atómico
 * validación de mounts
 * limpieza automática
-* auditoría de playback con autocorrección
-* resumen nocturno con estado corto + detalle
 
 ---
 
 ## ⚠️ Limitaciones
 
 * sin transcodificación en tiempo real
-* videos pesados dependen de ventanas de procesamiento (no inmediato)
+* dependencia de procesamiento nocturno
 * sin RAID
 * limitado por RAM (4GB)
 
@@ -336,11 +314,11 @@ Mantener ingestión estable y reproducción eficiente mediante:
 
 ## 🎬 Pipeline de video
 
-* Regla de decisión por red: 40 MB/min
-* Skip automático si el video ya es reproducible
-* Conversión híbrida (GPU/CPU) para videos pesados
-* Validación de salida y playback
-* Limpieza automática y conciliación de cache
+* Filtrado por tamaño
+* Detección de duplicados
+* Conversión híbrida (GPU/CPU)
+* Validación de salida
+* Limpieza automática
 
 ---
 
@@ -356,10 +334,7 @@ Mantener ingestión estable y reproducción eficiente mediante:
 ### 🔁 Operación
 
 * `night-run.sh` → orquestador principal (2:00 AM)
-* `video-reprocess-nightly.sh` → reproceso de videos pesados
-* `video-autopilot.sh` → reproceso por slices durante el día
-* `iml-autopilot.sh` → drenado IML por fases con pausa/reanuda
-* `playback-audit-autoheal.sh` → auditoría playback + autocorrección
+* `video-optimize.sh` → conversión de videos
 * `nas-alert.sh` → envío de alertas
 
 ---
@@ -368,15 +343,13 @@ Mantener ingestión estable y reproducción eficiente mediante:
 
 * `mount-guard.sh` → valida discos montados
 * `ml-temp-guard.sh` → controla carga/temperatura
-* `retry-quarantine.sh` → reintentos de fallos
+* `retry-quarantine.sh` → reintentos (WIP)
 
 ---
 
 ### 💽 Mantenimiento
 
 * `backup.sh` → sincronización de datos
-* `state-backup.sh` → snapshot de estado operativo
-* `state-restore.sh` → restauración de estado
 * `cache-clean.sh` → limpieza de cache
 * `smart-check.sh` → salud de discos
 
@@ -387,18 +360,15 @@ Mantener ingestión estable y reproducción eficiente mediante:
 * Filtrado por tamaño
 * Detección de duplicados
 * Conversión híbrida GPU/CPU
-* Regla 40 MB/min con skip inteligente
 * Reducción de resolución
 * Control de bitrate
 * Validación de archivos
 * Skip automático de errores
 * Fallback automático
-* Control de carga (CPU/RAM/temperatura/requests)
+* Control de carga (secuencial)
 * Validación de mounts
 * Limpieza de temporales
 * Alertas automáticas
-* Alerta de tendencia de backlog IML
-* Resumen nocturno corto + detallado
 
 ---
 
@@ -406,7 +376,6 @@ Mantener ingestión estable y reproducción eficiente mediante:
 
 * Ingesta automática
 * Procesamiento concurrente
-* Drenado IML por fases (dependencias)
 * No interfiere agresivamente con uploads
 
 ---
@@ -415,7 +384,6 @@ Mantener ingestión estable y reproducción eficiente mediante:
 
 * Telegram (`nas-alert.sh`)
 * Eventos críticos y fallos
-* Detección de atascos por crecimiento sostenido en IML
 
 ---
 
@@ -454,8 +422,8 @@ Mantener ingestión estable y reproducción eficiente mediante:
 
 ## 🔮 Próximos pasos
 
-* Afinar umbrales por perfil real de uso
-* Dashboard de salud/playback para operación diaria
-* Auditoría periódica de logs y tuning de rendimiento
+* Control de concurrencia dinámico
+* Integración completa de reintentos
+* Mejor coordinación con Immich
 
 ---

@@ -48,29 +48,6 @@ function Invoke-Ssh {
     }
 }
 
-function Invoke-Wsl {
-    param(
-        [Parameter(Mandatory = $true)][string]$Command,
-        [switch]$Quiet
-    )
-
-    $wslExe = if ($cfg.ContainsKey("WslExe") -and $cfg.WslExe) { $cfg.WslExe } else { "wsl" }
-    $raw = & $wslExe -e sh -lc $Command 2>&1
-    $code = $LASTEXITCODE
-    $text = ($raw | Out-String)
-    $clean = (($text -split "`r?`n") | Where-Object { $_ -notmatch '^wsl: Processing /etc/fstab' }) -join [Environment]::NewLine
-    if ($clean.Length -gt 0) {
-        $clean = $clean.TrimEnd() + [Environment]::NewLine
-    }
-    if ($code -ne 0 -and -not $Quiet) {
-        Write-Host $clean -ForegroundColor Yellow
-    }
-    return [PSCustomObject]@{
-        ExitCode = $code
-        Output   = $clean
-    }
-}
-
 function Send-StepTelegram {
     param([string]$Message)
     $safe = $Message.Replace('"', '\"')
@@ -140,8 +117,6 @@ function Run-ImlFinalize {
     Invoke-Ssh "python3 /usr/local/bin/iml-drain-finalize.py --timeout-min 720 --sleep-sec 20" | ForEach-Object {
         Write-Host $_.Output
     }
-    Write-Info "Aplicando descanso local post-finalización (GPU/CPU)..."
-    Invoke-LocalRestMode -Reason "post_iml_finalize" | Out-Null
 }
 
 function Run-VideoAutopilotOnce {
@@ -198,278 +173,17 @@ tail -n 80 /var/log/playback-watchdog.log 2>/dev/null || true
     Invoke-Ssh $cmd | ForEach-Object { Write-Host $_.Output }
 }
 
-function Get-MlTunnelLocalSshProcesses {
-    $route = "$($cfg.MlTunnelRemoteBind):$($cfg.MlTunnelLocalTarget)"
-    $routeEsc = [regex]::Escape($route)
-    $hostEsc = [regex]::Escape($cfg.ServerHost)
-    Get-CimInstance Win32_Process |
-        Where-Object {
-            $_.Name -eq "ssh.exe" -and
-            $_.CommandLine -match $routeEsc -and
-            $_.CommandLine -match $hostEsc
-        }
-}
-
-function Stop-MlTunnelLocalProcesses {
-    param([switch]$Quiet)
-
-    $stopped = New-Object System.Collections.Generic.HashSet[int]
-
-    if (Test-Path $cfg.MlTunnelPidFile) {
-        $pidText = Get-Content $cfg.MlTunnelPidFile -ErrorAction SilentlyContinue
-        if ($pidText -and ($pidText -match '^\d+$')) {
-            try {
-                Stop-Process -Id ([int]$pidText) -Force -ErrorAction Stop
-                [void]$stopped.Add([int]$pidText)
-                if (-not $Quiet) { Write-Info "Túnel detenido por PID file ($pidText)." Green }
-            }
-            catch {
-                if (-not $Quiet) { Write-Info "PID file presente pero proceso no activo: $pidText" Yellow }
-            }
-        }
-        Remove-Item $cfg.MlTunnelPidFile -Force -ErrorAction SilentlyContinue
-    }
-
-    foreach ($p in (Get-MlTunnelLocalSshProcesses)) {
-        try {
-            Stop-Process -Id ([int]$p.ProcessId) -Force -ErrorAction Stop
-            [void]$stopped.Add([int]$p.ProcessId)
-            if (-not $Quiet) { Write-Info "Detuve ssh túnel huérfano PID=$($p.ProcessId)." Green }
-        }
-        catch {
-            if (-not $Quiet) { Write-Info "No pude detener PID $($p.ProcessId)." Yellow }
-        }
-    }
-
-    return [PSCustomObject]@{
-        StoppedCount = $stopped.Count
-        StoppedPids  = @($stopped)
-    }
-}
-
-function Stop-MlTunnelRemoteSide {
-    $cmd = @'
-docker stop ml_tunnel_proxy >/dev/null 2>&1 || true
-PIDS=$(ss -ltnp 2>/dev/null | grep -E ':13003|:13031' | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | sort -u || true)
-if [ -n "$PIDS" ]; then
-  kill -TERM $PIDS >/dev/null 2>&1 || true
-  sleep 1
-fi
-ss -ltnp 2>/dev/null | grep -E ':13003|:13031' || true
-'@
-    return (Invoke-Ssh $cmd -Quiet)
-}
-
-function Get-ConfiguredMlContainers {
-    $containers = @()
-    if ($cfg.ContainsKey("MlLocalDockerContainers") -and $cfg.MlLocalDockerContainers) {
-        $containers += @($cfg.MlLocalDockerContainers)
-    }
-    if ($cfg.ContainsKey("MlLocalDockerContainer") -and $cfg.MlLocalDockerContainer) {
-        $containers += [string]$cfg.MlLocalDockerContainer
-    }
-    return @(
-        $containers |
-        ForEach-Object { "$_".Trim() } |
-        Where-Object { $_ -ne "" } |
-        Select-Object -Unique
-    )
-}
-
-function Get-ConfiguredMlPorts {
-    $ports = @()
-    if ($cfg.ContainsKey("MlLocalListenPorts") -and $cfg.MlLocalListenPorts) {
-        $ports += @($cfg.MlLocalListenPorts)
-    }
-    if ($cfg.ContainsKey("MlLocalListenPort") -and $cfg.MlLocalListenPort) {
-        $ports += [int]$cfg.MlLocalListenPort
-    }
-    if (-not $ports) { $ports += 3003 }
-    return @(
-        $ports |
-        ForEach-Object { [int]$_ } |
-        Select-Object -Unique
-    )
-}
-
-function Ensure-LocalMlServiceRunning {
-    $autoStart = if ($cfg.ContainsKey("MlAutoStartLocalService")) { [bool]$cfg.MlAutoStartLocalService } else { $true }
-    if (-not $autoStart) { return }
-
-    $containers = Get-ConfiguredMlContainers
-    foreach ($container in $containers) {
-        $check = Invoke-Wsl "docker inspect -f '{{.State.Running}}' '$container' 2>/dev/null || echo missing" -Quiet
-        $state = ($check.Output.Trim() -split "`r?`n" | Select-Object -First 1).Trim().ToLower()
-
-        if ($state -eq "true") {
-            Write-Info "Servicio ML local ya activo ($container)." Green
-            continue
-        }
-
-        Invoke-Wsl "docker start '$container' >/dev/null 2>&1 || true" -Quiet | Out-Null
-        $recheck = Invoke-Wsl "docker inspect -f '{{.State.Running}}' '$container' 2>/dev/null || echo missing" -Quiet
-        $rstate = ($recheck.Output.Trim() -split "`r?`n" | Select-Object -First 1).Trim().ToLower()
-        if ($rstate -eq "true") {
-            Write-Info "Servicio ML local iniciado ($container)." Green
-        } else {
-            Write-Info "No pude confirmar inicio del servicio ML local ($container)." Yellow
-        }
-    }
-}
-
-function Stop-LocalMlService {
-    $autoStop = if ($cfg.ContainsKey("MlAutoStopLocalService")) { [bool]$cfg.MlAutoStopLocalService } else { $true }
-    if (-not $autoStop) {
-        return [PSCustomObject]@{
-            StoppedCount = 0
-            Remaining    = ""
-        }
-    }
-
-    $stopped = New-Object System.Collections.Generic.HashSet[string]
-    $containers = Get-ConfiguredMlContainers
-    foreach ($container in $containers) {
-        $isRunning = Invoke-Wsl "docker ps --format '{{.Names}}' | grep -Fx '$container' >/dev/null && echo 1 || echo 0" -Quiet
-        if (($isRunning.Output.Trim() -split "`r?`n" | Select-Object -First 1).Trim() -eq "1") {
-            Invoke-Wsl "docker stop '$container' >/dev/null 2>&1 || true" -Quiet | Out-Null
-            [void]$stopped.Add($container)
-        }
-    }
-
-    $ports = Get-ConfiguredMlPorts
-    foreach ($port in $ports) {
-        $remaining = Invoke-Wsl "docker ps --filter publish=$port --format '{{.Names}}'" -Quiet
-        $list = @($remaining.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
-        foreach ($name in $list) {
-            Invoke-Wsl "docker stop '$name' >/dev/null 2>&1 || true" -Quiet | Out-Null
-            [void]$stopped.Add($name)
-        }
-    }
-
-    $allRemaining = @()
-    foreach ($port in $ports) {
-        $after = Invoke-Wsl "docker ps --filter publish=$port --format '{{.Names}}'" -Quiet
-        $allRemaining += @($after.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
-    }
-    $allRemaining = @($allRemaining | Select-Object -Unique)
-
-    return [PSCustomObject]@{
-        StoppedCount = $stopped.Count
-        Remaining    = ($allRemaining -join ",")
-    }
-}
-
-function Stop-LocalComputeProcesses {
-    $enabled = if ($cfg.ContainsKey("LocalComputeAutoStopEnabled")) { [bool]$cfg.LocalComputeAutoStopEnabled } else { $true }
-    if (-not $enabled) {
-        return [PSCustomObject]@{
-            StoppedCount   = 0
-            RemainingCount = 0
-        }
-    }
-
-    $forceAllFfmpeg = if ($cfg.ContainsKey("LocalComputeForceStopFfmpegAll")) { [bool]$cfg.LocalComputeForceStopFfmpegAll } else { $false }
-    $names = if ($cfg.ContainsKey("LocalComputeProcessNames") -and $cfg.LocalComputeProcessNames) {
-        @($cfg.LocalComputeProcessNames)
-    } else {
-        @("ffmpeg.exe", "python.exe", "pythonw.exe", "pwsh.exe", "powershell.exe")
-    }
-    $names = @($names | ForEach-Object { "$_".Trim().ToLower() } | Where-Object { $_ -ne "" } | Select-Object -Unique)
-
-    $patterns = if ($cfg.ContainsKey("LocalComputeCommandPatterns") -and $cfg.LocalComputeCommandPatterns) {
-        @($cfg.LocalComputeCommandPatterns)
-    } else {
-        @(
-            "reprocess_heavy_from_server\.ps1",
-            "conversion(_1x1|_op|_uno10bits|10bits)?\.ps1",
-            "backfill-heavy-cache\.py",
-            "SUPER-NAS",
-            "SUPERNAS"
-        )
-    }
-    $regex = ""
-    if ($patterns.Count -gt 0) {
-        $regex = "(?i)(" + (($patterns | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne "" }) -join "|") + ")"
-    }
-
-    $selfPid = $PID
-    $stopped = New-Object System.Collections.Generic.HashSet[int]
-    $candidates = Get-CimInstance Win32_Process | Where-Object {
-        $_.ProcessId -ne $selfPid -and
-        ($names -contains ($_.Name.ToLower())) -and
-        (
-            ($forceAllFfmpeg -and $_.Name.ToLower() -eq "ffmpeg.exe") -or
-            ((-not [string]::IsNullOrWhiteSpace($regex)) -and $_.CommandLine -match $regex)
-        )
-    }
-
-    foreach ($proc in $candidates) {
-        try {
-            Stop-Process -Id ([int]$proc.ProcessId) -Force -ErrorAction Stop
-            [void]$stopped.Add([int]$proc.ProcessId)
-        }
-        catch { }
-    }
-
-    $remaining = Get-CimInstance Win32_Process | Where-Object {
-        $_.ProcessId -ne $selfPid -and
-        ($names -contains ($_.Name.ToLower())) -and
-        (
-            ($forceAllFfmpeg -and $_.Name.ToLower() -eq "ffmpeg.exe") -or
-            ((-not [string]::IsNullOrWhiteSpace($regex)) -and $_.CommandLine -match $regex)
-        )
-    }
-
-    return [PSCustomObject]@{
-        StoppedCount   = $stopped.Count
-        RemainingCount = @($remaining).Count
-    }
-}
-
-function Invoke-LocalRestMode {
-    param([string]$Reason = "manual")
-
-    $local = Stop-MlTunnelLocalProcesses
-    $remote = Stop-MlTunnelRemoteSide
-    $localMl = Stop-LocalMlService
-    $compute = Stop-LocalComputeProcesses
-    $remainingLocal = @(Get-MlTunnelLocalSshProcesses).Count
-
-    $ok = (
-        $remainingLocal -eq 0 -and
-        [string]::IsNullOrWhiteSpace($remote.Output) -and
-        [string]::IsNullOrWhiteSpace($localMl.Remaining) -and
-        $compute.RemainingCount -eq 0
-    )
-
-    if ($ok) {
-        Write-Info "Descanso local activo: túneles abajo, contenedores ML abajo y procesos GPU/CPU de carga detenidos." Green
-    } else {
-        Write-Info "Se aplicó descanso local, pero quedaron residuos. Revisar manualmente." Yellow
-        if ($remote.Output) { Write-Host $remote.Output }
-        if ($localMl.Remaining) { Write-Host "Contenedores locales aún en puertos ML: $($localMl.Remaining)" }
-    }
-
-    Send-StepTelegram "🧊 Descanso local aplicado ($Reason).`nssh túnel residuales: $remainingLocal`ncontenedores ML detenidos: $($localMl.StoppedCount)`nprocesos locales detenidos: $($compute.StoppedCount)`nprocesos restantes: $($compute.RemainingCount)"
-
-    return [PSCustomObject]@{
-        Ok             = $ok
-        LocalStopped   = $local.StoppedCount
-        MlStopped      = $localMl.StoppedCount
-        ComputeStopped = $compute.StoppedCount
-        RemainingSsh   = $remainingLocal
-        RemainingProc  = $compute.RemainingCount
-        RemainingMl    = $localMl.Remaining
-    }
-}
-
 function Start-MlTunnel {
-    Ensure-LocalMlServiceRunning
-
-    $existing = Get-MlTunnelLocalSshProcesses
-    if ($existing) {
-        Write-Info "Encontré túnel previo; limpio primero procesos locales huérfanos..." Yellow
-        Stop-MlTunnelLocalProcesses -Quiet | Out-Null
+    if (Test-Path $cfg.MlTunnelPidFile) {
+        $oldPid = Get-Content $cfg.MlTunnelPidFile -ErrorAction SilentlyContinue
+        if ($oldPid) {
+            try {
+                $p = Get-Process -Id ([int]$oldPid) -ErrorAction Stop
+                Write-Info "Ya existe túnel activo (PID $($p.Id))." Yellow
+                return
+            }
+            catch { }
+        }
     }
 
     $argList = @(
@@ -483,18 +197,26 @@ function Start-MlTunnel {
     $proc = Start-Process -FilePath $cfg.SshExe -ArgumentList $argList -PassThru -WindowStyle Minimized
     Set-Content -Path $cfg.MlTunnelPidFile -Value $proc.Id -Encoding ASCII
     Write-Info "Túnel ML iniciado. PID=$($proc.Id)" Green
-    Start-Sleep -Seconds 2
-    $remoteCheck = Invoke-Ssh "ss -ltnp | grep ':13003 ' || true" -Quiet
-    if ($remoteCheck.Output.Trim()) {
-        Write-Info "Túnel remoto activo en 13003 (TV Box)." Green
-    } else {
-        Write-Info "No confirmé 13003 aún; revisar conectividad si IML no procesa." Yellow
-    }
     Send-StepTelegram "🧠 Túnel ML PC->NAS iniciado`nRemote: $($cfg.MlTunnelRemoteBind)`nLocal: $($cfg.MlTunnelLocalTarget)"
 }
 
 function Stop-MlTunnel {
-    Invoke-LocalRestMode -Reason "stop_tunnel" | Out-Null
+    if (!(Test-Path $cfg.MlTunnelPidFile)) {
+        Write-Info "No hay PID de túnel para detener." Yellow
+        return
+    }
+    $pidText = Get-Content $cfg.MlTunnelPidFile -ErrorAction SilentlyContinue
+    if ($pidText) {
+        try {
+            Stop-Process -Id ([int]$pidText) -Force -ErrorAction Stop
+            Write-Info "Túnel detenido (PID $pidText)." Green
+            Send-StepTelegram "🧠 Túnel ML PC->NAS detenido (PID $pidText)."
+        }
+        catch {
+            Write-Info "No pude detener PID $pidText (quizá ya terminó)." Yellow
+        }
+    }
+    Remove-Item $cfg.MlTunnelPidFile -Force -ErrorAction SilentlyContinue
 }
 
 function Send-TestTelegram {
@@ -527,7 +249,6 @@ while ($true) {
     Write-Host "18) Iniciar túnel ML (usar GPU PC)"
     Write-Host "19) Detener túnel ML"
     Write-Host "20) Enviar Telegram de prueba"
-    Write-Host "21) Forzar descanso local GPU/CPU (sin tocar colas)"
     Write-Host "0) Salir"
     $opt = Read-Host "Elige opción"
 
@@ -553,7 +274,6 @@ while ($true) {
             "18" { Start-MlTunnel }
             "19" { Stop-MlTunnel }
             "20" { Send-TestTelegram }
-            "21" { Invoke-LocalRestMode -Reason "manual_rest_mode" | Out-Null }
             "0" { break }
             default { Write-Info "Opción no válida." Yellow }
         }
