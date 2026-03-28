@@ -1058,9 +1058,13 @@ SCRIPTS=(
     "retry-quarantine.sh" # Reactiva videos en cuarentena (fallo 3/3)
     "cache-monitor.sh"   # Vigilancia de tamaño del cache (no borra)
     "night-run.sh"       # Orquestador nocturno (cola + cool_down + flock)
+    "video-autopilot.sh" # Reproceso continuo por carga CPU/RAM (pausa/reanuda)
     "video-reprocess-nightly.sh" # Reproceso nocturno ligero y cola manual para pesados
     "playback-audit-autoheal.sh" # Auditoria HTTP playback + autocorreccion automatica
+    "playback-watchdog.sh" # Vigilancia activa de playback para detectar estancamientos
     "rebuild-video-cache.sh" # Recuperacion total de cache (prepare/light-only/tvbox-all)
+    "state-backup.sh"    # Backup rapido de estado (DB + config + inventario)
+    "state-restore.sh"   # Restauracion rapida desde snapshot de estado
     "mount-guard.sh"     # Detecta desmontajes/remontajes y notifica Telegram
     "post-upload-check.sh" # Verificacion puntual del flujo tras subir un asset
 )
@@ -1113,6 +1117,12 @@ if [ -f "$SCRIPT_DIR/scripts/audit_video_playback.py" ]; then
     log_ok "Instalado: /usr/local/bin/audit_video_playback.py"
 fi
 
+if [ -f "$SCRIPT_DIR/maintenance/iml-backlog-drain.py" ]; then
+    install -m 0755 "$SCRIPT_DIR/maintenance/iml-backlog-drain.py" \
+        /usr/local/bin/iml-backlog-drain.py
+    log_ok "Instalado: /usr/local/bin/iml-backlog-drain.py"
+fi
+
 cat > /etc/default/nas-video-policy <<EOF
 VIDEO_STREAM_MAX_MB_PER_MIN=${VIDEO_STREAM_MAX_MB_PER_MIN:-40}
 VIDEO_STREAM_TARGET_MB_PER_MIN=${VIDEO_STREAM_TARGET_MB_PER_MIN:-38}
@@ -1133,6 +1143,20 @@ VIDEO_REPROCESS_AUDIO_BITRATE_K=${VIDEO_REPROCESS_AUDIO_BITRATE_K:-128}
 VIDEO_REPROCESS_TARGET_MAXRATE_K=${VIDEO_REPROCESS_TARGET_MAXRATE_K:-5200}
 VIDEO_REPROCESS_ATTEMPTS_DB=${VIDEO_REPROCESS_ATTEMPTS_DB:-/var/lib/nas-retry/video-reprocess-light.attempts.tsv}
 VIDEO_REPROCESS_MANUAL_QUEUE=${VIDEO_REPROCESS_MANUAL_QUEUE:-/var/lib/nas-retry/video-reprocess-manual.tsv}
+VIDEO_REPROCESS_HEAVY_ENABLED=${VIDEO_REPROCESS_HEAVY_ENABLED:-1}
+VIDEO_REPROCESS_HEAVY_LIMIT=${VIDEO_REPROCESS_HEAVY_LIMIT:-0}
+VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED=${VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED:-0}
+VIDEO_REPROCESS_MAX_CPU_PCT=${VIDEO_REPROCESS_MAX_CPU_PCT:-72}
+VIDEO_REPROCESS_MAX_MEM_PCT=${VIDEO_REPROCESS_MAX_MEM_PCT:-82}
+VIDEO_REPROCESS_CPU_SAMPLE_SEC=${VIDEO_REPROCESS_CPU_SAMPLE_SEC:-2}
+VIDEO_REPROCESS_BATCH_LIGHT=${VIDEO_REPROCESS_BATCH_LIGHT:-35}
+VIDEO_REPROCESS_BATCH_HEAVY=${VIDEO_REPROCESS_BATCH_HEAVY:-5}
+VIDEO_REPROCESS_MAX_RUNTIME_MIN=${VIDEO_REPROCESS_MAX_RUNTIME_MIN:-170}
+VIDEO_REPROCESS_IDLE_SLEEP_SEC=${VIDEO_REPROCESS_IDLE_SLEEP_SEC:-45}
+VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC=${VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC:-1800}
+VIDEO_AUTOPILOT_ENABLED=${VIDEO_AUTOPILOT_ENABLED:-0}
+VIDEO_AUTOPILOT_SLICE_MIN=${VIDEO_AUTOPILOT_SLICE_MIN:-8}
+VIDEO_AUTOPILOT_ALERT_TTL_SEC=${VIDEO_AUTOPILOT_ALERT_TTL_SEC:-3600}
 PLAYBACK_AUDIT_ENABLED=${PLAYBACK_AUDIT_ENABLED:-1}
 PLAYBACK_AUDIT_MAX_MIN=${PLAYBACK_AUDIT_MAX_MIN:-45}
 PLAYBACK_AUDIT_IMMICH_API=${PLAYBACK_AUDIT_IMMICH_API:-http://127.0.0.1:2283}
@@ -1145,6 +1169,11 @@ PLAYBACK_AUDIT_AUTOHEAL_ENABLED=${PLAYBACK_AUDIT_AUTOHEAL_ENABLED:-1}
 PLAYBACK_AUDIT_AUTOHEAL_LIMIT=${PLAYBACK_AUDIT_AUTOHEAL_LIMIT:-200}
 PLAYBACK_AUDIT_AUTOHEAL_MAX_ATTEMPTS=${PLAYBACK_AUDIT_AUTOHEAL_MAX_ATTEMPTS:-3}
 PLAYBACK_AUDIT_AUTOHEAL_CLASSES="${PLAYBACK_AUDIT_AUTOHEAL_CLASSES:-not_found http_error unexpected_content placeholder_missing placeholder_damaged placeholder_error}"
+PLAYBACK_WATCHDOG_ENABLED=${PLAYBACK_WATCHDOG_ENABLED:-1}
+PLAYBACK_WATCHDOG_MAX_CYCLES=${PLAYBACK_WATCHDOG_MAX_CYCLES:-4}
+PLAYBACK_WATCHDOG_INTERVAL_SEC=${PLAYBACK_WATCHDOG_INTERVAL_SEC:-180}
+PLAYBACK_WATCHDOG_STUCK_ROUNDS=${PLAYBACK_WATCHDOG_STUCK_ROUNDS:-2}
+PLAYBACK_WATCHDOG_REPROCESS_TIMEOUT_MIN=${PLAYBACK_WATCHDOG_REPROCESS_TIMEOUT_MIN:-240}
 VIDEO_OPTIMIZE_MAX_MIN=${VIDEO_OPTIMIZE_MAX_MIN:-180}
 EOF
 chmod 0644 /etc/default/nas-video-policy
@@ -1297,6 +1326,11 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 #   up   -> alerta de recuperación
 */3 * * * * /usr/local/bin/mount-guard.sh
 
+# ── Reproceso continuo opcional por carga (desactivado por default) ──────
+# Si VIDEO_AUTOPILOT_ENABLED=1, este cron permite ir drenando videos nuevos
+# durante el dia sin cambiar el flujo nocturno base.
+*/10 * * * * /usr/local/bin/video-autopilot.sh
+
 # ── Mantenimiento mensual — día 1: SMART extendido ───────────────────────
 # Test corto no destructivo (~2 min). El disco sigue operando normalmente.
 # Verifica superficie del disco y monitorea Load/Unload cycles.
@@ -1313,6 +1347,9 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 # ── Mantenimiento mensual — día 3: limpieza journal ───────────────────────
 # journald.conf ya limita a 100 MB, esto aplica la retención activamente.
 0 3 3 * * journalctl --vacuum-time=7d
+
+# ── Watchdog playback: evita backlog atascado ─────────────────────────────
+30 4 * * * /usr/local/bin/playback-watchdog.sh
 "
 
 # Instalar sin sobreescribir configuración manual existente
@@ -1320,7 +1357,7 @@ if crontab -l 2>/dev/null | grep -q "night-run"; then
     log_warn "Crontab ya tiene night-run — omitiendo (revisar manualmente con: crontab -e)"
 else
     { crontab -l 2>/dev/null || true; echo "$CRON_CONTENT"; } | crontab -
-    log_ok "Crontab configurado (7 entradas)"
+    log_ok "Crontab configurado (9 entradas)"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -96,7 +96,7 @@ else
 fi
 
 section "SCRIPTS DE MANTENIMIENTO"
-for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh; do
+for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/video-autopilot.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/playback-watchdog.sh /usr/local/bin/state-backup.sh /usr/local/bin/state-restore.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh; do
   if [ -x "$f" ]; then bash -n "$f" >/dev/null 2>&1 && ok "$f instalado y sintaxis válida" || fail "$f con errores de sintaxis"; else fail "$f ausente"; fi
 done
 [ -x /usr/local/bin/immich-video-playback-resolver.py ] && python3 -m py_compile /usr/local/bin/immich-video-playback-resolver.py >/dev/null 2>&1 && ok "/usr/local/bin/immich-video-playback-resolver.py instalado y sintaxis válida" || fail "/usr/local/bin/immich-video-playback-resolver.py ausente o inválido"
@@ -114,6 +114,11 @@ if [ -x /usr/local/bin/audit_video_playback.py ]; then
   python3 -m py_compile /usr/local/bin/audit_video_playback.py >/dev/null 2>&1 && ok "/usr/local/bin/audit_video_playback.py instalado y sintaxis válida" || fail "/usr/local/bin/audit_video_playback.py con errores de sintaxis"
 else
   warn "/usr/local/bin/audit_video_playback.py no instalado"
+fi
+if [ -x /usr/local/bin/iml-backlog-drain.py ]; then
+  python3 -m py_compile /usr/local/bin/iml-backlog-drain.py >/dev/null 2>&1 && ok "/usr/local/bin/iml-backlog-drain.py instalado y sintaxis válida" || fail "/usr/local/bin/iml-backlog-drain.py con errores de sintaxis"
+else
+  warn "/usr/local/bin/iml-backlog-drain.py no instalado"
 fi
 
 section "HEALTH STATES"
@@ -163,6 +168,16 @@ if [ -f /etc/default/nas-video-policy ] && grep -q '^VIDEO_REPROCESS_LIGHT_LIMIT
 else
   warn "Politica no define VIDEO_REPROCESS_LIGHT_LIMIT"
 fi
+if [ -f /etc/default/nas-video-policy ] && grep -q '^VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED=' /etc/default/nas-video-policy; then
+  ok "Politica define VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED"
+else
+  warn "Politica no define VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED"
+fi
+if [ -f /etc/default/nas-video-policy ] && grep -q '^VIDEO_AUTOPILOT_ENABLED=' /etc/default/nas-video-policy; then
+  ok "Politica define VIDEO_AUTOPILOT_ENABLED"
+else
+  warn "Politica no define VIDEO_AUTOPILOT_ENABLED"
+fi
 if [ -f /etc/default/nas-video-policy ] && grep -q '^VIDEO_REPROCESS_MANUAL_QUEUE=' /etc/default/nas-video-policy; then
   ok "Politica define VIDEO_REPROCESS_MANUAL_QUEUE"
 else
@@ -186,7 +201,9 @@ fi
 
 section "CRONTAB"
 crontab -l 2>/dev/null | grep -q 'night-run.sh' && ok "Cron night-run presente" || fail "Cron night-run ausente"
+crontab -l 2>/dev/null | grep -q 'video-autopilot.sh' && ok "Cron video-autopilot presente" || warn "Cron video-autopilot ausente"
 crontab -l 2>/dev/null | grep -q 'ml-temp-guard' && ok "Cron ml-temp-guard presente" || warn "Cron ml-temp-guard ausente"
+crontab -l 2>/dev/null | grep -q 'playback-watchdog.sh' && ok "Cron playback-watchdog presente" || warn "Cron playback-watchdog ausente"
 crontab -l 2>/dev/null | grep -q 'smart-check.sh monthly' && ok "Cron SMART mensual presente" || warn "Cron SMART mensual ausente"
 
 section "RESUMEN"
