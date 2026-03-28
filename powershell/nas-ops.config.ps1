@@ -1,6 +1,7 @@
 @{
     SshExe = "ssh"
     ScpExe = "scp"
+    WslExe = "wsl"
 
     ServerUser = "root"
     ServerHost = "192.168.100.89"
@@ -14,4 +15,11 @@
 
     # Ruta local para guardar PID del túnel.
     MlTunnelPidFile = "$env:TEMP\\supernas-ml-tunnel.pid"
+
+    # Servicio ML local en PC/WSL (usa GPU local).
+    # Si está en true, el menú lo arranca al iniciar túnel y lo apaga al detener.
+    MlAutoStartLocalService = $true
+    MlAutoStopLocalService = $true
+    MlLocalDockerContainer = "immich_ml_laptop"
+    MlLocalListenPort = 3003
 }

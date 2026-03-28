@@ -33,7 +33,8 @@ powershell -ExecutionPolicy Bypass -File .\powershell\nas-ops-menu.ps1
   - `state-restore.sh`
 - Túnel ML desde PC para usar GPU local:
   - inicia/detiene túnel `ssh -R`.
-  - al detener, limpia PID + procesos `ssh` huérfanos en PC y corta residuos remotos (`13003/13031` + `ml_tunnel_proxy`).
+  - al iniciar, puede levantar automáticamente el contenedor ML local (configurable).
+  - al detener, limpia PID + procesos `ssh` huérfanos en PC, corta residuos remotos (`13003/13031` + `ml_tunnel_proxy`) y apaga el contenedor ML local para que la GPU descanse.
 
 ## Nota importante
 - El flujo normal de video se mantiene igual.

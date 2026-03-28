@@ -48,6 +48,24 @@ function Invoke-Ssh {
     }
 }
 
+function Invoke-Wsl {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [switch]$Quiet
+    )
+
+    $wslExe = if ($cfg.ContainsKey("WslExe") -and $cfg.WslExe) { $cfg.WslExe } else { "wsl" }
+    $out = & $wslExe -e sh -lc $Command 2>&1
+    $code = $LASTEXITCODE
+    if ($code -ne 0 -and -not $Quiet) {
+        Write-Host ($out | Out-String) -ForegroundColor Yellow
+    }
+    return [PSCustomObject]@{
+        ExitCode = $code
+        Output   = ($out | Out-String)
+    }
+}
+
 function Send-StepTelegram {
     param([string]$Message)
     $safe = $Message.Replace('"', '\"')
@@ -235,7 +253,68 @@ ss -ltnp 2>/dev/null | grep -E ':13003|:13031' || true
     return (Invoke-Ssh $cmd -Quiet)
 }
 
+function Ensure-LocalMlServiceRunning {
+    $autoStart = if ($cfg.ContainsKey("MlAutoStartLocalService")) { [bool]$cfg.MlAutoStartLocalService } else { $true }
+    if (-not $autoStart) { return }
+
+    $container = if ($cfg.ContainsKey("MlLocalDockerContainer")) { [string]$cfg.MlLocalDockerContainer } else { "" }
+    if ([string]::IsNullOrWhiteSpace($container)) { return }
+
+    $check = Invoke-Wsl "docker inspect -f '{{.State.Running}}' '$container' 2>/dev/null || echo missing" -Quiet
+    $state = ($check.Output.Trim() -split "`r?`n" | Select-Object -First 1).Trim().ToLower()
+
+    if ($state -eq "true") {
+        Write-Info "Servicio ML local ya estaba activo ($container)." Green
+        return
+    }
+
+    Invoke-Wsl "docker start '$container' >/dev/null 2>&1 || true" -Quiet | Out-Null
+    $recheck = Invoke-Wsl "docker inspect -f '{{.State.Running}}' '$container' 2>/dev/null || echo missing" -Quiet
+    $rstate = ($recheck.Output.Trim() -split "`r?`n" | Select-Object -First 1).Trim().ToLower()
+    if ($rstate -eq "true") {
+        Write-Info "Servicio ML local iniciado ($container)." Green
+    } else {
+        Write-Info "No pude confirmar inicio del servicio ML local ($container)." Yellow
+    }
+}
+
+function Stop-LocalMlService {
+    $autoStop = if ($cfg.ContainsKey("MlAutoStopLocalService")) { [bool]$cfg.MlAutoStopLocalService } else { $true }
+    if (-not $autoStop) {
+        return [PSCustomObject]@{
+            StoppedCount = 0
+            Remaining    = ""
+        }
+    }
+
+    $container = if ($cfg.ContainsKey("MlLocalDockerContainer")) { [string]$cfg.MlLocalDockerContainer } else { "" }
+    $port = if ($cfg.ContainsKey("MlLocalListenPort")) { [int]$cfg.MlLocalListenPort } else { 3003 }
+
+    if (-not [string]::IsNullOrWhiteSpace($container)) {
+        Invoke-Wsl "docker ps --format '{{.Names}}' | grep -Fx '$container' >/dev/null && docker stop '$container' >/dev/null 2>&1 || true" -Quiet | Out-Null
+    }
+
+    $remaining = Invoke-Wsl "docker ps --filter publish=$port --format '{{.Names}}'" -Quiet
+    $list = @($remaining.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+
+    if ($list.Count -gt 0) {
+        foreach ($name in $list) {
+            Invoke-Wsl "docker stop '$name' >/dev/null 2>&1 || true" -Quiet | Out-Null
+        }
+    }
+
+    $after = Invoke-Wsl "docker ps --filter publish=$port --format '{{.Names}}'" -Quiet
+    $afterList = @($after.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+
+    return [PSCustomObject]@{
+        StoppedCount = $list.Count
+        Remaining    = ($afterList -join ",")
+    }
+}
+
 function Start-MlTunnel {
+    Ensure-LocalMlServiceRunning
+
     $existing = Get-MlTunnelLocalSshProcesses
     if ($existing) {
         Write-Info "Encontré túnel previo; limpio primero procesos locales huérfanos..." Yellow
@@ -266,16 +345,18 @@ function Start-MlTunnel {
 function Stop-MlTunnel {
     $local = Stop-MlTunnelLocalProcesses
     $remote = Stop-MlTunnelRemoteSide
+    $localMl = Stop-LocalMlService
     $remainingLocal = @(Get-MlTunnelLocalSshProcesses).Count
 
-    if ($remainingLocal -eq 0 -and [string]::IsNullOrWhiteSpace($remote.Output)) {
-        Write-Info "Túnel apagado y sin procesos colgados (PC + TV Box)." Green
+    if ($remainingLocal -eq 0 -and [string]::IsNullOrWhiteSpace($remote.Output) -and [string]::IsNullOrWhiteSpace($localMl.Remaining)) {
+        Write-Info "Túnel apagado y sin procesos colgados (PC + TV Box). GPU local en reposo." Green
     } else {
         Write-Info "Se limpió el túnel, pero detecté residuos. Revisar manualmente." Yellow
         if ($remote.Output) { Write-Host $remote.Output }
+        if ($localMl.Remaining) { Write-Host "Contenedores locales aún escuchando puerto ML: $($localMl.Remaining)" }
     }
 
-    Send-StepTelegram "🧠 Túnel ML PC->NAS detenido.`nPIDs locales cerrados: $($local.StoppedCount)`nResiduos locales: $remainingLocal"
+    Send-StepTelegram "🧠 Túnel ML PC->NAS detenido.`nPIDs locales cerrados: $($local.StoppedCount)`nContenedores ML locales detenidos: $($localMl.StoppedCount)`nResiduos ssh locales: $remainingLocal"
 }
 
 function Send-TestTelegram {
