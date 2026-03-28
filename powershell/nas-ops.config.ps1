@@ -21,5 +21,19 @@
     MlAutoStartLocalService = $true
     MlAutoStopLocalService = $true
     MlLocalDockerContainer = "immich_ml_laptop"
+    MlLocalDockerContainers = @("immich_ml_laptop")
     MlLocalListenPort = 3003
+    MlLocalListenPorts = @(3003)
+
+    # Descanso local de cómputo (GPU/CPU) cuando se apaga túnel.
+    LocalComputeAutoStopEnabled = $true
+    LocalComputeForceStopFfmpegAll = $false
+    LocalComputeProcessNames = @("ffmpeg.exe", "python.exe", "pythonw.exe", "pwsh.exe", "powershell.exe")
+    LocalComputeCommandPatterns = @(
+        "reprocess_heavy_from_server\.ps1",
+        "conversion(_1x1|_op|_uno10bits|10bits)?\.ps1",
+        "backfill-heavy-cache\.py",
+        "SUPER-NAS",
+        "SUPERNAS"
+    )
 }

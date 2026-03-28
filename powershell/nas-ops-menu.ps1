@@ -55,14 +55,19 @@ function Invoke-Wsl {
     )
 
     $wslExe = if ($cfg.ContainsKey("WslExe") -and $cfg.WslExe) { $cfg.WslExe } else { "wsl" }
-    $out = & $wslExe -e sh -lc $Command 2>&1
+    $raw = & $wslExe -e sh -lc $Command 2>&1
     $code = $LASTEXITCODE
+    $text = ($raw | Out-String)
+    $clean = (($text -split "`r?`n") | Where-Object { $_ -notmatch '^wsl: Processing /etc/fstab' }) -join [Environment]::NewLine
+    if ($clean.Length -gt 0) {
+        $clean = $clean.TrimEnd() + [Environment]::NewLine
+    }
     if ($code -ne 0 -and -not $Quiet) {
-        Write-Host ($out | Out-String) -ForegroundColor Yellow
+        Write-Host $clean -ForegroundColor Yellow
     }
     return [PSCustomObject]@{
         ExitCode = $code
-        Output   = ($out | Out-String)
+        Output   = $clean
     }
 }
 
@@ -135,6 +140,8 @@ function Run-ImlFinalize {
     Invoke-Ssh "python3 /usr/local/bin/iml-drain-finalize.py --timeout-min 720 --sleep-sec 20" | ForEach-Object {
         Write-Host $_.Output
     }
+    Write-Info "Aplicando descanso local post-finalización (GPU/CPU)..."
+    Invoke-LocalRestMode -Reason "post_iml_finalize" | Out-Null
 }
 
 function Run-VideoAutopilotOnce {
@@ -253,28 +260,60 @@ ss -ltnp 2>/dev/null | grep -E ':13003|:13031' || true
     return (Invoke-Ssh $cmd -Quiet)
 }
 
+function Get-ConfiguredMlContainers {
+    $containers = @()
+    if ($cfg.ContainsKey("MlLocalDockerContainers") -and $cfg.MlLocalDockerContainers) {
+        $containers += @($cfg.MlLocalDockerContainers)
+    }
+    if ($cfg.ContainsKey("MlLocalDockerContainer") -and $cfg.MlLocalDockerContainer) {
+        $containers += [string]$cfg.MlLocalDockerContainer
+    }
+    return @(
+        $containers |
+        ForEach-Object { "$_".Trim() } |
+        Where-Object { $_ -ne "" } |
+        Select-Object -Unique
+    )
+}
+
+function Get-ConfiguredMlPorts {
+    $ports = @()
+    if ($cfg.ContainsKey("MlLocalListenPorts") -and $cfg.MlLocalListenPorts) {
+        $ports += @($cfg.MlLocalListenPorts)
+    }
+    if ($cfg.ContainsKey("MlLocalListenPort") -and $cfg.MlLocalListenPort) {
+        $ports += [int]$cfg.MlLocalListenPort
+    }
+    if (-not $ports) { $ports += 3003 }
+    return @(
+        $ports |
+        ForEach-Object { [int]$_ } |
+        Select-Object -Unique
+    )
+}
+
 function Ensure-LocalMlServiceRunning {
     $autoStart = if ($cfg.ContainsKey("MlAutoStartLocalService")) { [bool]$cfg.MlAutoStartLocalService } else { $true }
     if (-not $autoStart) { return }
 
-    $container = if ($cfg.ContainsKey("MlLocalDockerContainer")) { [string]$cfg.MlLocalDockerContainer } else { "" }
-    if ([string]::IsNullOrWhiteSpace($container)) { return }
+    $containers = Get-ConfiguredMlContainers
+    foreach ($container in $containers) {
+        $check = Invoke-Wsl "docker inspect -f '{{.State.Running}}' '$container' 2>/dev/null || echo missing" -Quiet
+        $state = ($check.Output.Trim() -split "`r?`n" | Select-Object -First 1).Trim().ToLower()
 
-    $check = Invoke-Wsl "docker inspect -f '{{.State.Running}}' '$container' 2>/dev/null || echo missing" -Quiet
-    $state = ($check.Output.Trim() -split "`r?`n" | Select-Object -First 1).Trim().ToLower()
+        if ($state -eq "true") {
+            Write-Info "Servicio ML local ya activo ($container)." Green
+            continue
+        }
 
-    if ($state -eq "true") {
-        Write-Info "Servicio ML local ya estaba activo ($container)." Green
-        return
-    }
-
-    Invoke-Wsl "docker start '$container' >/dev/null 2>&1 || true" -Quiet | Out-Null
-    $recheck = Invoke-Wsl "docker inspect -f '{{.State.Running}}' '$container' 2>/dev/null || echo missing" -Quiet
-    $rstate = ($recheck.Output.Trim() -split "`r?`n" | Select-Object -First 1).Trim().ToLower()
-    if ($rstate -eq "true") {
-        Write-Info "Servicio ML local iniciado ($container)." Green
-    } else {
-        Write-Info "No pude confirmar inicio del servicio ML local ($container)." Yellow
+        Invoke-Wsl "docker start '$container' >/dev/null 2>&1 || true" -Quiet | Out-Null
+        $recheck = Invoke-Wsl "docker inspect -f '{{.State.Running}}' '$container' 2>/dev/null || echo missing" -Quiet
+        $rstate = ($recheck.Output.Trim() -split "`r?`n" | Select-Object -First 1).Trim().ToLower()
+        if ($rstate -eq "true") {
+            Write-Info "Servicio ML local iniciado ($container)." Green
+        } else {
+            Write-Info "No pude confirmar inicio del servicio ML local ($container)." Yellow
+        }
     }
 }
 
@@ -287,28 +326,140 @@ function Stop-LocalMlService {
         }
     }
 
-    $container = if ($cfg.ContainsKey("MlLocalDockerContainer")) { [string]$cfg.MlLocalDockerContainer } else { "" }
-    $port = if ($cfg.ContainsKey("MlLocalListenPort")) { [int]$cfg.MlLocalListenPort } else { 3003 }
-
-    if (-not [string]::IsNullOrWhiteSpace($container)) {
-        Invoke-Wsl "docker ps --format '{{.Names}}' | grep -Fx '$container' >/dev/null && docker stop '$container' >/dev/null 2>&1 || true" -Quiet | Out-Null
-    }
-
-    $remaining = Invoke-Wsl "docker ps --filter publish=$port --format '{{.Names}}'" -Quiet
-    $list = @($remaining.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
-
-    if ($list.Count -gt 0) {
-        foreach ($name in $list) {
-            Invoke-Wsl "docker stop '$name' >/dev/null 2>&1 || true" -Quiet | Out-Null
+    $stopped = New-Object System.Collections.Generic.HashSet[string]
+    $containers = Get-ConfiguredMlContainers
+    foreach ($container in $containers) {
+        $isRunning = Invoke-Wsl "docker ps --format '{{.Names}}' | grep -Fx '$container' >/dev/null && echo 1 || echo 0" -Quiet
+        if (($isRunning.Output.Trim() -split "`r?`n" | Select-Object -First 1).Trim() -eq "1") {
+            Invoke-Wsl "docker stop '$container' >/dev/null 2>&1 || true" -Quiet | Out-Null
+            [void]$stopped.Add($container)
         }
     }
 
-    $after = Invoke-Wsl "docker ps --filter publish=$port --format '{{.Names}}'" -Quiet
-    $afterList = @($after.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+    $ports = Get-ConfiguredMlPorts
+    foreach ($port in $ports) {
+        $remaining = Invoke-Wsl "docker ps --filter publish=$port --format '{{.Names}}'" -Quiet
+        $list = @($remaining.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+        foreach ($name in $list) {
+            Invoke-Wsl "docker stop '$name' >/dev/null 2>&1 || true" -Quiet | Out-Null
+            [void]$stopped.Add($name)
+        }
+    }
+
+    $allRemaining = @()
+    foreach ($port in $ports) {
+        $after = Invoke-Wsl "docker ps --filter publish=$port --format '{{.Names}}'" -Quiet
+        $allRemaining += @($after.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+    }
+    $allRemaining = @($allRemaining | Select-Object -Unique)
 
     return [PSCustomObject]@{
-        StoppedCount = $list.Count
-        Remaining    = ($afterList -join ",")
+        StoppedCount = $stopped.Count
+        Remaining    = ($allRemaining -join ",")
+    }
+}
+
+function Stop-LocalComputeProcesses {
+    $enabled = if ($cfg.ContainsKey("LocalComputeAutoStopEnabled")) { [bool]$cfg.LocalComputeAutoStopEnabled } else { $true }
+    if (-not $enabled) {
+        return [PSCustomObject]@{
+            StoppedCount   = 0
+            RemainingCount = 0
+        }
+    }
+
+    $forceAllFfmpeg = if ($cfg.ContainsKey("LocalComputeForceStopFfmpegAll")) { [bool]$cfg.LocalComputeForceStopFfmpegAll } else { $false }
+    $names = if ($cfg.ContainsKey("LocalComputeProcessNames") -and $cfg.LocalComputeProcessNames) {
+        @($cfg.LocalComputeProcessNames)
+    } else {
+        @("ffmpeg.exe", "python.exe", "pythonw.exe", "pwsh.exe", "powershell.exe")
+    }
+    $names = @($names | ForEach-Object { "$_".Trim().ToLower() } | Where-Object { $_ -ne "" } | Select-Object -Unique)
+
+    $patterns = if ($cfg.ContainsKey("LocalComputeCommandPatterns") -and $cfg.LocalComputeCommandPatterns) {
+        @($cfg.LocalComputeCommandPatterns)
+    } else {
+        @(
+            "reprocess_heavy_from_server\.ps1",
+            "conversion(_1x1|_op|_uno10bits|10bits)?\.ps1",
+            "backfill-heavy-cache\.py",
+            "SUPER-NAS",
+            "SUPERNAS"
+        )
+    }
+    $regex = ""
+    if ($patterns.Count -gt 0) {
+        $regex = "(?i)(" + (($patterns | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne "" }) -join "|") + ")"
+    }
+
+    $selfPid = $PID
+    $stopped = New-Object System.Collections.Generic.HashSet[int]
+    $candidates = Get-CimInstance Win32_Process | Where-Object {
+        $_.ProcessId -ne $selfPid -and
+        ($names -contains ($_.Name.ToLower())) -and
+        (
+            ($forceAllFfmpeg -and $_.Name.ToLower() -eq "ffmpeg.exe") -or
+            ((-not [string]::IsNullOrWhiteSpace($regex)) -and $_.CommandLine -match $regex)
+        )
+    }
+
+    foreach ($proc in $candidates) {
+        try {
+            Stop-Process -Id ([int]$proc.ProcessId) -Force -ErrorAction Stop
+            [void]$stopped.Add([int]$proc.ProcessId)
+        }
+        catch { }
+    }
+
+    $remaining = Get-CimInstance Win32_Process | Where-Object {
+        $_.ProcessId -ne $selfPid -and
+        ($names -contains ($_.Name.ToLower())) -and
+        (
+            ($forceAllFfmpeg -and $_.Name.ToLower() -eq "ffmpeg.exe") -or
+            ((-not [string]::IsNullOrWhiteSpace($regex)) -and $_.CommandLine -match $regex)
+        )
+    }
+
+    return [PSCustomObject]@{
+        StoppedCount   = $stopped.Count
+        RemainingCount = @($remaining).Count
+    }
+}
+
+function Invoke-LocalRestMode {
+    param([string]$Reason = "manual")
+
+    $local = Stop-MlTunnelLocalProcesses
+    $remote = Stop-MlTunnelRemoteSide
+    $localMl = Stop-LocalMlService
+    $compute = Stop-LocalComputeProcesses
+    $remainingLocal = @(Get-MlTunnelLocalSshProcesses).Count
+
+    $ok = (
+        $remainingLocal -eq 0 -and
+        [string]::IsNullOrWhiteSpace($remote.Output) -and
+        [string]::IsNullOrWhiteSpace($localMl.Remaining) -and
+        $compute.RemainingCount -eq 0
+    )
+
+    if ($ok) {
+        Write-Info "Descanso local activo: túneles abajo, contenedores ML abajo y procesos GPU/CPU de carga detenidos." Green
+    } else {
+        Write-Info "Se aplicó descanso local, pero quedaron residuos. Revisar manualmente." Yellow
+        if ($remote.Output) { Write-Host $remote.Output }
+        if ($localMl.Remaining) { Write-Host "Contenedores locales aún en puertos ML: $($localMl.Remaining)" }
+    }
+
+    Send-StepTelegram "🧊 Descanso local aplicado ($Reason).`nssh túnel residuales: $remainingLocal`ncontenedores ML detenidos: $($localMl.StoppedCount)`nprocesos locales detenidos: $($compute.StoppedCount)`nprocesos restantes: $($compute.RemainingCount)"
+
+    return [PSCustomObject]@{
+        Ok             = $ok
+        LocalStopped   = $local.StoppedCount
+        MlStopped      = $localMl.StoppedCount
+        ComputeStopped = $compute.StoppedCount
+        RemainingSsh   = $remainingLocal
+        RemainingProc  = $compute.RemainingCount
+        RemainingMl    = $localMl.Remaining
     }
 }
 
@@ -343,20 +494,7 @@ function Start-MlTunnel {
 }
 
 function Stop-MlTunnel {
-    $local = Stop-MlTunnelLocalProcesses
-    $remote = Stop-MlTunnelRemoteSide
-    $localMl = Stop-LocalMlService
-    $remainingLocal = @(Get-MlTunnelLocalSshProcesses).Count
-
-    if ($remainingLocal -eq 0 -and [string]::IsNullOrWhiteSpace($remote.Output) -and [string]::IsNullOrWhiteSpace($localMl.Remaining)) {
-        Write-Info "Túnel apagado y sin procesos colgados (PC + TV Box). GPU local en reposo." Green
-    } else {
-        Write-Info "Se limpió el túnel, pero detecté residuos. Revisar manualmente." Yellow
-        if ($remote.Output) { Write-Host $remote.Output }
-        if ($localMl.Remaining) { Write-Host "Contenedores locales aún escuchando puerto ML: $($localMl.Remaining)" }
-    }
-
-    Send-StepTelegram "🧠 Túnel ML PC->NAS detenido.`nPIDs locales cerrados: $($local.StoppedCount)`nContenedores ML locales detenidos: $($localMl.StoppedCount)`nResiduos ssh locales: $remainingLocal"
+    Invoke-LocalRestMode -Reason "stop_tunnel" | Out-Null
 }
 
 function Send-TestTelegram {
@@ -389,6 +527,7 @@ while ($true) {
     Write-Host "18) Iniciar túnel ML (usar GPU PC)"
     Write-Host "19) Detener túnel ML"
     Write-Host "20) Enviar Telegram de prueba"
+    Write-Host "21) Forzar descanso local GPU/CPU (sin tocar colas)"
     Write-Host "0) Salir"
     $opt = Read-Host "Elige opción"
 
@@ -414,6 +553,7 @@ while ($true) {
             "18" { Start-MlTunnel }
             "19" { Stop-MlTunnel }
             "20" { Send-TestTelegram }
+            "21" { Invoke-LocalRestMode -Reason "manual_rest_mode" | Out-Null }
             "0" { break }
             default { Write-Info "Opción no válida." Yellow }
         }
