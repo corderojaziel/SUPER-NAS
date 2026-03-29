@@ -34,28 +34,12 @@ iml_pending_count() {
     --print-pending-only 2>/dev/null || echo 0
 }
 
-if [ -x "$ALERT_BIN" ]; then
-  NAS_ALERT_KEY="video_autopilot:tick" \
-  NAS_ALERT_TTL="$VIDEO_AUTOPILOT_ALERT_TTL_SEC" \
-  "$ALERT_BIN" "🤖 Autopiloto de video activo
-Modo: ejecución continua por carga (CPU/RAM/temperatura/requests) en slices de ${VIDEO_AUTOPILOT_SLICE_MIN} min.
-Secuencia: primero IML, después video.
-Se pausa si la caja se ocupa y retoma automáticamente." || true
-fi
-
 if [ "$VIDEO_AUTOPILOT_REQUIRE_IML_DRAIN" = "1" ]; then
   pending="$(iml_pending_count)"
   case "$pending" in
     ''|*[!0-9]*) pending=0 ;;
   esac
   if [ "$pending" -gt 0 ]; then
-    if [ -x "$ALERT_BIN" ]; then
-      NAS_ALERT_KEY="video_autopilot:wait_iml" \
-      NAS_ALERT_TTL="$VIDEO_AUTOPILOT_ALERT_TTL_SEC" \
-      "$ALERT_BIN" "⏳ Video autopilot en espera
-IML pendiente: $pending colas/elementos.
-Primero termina IML y luego continúa compresión de videos." || true
-    fi
     exit 0
   fi
 fi

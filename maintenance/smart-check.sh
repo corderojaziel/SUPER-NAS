@@ -81,13 +81,11 @@ for disk in $DISK_LIST; do
     echo "$disk|WARN|SMART no disponible" >> "$RISKY_FILE"
     GLOBAL=$(merge_status "$GLOBAL" WARN)
     NAS_ALERT_KEY="smart_unavailable:${disk}" NAS_ALERT_TTL=21600 alert "⚠️ No pude leer la salud del $DISK_LABEL
-Algunos adaptadores no dejan pasar esta información.
+Acción del NAS: sigo en modo seguro.
 Disco detectado: $DISK_DETAIL
-Qué correr (TV Box):
-Insumo: no aplica.
+Comandos sugeridos (diagnóstico):
 1) lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT
-2) /usr/local/bin/smart-check.sh daily
-3) /usr/local/bin/verify.sh"
+2) /usr/local/bin/smart-check.sh daily"
     continue
   fi
 
@@ -147,8 +145,7 @@ Insumo: no aplica.
 Detecté una señal temprana de desgaste o temperatura alta.
 Detalle: $USER_REASON.
 Disco exacto: $DISK_DETAIL
-Qué correr (TV Box):
-Insumo: no aplica.
+Comandos sugeridos (diagnóstico):
 1) smartctl $SMART_DEV_OPTS -a $disk
 2) /usr/local/bin/smart-check.sh weekly"
       ;;
@@ -157,9 +154,8 @@ Insumo: no aplica.
 Detecté un problema serio.
 Detalle: $USER_REASON.
 Disco exacto: $DISK_DETAIL
-Para cuidarlo, el NAS va a pausar tareas pesadas.
-Qué correr ahora (TV Box):
-Insumo: no aplica.
+Acción del NAS: pauso tareas pesadas para proteger datos.
+Importante: estos comandos no reparan sectores, solo confirman estado.
 1) smartctl $SMART_DEV_OPTS -a $disk
 2) lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT
 3) /usr/local/bin/verify.sh"

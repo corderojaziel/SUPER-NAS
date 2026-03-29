@@ -33,6 +33,9 @@ IML_BUSY_ALERT_TTL_SEC="${IML_BUSY_ALERT_TTL_SEC:-1800}"
 IML_AUTOPILOT_START_ML_IF_PENDING="${IML_AUTOPILOT_START_ML_IF_PENDING:-1}"
 IML_AUTOPILOT_STOP_ML_WHEN_IDLE="${IML_AUTOPILOT_STOP_ML_WHEN_IDLE:-0}"
 IML_ML_CONTAINER_NAME="${IML_ML_CONTAINER_NAME:-immich_machine_learning}"
+IML_NOTIFY_BACKLOG_THRESHOLD="${IML_NOTIFY_BACKLOG_THRESHOLD:-10}"
+IML_NOTIFY_STUCK_MIN="${IML_NOTIFY_STUCK_MIN:-20}"
+IML_NOTIFY_STATE_FILE="${IML_NOTIFY_STATE_FILE:-/var/lib/nas-health/iml-notify-state.json}"
 
 if [ "$IML_AUTOPILOT_ENABLED" != "1" ]; then
   exit 0
@@ -46,14 +49,6 @@ mkdir -p "$(dirname "$LOCK_FILE")" "$(dirname "$LOG_FILE")"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
   exit 0
-fi
-
-if [ -x "$ALERT_BIN" ]; then
-  NAS_ALERT_KEY="iml_autopilot:tick" \
-  NAS_ALERT_TTL="$IML_AUTOPILOT_ALERT_TTL_SEC" \
-  "$ALERT_BIN" "🧠 Autopiloto IML activo
-Modo: pausado/reanudado por CPU/RAM/requests.
-Orden: library/sidecar/metadata -> smart/ocr/duplicados/caras -> reconocimiento facial." || true
 fi
 
 iml_pending_count() {
@@ -87,18 +82,13 @@ esac
 if [ "$pending_now" -gt 0 ] && [ "$IML_AUTOPILOT_START_ML_IF_PENDING" = "1" ]; then
   if ! container_running; then
     docker start "$IML_ML_CONTAINER_NAME" >/dev/null 2>&1 || true
-    if [ -x "$ALERT_BIN" ]; then
-      NAS_ALERT_KEY="iml_autopilot:ml_start" \
-      NAS_ALERT_TTL=900 \
-      "$ALERT_BIN" "⚙️ IML autopilot encendió Machine Learning para drenar colas pendientes (${pending_now})." || true
-    fi
   fi
   if ! wait_ml_ready; then
     if [ -x "$ALERT_BIN" ]; then
       NAS_ALERT_KEY="iml_autopilot:ml_unreachable" \
       NAS_ALERT_TTL=900 \
-      "$ALERT_BIN" "⚠️ IML autopilot detectó ML no disponible en este momento.
-Acción: difiere el drenado y reintenta en el siguiente ciclo." || true
+      "$ALERT_BIN" "⚠️ IML no disponible por ahora
+Acción del NAS: pospuse esta corrida y reintento automático en el siguiente ciclo." || true
     fi
     exit 0
   fi
@@ -115,6 +105,9 @@ cmd=(
   --timeout-min "$IML_AUTOPILOT_SLICE_MIN"
   --timeout-soft
   --busy-alert-ttl-sec "$IML_BUSY_ALERT_TTL_SEC"
+  --notify-backlog-threshold "$IML_NOTIFY_BACKLOG_THRESHOLD"
+  --notify-stuck-min "$IML_NOTIFY_STUCK_MIN"
+  --notify-state-file "$IML_NOTIFY_STATE_FILE"
 )
 
 if [ "$IML_DYNAMIC_LOAD_ENABLED" = "1" ]; then

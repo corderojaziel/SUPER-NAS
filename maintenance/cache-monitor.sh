@@ -71,37 +71,25 @@ if [ "$(echo "$CACHE_GB >= $CRIT_GB" | bc)" -eq 1 ]; then
     fi
     if [ "$SHOULD_ALERT" -eq 1 ]; then
         if "$NAS_ALERT_BIN" "🔴 El cache de videos está muy grande
-Ahora ocupa ${CACHE_GB} GB y guarda ${CACHE_FILES} videos temporales.
-Eso equivale al ${RATIO}% del tamaño de tu biblioteca y quedan ${FREE_GB} GB libres en el disco principal.
-Qué correr:
-- TV Box: /usr/local/bin/cache-clean.sh
-  Insumo: no aplica (solo auditoría, no borra).
-- TV Box: /usr/local/bin/cache-migrate-to-disk.sh --plan
-  Insumo: no aplica.
-- TV Box (si decides aplicar): /usr/local/bin/cache-migrate-to-disk.sh --apply --target-free-gb 20
-  Insumo: no aplica.
-- TV Box (si sigue alto): /usr/local/bin/rebuild-video-cache.sh prepare
-  Insumo: automático (genera listas en /var/lib/nas-health/reprocess).
-- PC (pesados): powershell -ExecutionPolicy Bypass -File C:\\Users\\jazie\\SUPERNAS\\powershell\\reprocess_heavy_from_server.ps1 -NoPlan -Limit 50
-  Insumo: automático (descarga plan desde TV Box)."; then
+Cache: ${CACHE_GB} GB (${CACHE_FILES} archivos), relación ${RATIO}%.
+Acción del NAS: no borro cache automáticamente.
+Si quieres actuar:
+1) /usr/local/bin/cache-migrate-to-disk.sh --plan   # solo revisar
+2) /usr/local/bin/cache-migrate-to-disk.sh --apply --target-free-gb 20   # sí migra cache al HDD"; then
             date +%s > "$LAST_CRIT"
         fi
     fi
 
 elif [ "$(echo "$CACHE_GB >= $WARN_GB" | bc)" -eq 1 ]; then
     "$NAS_ALERT_BIN" "🟡 El cache de videos va creciendo
-Ahora ocupa ${CACHE_GB} GB y guarda ${CACHE_FILES} videos temporales.
-No se borra cache automáticamente; conviene vigilar el espacio.
-Qué correr (TV Box): /usr/local/bin/cache-monitor.sh
-Insumo: no aplica."
+Cache: ${CACHE_GB} GB (${CACHE_FILES} archivos).
+Acción del NAS: solo monitoreo, sin borrado automático."
 
 elif [ "$RATIO" -ge "$RATIO_WARN" ]; then
     "$NAS_ALERT_BIN" "🟠 El cache ya es grande comparado con tu biblioteca
 Cache: ${CACHE_GB} GB
 Biblioteca: ${PHOTOS_GB} GB
 Relación actual: ${RATIO}%
-Qué correr:
-- TV Box: /usr/local/bin/cache-clean.sh (auditoría)
-- TV Box: /usr/local/bin/cache-migrate-to-disk.sh --plan
-Insumo: no aplica."
+Si quieres revisar candidatos sin cambiar nada:
+/usr/local/bin/cache-migrate-to-disk.sh --plan"
 fi

@@ -90,9 +90,8 @@ if [ "$TEMP_C" -gt "$FAN_IDLE_TEMP_C" ] && [ "${CPU_USAGE:-50}" -lt "$FAN_IDLE_C
     "$NAS_ALERT_BIN" "⚠️ El NAS está más caliente de lo normal estando casi en reposo
 Temperatura: ${TEMP_C}°C
 Uso de CPU: ${CPU_USAGE}%
-Esto puede indicar un problema con el ventilador.
-Qué correr (TV Box, sin insumo):
-Insumo: no aplica.
+Acción del NAS: te aviso para revisión preventiva.
+Comandos sugeridos (diagnóstico):
 1) /usr/local/bin/verify.sh
 2) cat /sys/class/thermal/thermal_zone*/temp" || true
 fi
@@ -105,10 +104,8 @@ if [ "$TEMP_C" -ge "$ML_TEMP_CRIT_C" ]; then
   "$PKILL_BIN" -15 -x ffmpeg 2>/dev/null || true
   NAS_ALERT_KEY="ml_temp_critical" "$NAS_ALERT_BIN" "🔴 Temperatura crítica en el NAS
 Temperatura actual: ${TEMP_C}°C
-Detuve el reconocimiento inteligente de Immich y cualquier conversión de video para proteger el equipo.
-Conviene revisar ventilación o ventilador cuanto antes.
-Qué correr (TV Box, sin insumo):
-Insumo: no aplica.
+Acción del NAS: detuve IML y conversión de video para proteger el equipo.
+Comandos sugeridos:
 1) /usr/local/bin/verify.sh
 2) /usr/local/bin/immich-ml-window.sh thermal-off" || true
   exit 0
@@ -119,7 +116,6 @@ if [ "$TEMP_C" -ge "$ML_TEMP_HIGH_C" ]; then
   "$DOCKER_BIN" stop immich_machine_learning 2>/dev/null || true
   NAS_ALERT_KEY="ml_temp_high" "$NAS_ALERT_BIN" "🌡️ El NAS se calentó más de lo normal
 Temperatura actual: ${TEMP_C}°C
-Detuve temporalmente el reconocimiento inteligente de Immich para que el equipo se enfríe solo.
-Qué correr (TV Box): /usr/local/bin/immich-ml-window.sh thermal-off
-Insumo: no aplica." || true
+Acción del NAS: pausé IML temporalmente para enfriar el equipo.
+Comando opcional (TV Box): /usr/local/bin/immich-ml-window.sh thermal-off" || true
 fi

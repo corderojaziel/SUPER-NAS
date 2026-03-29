@@ -51,6 +51,10 @@ VIDEO_REPROCESS_MAX_RUNTIME_MIN="${VIDEO_REPROCESS_MAX_RUNTIME_MIN:-170}"
 VIDEO_REPROCESS_IDLE_SLEEP_SEC="${VIDEO_REPROCESS_IDLE_SLEEP_SEC:-45}"
 VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC="${VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC:-1800}"
 VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED="${VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED:-1}"
+VIDEO_NOTIFY_BACKLOG_THRESHOLD="${VIDEO_NOTIFY_BACKLOG_THRESHOLD:-10}"
+VIDEO_NOTIFY_STUCK_MIN="${VIDEO_NOTIFY_STUCK_MIN:-20}"
+VIDEO_NOTIFY_STATE_FILE="${VIDEO_NOTIFY_STATE_FILE:-$HEALTH_DIR/video-notify-state.env}"
+VIDEO_NOTIFY_VERBOSE="${VIDEO_NOTIFY_VERBOSE:-0}"
 
 mkdir -p "$STATE_DIR" "$HEALTH_DIR" "$VIDEO_REPROCESS_OUTPUT_DIR" "$(dirname "$LOG_FILE")" "$(dirname "$LOCK_FILE")"
 
@@ -80,6 +84,27 @@ csv_count() {
   local file="$1"
   [ -f "$file" ] || { echo 0; return; }
   awk 'END{ if (NR>0) print NR-1; else print 0 }' "$file" 2>/dev/null
+}
+
+load_notify_state() {
+  NOTIFY_LAST_PENDING=0
+  NOTIFY_STUCK_SINCE=0
+  NOTIFY_ALERT_OPEN=0
+  [ -f "$VIDEO_NOTIFY_STATE_FILE" ] && . "$VIDEO_NOTIFY_STATE_FILE"
+  NOTIFY_LAST_PENDING="${NOTIFY_LAST_PENDING:-0}"
+  NOTIFY_STUCK_SINCE="${NOTIFY_STUCK_SINCE:-0}"
+  NOTIFY_ALERT_OPEN="${NOTIFY_ALERT_OPEN:-0}"
+}
+
+save_notify_state() {
+  local now_ts="$1"
+  mkdir -p "$(dirname "$VIDEO_NOTIFY_STATE_FILE")"
+  cat > "$VIDEO_NOTIFY_STATE_FILE" <<EOF
+NOTIFY_LAST_PENDING=$NOTIFY_LAST_PENDING
+NOTIFY_STUCK_SINCE=$NOTIFY_STUCK_SINCE
+NOTIFY_ALERT_OPEN=$NOTIFY_ALERT_OPEN
+NOTIFY_TS=$now_ts
+EOF
 }
 
 if [ ! -f "$MANAGER_BIN" ]; then
@@ -429,6 +454,37 @@ if [ "$RUN_STATUS" = "SKIPPED" ] && [ "$TOTAL_CONVERTED" -gt 0 ]; then
   RUN_STATUS="OK"
 fi
 
+PENDING_TOTAL=$((light_total + heavy_total + MANUAL_TOTAL))
+NOW_TS="$(date +%s)"
+load_notify_state
+
+if [ "$PENDING_TOTAL" -ge "$VIDEO_NOTIFY_BACKLOG_THRESHOLD" ]; then
+  if [ "$NOTIFY_LAST_PENDING" -le 0 ] || [ "$PENDING_TOTAL" -lt "$NOTIFY_LAST_PENDING" ] || [ "$NOTIFY_STUCK_SINCE" -le 0 ]; then
+    NOTIFY_STUCK_SINCE="$NOW_TS"
+  fi
+  STUCK_MIN=$(( (NOW_TS - NOTIFY_STUCK_SINCE) / 60 ))
+  if [ "$STUCK_MIN" -ge "$VIDEO_NOTIFY_STUCK_MIN" ]; then
+    alert_throttled \
+      "video_reprocess:queue_stuck" \
+      "$VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC" \
+      "⚠️ Cola de video alta y sin bajar
+Pendientes: $PENDING_TOTAL (ligeros $light_total, pesados $heavy_total, manuales $MANUAL_TOTAL).
+Lleva ~${STUCK_MIN} min sin mejora.
+Acción del NAS: sigue reintentando en segundo plano."
+    NOTIFY_ALERT_OPEN=1
+  fi
+else
+  if [ "$NOTIFY_ALERT_OPEN" -eq 1 ]; then
+    alert "✅ Cola de video volvió a nivel normal
+Pendientes actuales: $PENDING_TOTAL (umbral ${VIDEO_NOTIFY_BACKLOG_THRESHOLD})."
+  fi
+  NOTIFY_ALERT_OPEN=0
+  NOTIFY_STUCK_SINCE="$NOW_TS"
+fi
+
+NOTIFY_LAST_PENDING="$PENDING_TOTAL"
+save_notify_state "$NOW_TS"
+
 cat > "$SUMMARY_FILE" <<EOF
 VIDEO_REPROCESS_TS=$(date -Iseconds)
 VIDEO_REPROCESS_LIGHT_TOTAL=$light_total
@@ -448,23 +504,16 @@ VIDEO_REPROCESS_STATUS=$RUN_STATUS
 EOF
 
 if [ "$RUN_STATUS" = "FAIL" ]; then
-  alert "⚠️ Reproceso de videos terminó con errores
-Ligeros convertidos: $LIGHT_CONVERTED (fallidos: $LIGHT_FAILED)
-Pesados convertidos en TV Box: $HEAVY_CONVERTED (fallidos: $HEAVY_FAILED)
-Fallidos totales: $TOTAL_FAILED
-Pendientes manuales: $MANUAL_TOTAL
-Insumos: $VIDEO_REPROCESS_OUTPUT_DIR
-Qué correr:
-- TV Box: /usr/local/bin/video-reprocess-nightly.sh
-- PC (pesados/GPU): powershell -ExecutionPolicy Bypass -File C:\\Users\\jazie\\SUPERNAS\\powershell\\reprocess_heavy_from_server.ps1 -NoPlan -Limit 50"
+  alert "⚠️ Reproceso de video con errores
+Acción del NAS: el ciclo terminó incompleto.
+Resultado: convertidos $TOTAL_CONVERTED, fallidos $TOTAL_FAILED, manuales $MANUAL_TOTAL.
+Si quieres relanzar ahora: /usr/local/bin/video-reprocess-nightly.sh"
   exit 1
 fi
 
-alert "🌙 Reproceso de videos completado
-Ligeros convertidos: $LIGHT_CONVERTED
-Pesados convertidos en TV Box: $HEAVY_CONVERTED
-Fallidos totales: $TOTAL_FAILED
-Pendientes manuales acumulados: $MANUAL_TOTAL
-Modo: $MODE_LABEL
-Control de carga (si está activo): CPU<=${VIDEO_REPROCESS_MAX_CPU_PCT}% RAM<=${VIDEO_REPROCESS_MAX_MEM_PCT}% TEMP<=${VIDEO_REPROCESS_MAX_TEMP_C}°C REQ<=${VIDEO_REPROCESS_MAX_REQUESTS_PER_WINDOW}/${VIDEO_REPROCESS_REQUEST_WINDOW_SEC}s."
+if [ "$VIDEO_NOTIFY_VERBOSE" = "1" ] && [ "$TOTAL_CONVERTED" -gt 0 ]; then
+  alert "🎬 Reproceso de video ejecutado
+Convertidos: $TOTAL_CONVERTED (ligeros $LIGHT_CONVERTED, pesados $HEAVY_CONVERTED).
+Pendientes actuales: $PENDING_TOTAL."
+fi
 exit 0

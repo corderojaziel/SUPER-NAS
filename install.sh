@@ -1069,6 +1069,7 @@ SCRIPTS=(
     "state-backup.sh"    # Backup rapido de estado (DB + config + inventario)
     "state-restore.sh"   # Restauracion rapida desde snapshot de estado
     "manual-retention.sh" # Depuracion manual de respaldos (sin auto-borrado)
+    "log-maintenance.sh"  # Rotacion/depuracion mensual de logs tecnicos
     "mount-guard.sh"     # Detecta desmontajes/remontajes y notifica Telegram
     "post-upload-check.sh" # Verificacion puntual del flujo tras subir un asset
     "audit-snapshot.sh"  # Bitacora operativa periodica (CPU/RAM/colas/montajes)
@@ -1191,6 +1192,9 @@ IML_BUSY_ALERT_TTL_SEC=${IML_BUSY_ALERT_TTL_SEC:-1800}
 IML_AUTOPILOT_START_ML_IF_PENDING=${IML_AUTOPILOT_START_ML_IF_PENDING:-1}
 IML_AUTOPILOT_STOP_ML_WHEN_IDLE=${IML_AUTOPILOT_STOP_ML_WHEN_IDLE:-0}
 IML_ML_CONTAINER_NAME=${IML_ML_CONTAINER_NAME:-immich_machine_learning}
+IML_NOTIFY_BACKLOG_THRESHOLD=${IML_NOTIFY_BACKLOG_THRESHOLD:-10}
+IML_NOTIFY_STUCK_MIN=${IML_NOTIFY_STUCK_MIN:-20}
+IML_NOTIFY_STATE_FILE=${IML_NOTIFY_STATE_FILE:-/var/lib/nas-health/iml-notify-state.json}
 PLAYBACK_AUDIT_ENABLED=${PLAYBACK_AUDIT_ENABLED:-1}
 PLAYBACK_AUDIT_MAX_MIN=${PLAYBACK_AUDIT_MAX_MIN:-45}
 PLAYBACK_AUDIT_IMMICH_API=${PLAYBACK_AUDIT_IMMICH_API:-http://127.0.0.1:2283}
@@ -1209,9 +1213,35 @@ PLAYBACK_WATCHDOG_INTERVAL_SEC=${PLAYBACK_WATCHDOG_INTERVAL_SEC:-180}
 PLAYBACK_WATCHDOG_STUCK_ROUNDS=${PLAYBACK_WATCHDOG_STUCK_ROUNDS:-2}
 PLAYBACK_WATCHDOG_REPROCESS_TIMEOUT_MIN=${PLAYBACK_WATCHDOG_REPROCESS_TIMEOUT_MIN:-240}
 VIDEO_OPTIMIZE_MAX_MIN=${VIDEO_OPTIMIZE_MAX_MIN:-180}
+VIDEO_NOTIFY_BACKLOG_THRESHOLD=${VIDEO_NOTIFY_BACKLOG_THRESHOLD:-10}
+VIDEO_NOTIFY_STUCK_MIN=${VIDEO_NOTIFY_STUCK_MIN:-20}
+VIDEO_NOTIFY_STATE_FILE=${VIDEO_NOTIFY_STATE_FILE:-/var/lib/nas-health/video-notify-state.env}
+VIDEO_NOTIFY_VERBOSE=${VIDEO_NOTIFY_VERBOSE:-0}
 EOF
 chmod 0644 /etc/default/nas-video-policy
 log_ok "Politica de video instalada (/etc/default/nas-video-policy)"
+
+cat > /etc/logrotate.d/supernas << 'EOF'
+/var/log/night-run.log
+/var/log/iml-autopilot.log
+/var/log/video-reprocess-nightly.log
+/var/log/playback-audit-autoheal.log
+/var/log/playback-watchdog.log
+/var/log/nas-audit.log
+/var/log/nas-install.log
+/var/log/dockerd-manual.log
+{
+    monthly
+    rotate 6
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+chmod 0644 /etc/logrotate.d/supernas
+log_ok "Rotación mensual de logs SUPER-NAS configurada (/etc/logrotate.d/supernas)"
 
 cat > /etc/systemd/system/immich-video-playback-resolver.service << 'EOF'
 [Unit]
@@ -1390,6 +1420,9 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 # journald.conf ya limita a 100 MB, esto aplica la retención activamente.
 0 3 3 * * journalctl --vacuum-time=7d
 
+# ── Mantenimiento mensual — día 4: rotación y depuración de logs técnicos ─
+0 3 4 * * /usr/local/bin/log-maintenance.sh
+
 # ── Watchdog playback: evita backlog atascado ─────────────────────────────
 30 4 * * * /usr/local/bin/playback-watchdog.sh
 "
@@ -1399,7 +1432,7 @@ if crontab -l 2>/dev/null | grep -q "night-run"; then
     log_warn "Crontab ya tiene night-run — omitiendo (revisar manualmente con: crontab -e)"
 else
     { crontab -l 2>/dev/null || true; echo "$CRON_CONTENT"; } | crontab -
-    log_ok "Crontab configurado (11 entradas)"
+    log_ok "Crontab configurado (12 entradas)"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════

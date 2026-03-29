@@ -769,7 +769,7 @@ main() {
       covered=$((covered + 1))
     fi
   done <<'EOF'
-backup_mount|No pude ver bien los discos montados del NAS.
+backup_mount|Acción del NAS: no corrí backup para evitar un respaldo incompleto.
 backup_smart|Uno de los discos reportó un problema serio.
 backup_emmc|La memoria interna del NAS está casi llena.
 backup_db|La base de datos de Immich está con problemas

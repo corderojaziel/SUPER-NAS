@@ -23,6 +23,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib import error, request
 
@@ -206,6 +207,25 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Solo imprime el total pendiente y termina (sin alerts).",
     )
+    parser.add_argument(
+        "--notify-backlog-threshold",
+        type=int,
+        default=int(os.environ.get("IML_NOTIFY_BACKLOG_THRESHOLD", "10")),
+        help="Enviar alerta solo cuando la cola pendiente llega a este valor.",
+    )
+    parser.add_argument(
+        "--notify-stuck-min",
+        type=int,
+        default=int(os.environ.get("IML_NOTIFY_STUCK_MIN", "20")),
+        help="Minutos sin mejora para considerar cola estancada y alertar.",
+    )
+    parser.add_argument(
+        "--notify-state-file",
+        default=os.environ.get(
+            "IML_NOTIFY_STATE_FILE", "/var/lib/nas-health/iml-notify-state.json"
+        ),
+        help="Archivo de estado para anti-spam y seguimiento de estancamiento.",
+    )
     return parser.parse_args()
 
 
@@ -245,6 +265,38 @@ def send_alert_throttled(alert_bin: str, key: str, ttl_sec: int, message: str) -
         subprocess.run([alert_bin, message], check=False, env=env)
     except Exception:
         pass
+
+
+def load_notify_state(path: str) -> dict[str, Any]:
+    if not path:
+        return {}
+    p = Path(path)
+    if not p.is_file():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def save_notify_state(path: str, state: dict[str, Any]) -> None:
+    if not path:
+        return
+    p = Path(path)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(p)
+    except Exception:
+        return
 
 
 def post_json(url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
@@ -595,27 +647,13 @@ def main() -> int:
         print(str(pending_total(states, targets)), flush=True)
         return 0
 
-    if dynamic_load:
-        mode_line = (
-            f"Modo: adaptativo (CPU<={args.max_cpu_pct:.0f}% "
-            f"RAM<={args.max_mem_pct:.0f}% "
-            f"TEMP<={args.max_temp_c:.0f}C "
-            f"REQ<={args.max_requests_window}/{args.request_window_sec}s)"
-        )
-    else:
-        mode_line = "Modo: continuo clasico"
-    phase_line = " -> ".join("/".join(phase) for phase in phases)
-
-    send_alert(
-        args.alert_bin,
-        (
-            "🔄 Inicio drenado IML multi-cola\n"
-            f"Objetivo: {', '.join(targets)}\n"
-            f"{mode_line}\n"
-            f"Orden por dependencias: {phase_line}\n"
-            "Accion: resume/start solo de pendientes (sin reset global)."
-        ),
-    )
+    threshold = max(args.notify_backlog_threshold, 1)
+    stuck_min = max(args.notify_stuck_min, 1)
+    now0 = int(time.time())
+    notify_state = load_notify_state(args.notify_state_file)
+    alert_open = bool(notify_state.get("alert_open", False))
+    last_pending = to_int(notify_state.get("last_pending"), -1)
+    stuck_since = to_int(notify_state.get("stuck_since"), now0)
 
     while True:
         loops += 1
@@ -631,13 +669,23 @@ def main() -> int:
             mins = round((time.time() - start_ts) / 60.0, 1)
             done_line = format_target_summary(states, targets)
             print(time.strftime("%F %T"), "DONE", done_line, flush=True)
-            send_alert(
-                args.alert_bin,
-                (
-                    "✅ Drenado IML completado\n"
-                    f"Colas objetivo en cero: {', '.join(targets)}\n"
-                    f"Duracion: {mins} min."
-                ),
+            if alert_open:
+                send_alert(
+                    args.alert_bin,
+                    (
+                        "✅ IML volvió a la normalidad\n"
+                        "Las colas pendientes bajaron y ya no están en nivel alto."
+                    ),
+                )
+            save_notify_state(
+                args.notify_state_file,
+                {
+                    "alert_open": False,
+                    "last_pending": 0,
+                    "stuck_since": int(time.time()),
+                    "last_run_min": mins,
+                    "ts": int(time.time()),
+                },
             )
             return 0
 
@@ -660,21 +708,60 @@ def main() -> int:
                 if loops % max(args.log_every, 1) == 0 or line != last_print:
                     print(time.strftime("%F %T"), line, flush=True)
                     last_print = line
-                send_alert_throttled(
-                    args.alert_bin,
-                    "iml_drain:busy",
-                    args.busy_alert_ttl_sec,
-                    (
-                        "⏸️ IML en pausa automática por actividad/carga\n"
-                        f"Motivo: {reason}\n"
-                        f"CPU: {cpu:.1f}%  RAM: {mem:.1f}%\n"
-                        f"Temp CPU: {temp:.1f}°C\n"
-                        f"Requests: {req} en {args.request_window_sec}s\n"
-                        "Reanuda solo cuando baje la carga."
-                    ),
-                )
+                if total_pending >= threshold:
+                    send_alert_throttled(
+                        args.alert_bin,
+                        "iml_drain:busy",
+                        args.busy_alert_ttl_sec,
+                        (
+                            "⏸️ IML pausada por carga de uso\n"
+                            f"CPU {cpu:.1f}% | RAM {mem:.1f}% | Temp {temp:.1f}°C | Req {req}/{args.request_window_sec}s\n"
+                            "Acción del NAS: reanuda automáticamente cuando baje la carga."
+                        ),
+                    )
                 time.sleep(max(args.sleep_sec, 1))
                 continue
+
+        now_ts = int(time.time())
+        if total_pending >= threshold:
+            if last_pending < 0 or total_pending < last_pending:
+                stuck_since = now_ts
+            mins_stuck = max((now_ts - stuck_since) // 60, 0)
+            if mins_stuck >= stuck_min:
+                send_alert_throttled(
+                    args.alert_bin,
+                    "iml_drain:queue_stuck",
+                    max(args.busy_alert_ttl_sec, 900),
+                    (
+                        "⚠️ IML con cola alta y sin bajar\n"
+                        f"Pendientes: {total_pending} (umbral {threshold}).\n"
+                        f"Lleva ~{mins_stuck} min sin mejora.\n"
+                        "Acción del NAS: sigue procesando en segundo plano."
+                    ),
+                )
+                alert_open = True
+        else:
+            if alert_open:
+                send_alert(
+                    args.alert_bin,
+                    (
+                        "✅ IML volvió a nivel normal\n"
+                        f"Pendientes actuales: {total_pending} (umbral {threshold})."
+                    ),
+                )
+                alert_open = False
+            stuck_since = now_ts
+
+        last_pending = total_pending
+        save_notify_state(
+            args.notify_state_file,
+            {
+                "alert_open": alert_open,
+                "last_pending": last_pending,
+                "stuck_since": stuck_since,
+                "ts": now_ts,
+            },
+        )
 
         phase_name, moved, paused = enforce_phase_order(client, states, phases)
 
@@ -702,11 +789,19 @@ def main() -> int:
                 send_alert(
                     args.alert_bin,
                     (
-                        "⚠️ Drenado IML alcanzó timeout\n"
-                        f"Timeout: {args.timeout_min} min\n"
-                        f"Estado actual: {summary}\n"
-                        "Continuará en siguiente ciclo."
+                        "⚠️ IML no terminó en esta ventana\n"
+                        f"Tiempo máximo: {args.timeout_min} min.\n"
+                        "Acción del NAS: continuará en el siguiente ciclo automático."
                     ),
+                )
+                save_notify_state(
+                    args.notify_state_file,
+                    {
+                        "alert_open": alert_open,
+                        "last_pending": total_pending,
+                        "stuck_since": stuck_since,
+                        "ts": int(time.time()),
+                    },
                 )
                 return 0 if args.timeout_soft else 1
 

@@ -181,10 +181,12 @@ Modo: apply
 Movidos: $MOVED_FILES archivos (${MOVED_GB} GB)
 Fallos: $FAILED
 Libre eMMC: ${FREE_BEFORE}G -> ${FREE_AFTER}G
-Destino HDD: $HDD_CACHE_ROOT"
+Destino HDD: $HDD_CACHE_ROOT
+Playback: sigue funcionando (en eMMC quedan symlinks al HDD)."
 else
     "$NAS_ALERT_BIN" "📋 Plan de migración de cache listo
 Candidatos: $PLANNED archivos (~${PLANNED_GB} GB)
-Sin cambios aplicados.
-Para ejecutar: /usr/local/bin/cache-migrate-to-disk.sh --apply --target-free-gb $TARGET_FREE_GB"
+Sin cambios aplicados (solo diagnóstico).
+Paso siguiente opcional:
+/usr/local/bin/cache-migrate-to-disk.sh --apply --target-free-gb $TARGET_FREE_GB"
 fi

@@ -35,32 +35,27 @@ DB_STATUS="${DB_STATUS:-OK}"
 
 if [ "$MOUNT_STATUS" = "CRIT" ]; then
   alert "⏭️ Copia de seguridad pospuesta
-No pude ver bien los discos montados del NAS.
-Para evitar un respaldo incompleto, hoy no corrí la copia.
-Qué correr (TV Box, sin insumo):
-Insumo: no aplica.
-1) /usr/local/bin/verify.sh
-2) lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT"
+Acción del NAS: no corrí backup para evitar un respaldo incompleto.
+Qué hacer ahora (TV Box):
+1) /usr/local/bin/verify.sh   # diagnóstico general (no monta discos)
+2) lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT   # ver estado actual"
   exit 0
 fi
 if [ "$SMART_STATUS" = "CRIT" ]; then
   alert "⏭️ Copia de seguridad pospuesta
-Uno de los discos reportó un problema serio.
-Para no forzarlo más, hoy no hice el respaldo.
-Qué correr (TV Box, sin insumo):
-Insumo: no aplica.
-1) /usr/local/bin/smart-check.sh daily
-2) /usr/local/bin/verify.sh"
+Acción del NAS: pausé backup para no forzar un disco con problema serio.
+Qué hacer ahora (TV Box):
+1) /usr/local/bin/smart-check.sh daily   # diagnóstico SMART
+2) /usr/local/bin/verify.sh   # verificación general"
   exit 0
 fi
 if [ "$EMMC_STATUS" = "CRIT" ]; then
   alert "⏭️ Copia de seguridad pospuesta
-La memoria interna del NAS está casi llena.
-Primero hay que estabilizar el equipo.
-Qué correr (TV Box, sin insumo):
-Insumo: no aplica.
-1) df -h /var/lib/immich
-2) /usr/local/bin/cache-monitor.sh"
+Acción del NAS: pausé backup para estabilizar la memoria interna.
+Qué hacer ahora (TV Box):
+1) df -h /var/lib/immich   # diagnóstico de espacio
+2) /usr/local/bin/cache-monitor.sh   # diagnóstico de cache (NO relanza backup)
+3) nice -n 15 ionice -c2 -n7 /usr/local/bin/backup.sh   # relanzar manual cuando esté estable"
   exit 0
 fi
 if [ "$DB_STATUS" = "CRIT" ]; then
@@ -84,21 +79,20 @@ Esto suele pasar si alguien estaba usando Immich al mismo tiempo."
     exit 0
   fi
   alert "❌ No se pudo completar la copia de seguridad
-El respaldo del día $TODAY terminó con un error.
-Qué correr (TV Box, sin insumo):
-Insumo: no aplica.
-1) tail -n 120 /var/log/night-run.log
-2) nice -n 15 ionice -c2 -n7 /usr/local/bin/backup.sh"
+Acción del NAS: el respaldo del día $TODAY terminó con error.
+Qué hacer ahora (TV Box):
+1) tail -n 120 /var/log/night-run.log   # ver causa
+2) nice -n 15 ionice -c2 -n7 /usr/local/bin/backup.sh   # relanzar backup"
   exit "$code"
 fi
 
 SNAPSHOT_COUNT="$(find "$DEST" -mindepth 1 -maxdepth 1 -type d | wc -l)"
 if [ "$SNAPSHOT_COUNT" -gt "$RETENTION_DAYS" ]; then
   alert "🟡 Backups acumulados: $SNAPSHOT_COUNT snapshots
-No borré nada (política de seguridad).
-Si quieres depurar manualmente:
-/usr/local/bin/manual-retention.sh --plan --snapshots-keep $RETENTION_DAYS
-/usr/local/bin/manual-retention.sh --apply --snapshots-keep $RETENTION_DAYS"
+Acción del NAS: no borré nada automáticamente.
+Si decides depurar manualmente:
+1) /usr/local/bin/manual-retention.sh --plan --snapshots-keep $RETENTION_DAYS
+2) /usr/local/bin/manual-retention.sh --apply --snapshots-keep $RETENTION_DAYS"
 fi
 
 exit 0

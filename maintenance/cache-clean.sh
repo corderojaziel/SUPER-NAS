@@ -170,9 +170,9 @@ done
 echo "Cache-audit resumen: total=$TOTAL managed=$MANAGED kept=$KEPT orphan_candidates=$ORPHAN skipped_unmanaged=$SKIPPED_UNMANAGED"
 
 if [ "$ORPHAN" -gt 0 ]; then
-    "$NAS_ALERT_BIN" "🟡 Auditoría del cache terminada: detecté $ORPHAN posibles huérfanos
-No borré nada (política de seguridad activa).
-Si necesitas liberar eMMC sin romper playback:
-1) /usr/local/bin/cache-migrate-to-disk.sh --plan
-2) /usr/local/bin/cache-migrate-to-disk.sh --apply --target-free-gb 20"
+  "$NAS_ALERT_BIN" "🟡 Auditoría del cache terminada: detecté $ORPHAN posibles huérfanos
+Acción del NAS: no borré nada automáticamente.
+Si quieres actuar:
+1) /usr/local/bin/cache-migrate-to-disk.sh --plan   # solo revisar, sin cambios
+2) /usr/local/bin/cache-migrate-to-disk.sh --apply --target-free-gb 20   # sí migra cache al HDD conservando playback"
 fi
