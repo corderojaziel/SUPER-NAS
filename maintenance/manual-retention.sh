@@ -1,10 +1,10 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
-# manual-retention.sh — Depuración manual de respaldos (no automátca)
+# manual-retention.sh — Depuración manual de respaldos
 # Guía Maestra NAS V58
 #
 # Alcance:
-#   - snapshots de backup en /mnt/storage-backup/snapshots (excepto immich-db)
+#   - snapshots de backup en /mnt/storage-backup/snapshots (solo carpetas YYYY-MM-DD)
 #   - dumps DB en /mnt/storage-backup/snapshots/immich-db
 #
 # Seguridad:
@@ -46,6 +46,8 @@ is_number() {
 
 is_number "$SNAP_KEEP" || SNAP_KEEP=1
 is_number "$DB_KEEP" || DB_KEEP=7
+[ "$SNAP_KEEP" -ge 1 ] || SNAP_KEEP=1
+[ "$DB_KEEP" -ge 1 ] || DB_KEEP=1
 
 PLAN_COUNT=0
 DELETE_COUNT=0
@@ -68,7 +70,12 @@ delete_path() {
 
 if [ "$TARGET" = "snapshots" ] || [ "$TARGET" = "all" ]; then
     if [ -d "$SNAP_DIR" ]; then
-        mapfile -t snaps < <(find "$SNAP_DIR" -mindepth 1 -maxdepth 1 -type d ! -name 'immich-db' -printf '%f\n' | sort)
+        # Solo snapshots por fecha (YYYY-MM-DD). No toca system-state ni immich-db.
+        mapfile -t snaps < <(
+            find "$SNAP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
+            | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' \
+            | sort
+        )
         total="${#snaps[@]}"
         if [ "$total" -gt "$SNAP_KEEP" ]; then
             limit=$((total - SNAP_KEEP))

@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
-# backup.sh — Backup incremental con snapshots (sin depuración automática)
+# backup.sh — Backup incremental con snapshots
 # Guía Maestra NAS V58
 #
 # ENDURECIMIENTO
@@ -9,19 +9,33 @@
 #   omite para no empeorar la situación. Además se ejecuta con nice+ionice.
 #   Política de datos productivos:
 #   - no usa --delete sobre fotos/videos de origen
-#   - no borra snapshots automáticamente
-#   - cualquier depuración de snapshots es manual con manual-retention.sh
+#   - depuración automática solo de snapshots diarios (retención en días)
+#   - NO depura automáticamente system-state ni immich-db
 # ═══════════════════════════════════════════════════════════════════════════
 
 SOURCE="/mnt/storage-main/photos/"
 DEST="/mnt/storage-backup/snapshots"
 HEALTH_DIR="/var/lib/nas-health"
 TODAY=$(date +%F)
-YESTERDAY=$(date -d yesterday +%F)
 RETENTION_DAYS="$(cat /etc/nas-retention 2>/dev/null || echo 7)"
+RETENTION_DAYS="${RETENTION_DAYS:-7}"
+MANUAL_RETENTION_BIN="${MANUAL_RETENTION_BIN:-/usr/local/bin/manual-retention.sh}"
 
 alert() { /usr/local/bin/nas-alert.sh "$1"; }
 load_status_env() { [ -f "$1" ] && . "$1"; }
+latest_snapshot_ref() {
+  local latest=""
+  if [ -d "$DEST" ]; then
+    latest="$(
+      find "$DEST" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
+      | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' \
+      | grep -v "^$TODAY$" \
+      | sort \
+      | tail -1
+    )"
+  fi
+  [ -n "$latest" ] && printf '%s\n' "$DEST/$latest" || true
+}
 
 load_status_env "$HEALTH_DIR/mount-status.env"
 load_status_env "$HEALTH_DIR/smart-status.env"
@@ -65,7 +79,8 @@ fi
 
 mkdir -p "$DEST/$TODAY"
 RSYNC_OPTS=(-a)
-[ -d "$DEST/$YESTERDAY" ] && RSYNC_OPTS+=("--link-dest=$DEST/$YESTERDAY")
+LINK_DEST="$(latest_snapshot_ref)"
+[ -n "$LINK_DEST" ] && [ -d "$LINK_DEST" ] && RSYNC_OPTS+=("--link-dest=$LINK_DEST")
 
 if nice -n 15 ionice -c2 -n7 rsync "${RSYNC_OPTS[@]}" "$SOURCE" "$DEST/$TODAY/"; then
   alert "✅ Copia de seguridad terminada
@@ -86,13 +101,26 @@ Qué hacer ahora (TV Box):
   exit "$code"
 fi
 
-SNAPSHOT_COUNT="$(find "$DEST" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+SNAPSHOT_COUNT="$(
+  find "$DEST" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
+  | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' \
+  | wc -l
+)"
+if [ "$RETENTION_DAYS" -gt 0 ] && [ -x "$MANUAL_RETENTION_BIN" ]; then
+  if "$MANUAL_RETENTION_BIN" --apply --target snapshots --snapshots-keep "$RETENTION_DAYS" >/tmp/backup-retention.log 2>&1; then
+    :
+  else
+    alert "⚠️ Falló la depuración automática de snapshots
+La copia sí terminó, pero no pude aplicar retención de $RETENTION_DAYS días.
+Qué correr (TV Box):
+1) /usr/local/bin/manual-retention.sh --plan --target snapshots --snapshots-keep $RETENTION_DAYS
+2) /usr/local/bin/manual-retention.sh --apply --target snapshots --snapshots-keep $RETENTION_DAYS"
+  fi
+fi
+
 if [ "$SNAPSHOT_COUNT" -gt "$RETENTION_DAYS" ]; then
   alert "🟡 Backups acumulados: $SNAPSHOT_COUNT snapshots
-Acción del NAS: no borré nada automáticamente.
-Si decides depurar manualmente:
-1) /usr/local/bin/manual-retention.sh --plan --snapshots-keep $RETENTION_DAYS
-2) /usr/local/bin/manual-retention.sh --apply --snapshots-keep $RETENTION_DAYS"
+Acción del NAS: revisa si deseas ajustar retención en /etc/nas-retention (actual $RETENTION_DAYS)."
 fi
 
 exit 0
