@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot "nas-ops.config.ps1")
 )
 
@@ -49,9 +49,37 @@ function Invoke-Ssh {
 }
 
 function Send-StepTelegram {
-    param([string]$Message)
-    $safe = $Message.Replace('"', '\"')
-    Invoke-Ssh "/usr/local/bin/nas-alert.sh `"$safe`"" -Quiet | Out-Null
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [switch]$Strict
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        return $false
+    }
+
+    $msgB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Message))
+    $remoteCmd = @"
+python3 - <<'PY'
+import base64
+import subprocess
+import sys
+
+msg = base64.b64decode("$msgB64").decode("utf-8", "replace")
+rc = subprocess.run(["/usr/local/bin/nas-alert.sh", msg]).returncode
+print(f"nas-alert rc={rc}")
+sys.exit(rc)
+PY
+"@
+
+    $res = Invoke-Ssh -RemoteCommand $remoteCmd -Quiet
+    if ($res.ExitCode -ne 0) {
+        if ($Strict) {
+            throw "No se pudo enviar Telegram. Salida: $($res.Output.Trim())"
+        }
+        return $false
+    }
+    return $true
 }
 
 function Show-Overview {
@@ -222,34 +250,44 @@ function Stop-MlTunnel {
 function Send-TestTelegram {
     $msg = Read-Host "Texto del mensaje"
     if ([string]::IsNullOrWhiteSpace($msg)) { return }
-    Send-StepTelegram $msg
-    Write-Info "Mensaje enviado (si Telegram está configurado)." Green
+    try {
+        $ok = Send-StepTelegram -Message $msg -Strict
+        if ($ok) {
+            Write-Info "Mensaje de Telegram enviado correctamente." Green
+        }
+        else {
+            Write-Info "No se envió Telegram (revisar /etc/nas-secrets)." Yellow
+        }
+    }
+    catch {
+        Write-Host $_.Exception.Message -ForegroundColor Red
+    }
 }
 
 while ($true) {
     Write-Host ""
     Write-Host "========== SUPER-NAS OPS MENU ==========" -ForegroundColor Cyan
-    Write-Host "1) Estado general NAS"
-    Write-Host "2) Estado de colas Immich"
-    Write-Host "3) Drenar IML completo (OCR/Duplicados/Sidecar/Metadata/Library/Smart/Caras)"
-    Write-Host "4) Drenar IML OCR"
-    Write-Host "5) Drenar IML Detección de duplicados"
-    Write-Host "6) Drenar IML Sidecar metadata"
-    Write-Host "7) Drenar IML Extracción de metadata"
-    Write-Host "8) Drenar IML Bibliotecas externas"
-    Write-Host "9) Drenar IML Búsqueda inteligente (Smart Search)"
-    Write-Host "10) Drenar IML Detección de caras"
-    Write-Host "11) Drenar IML Reconocimiento facial"
-    Write-Host "12) Monitorear IML hasta fin + cierre túnel/normalización"
-    Write-Host "13) Ejecutar video-autopilot (una corrida)"
-    Write-Host "14) Ejecutar playback-audit-autoheal"
-    Write-Host "15) Crear backup de estado"
-    Write-Host "16) Restaurar estado"
-    Write-Host "17) Ver logs clave"
-    Write-Host "18) Iniciar túnel ML (usar GPU PC)"
-    Write-Host "19) Detener túnel ML"
-    Write-Host "20) Enviar Telegram de prueba"
-    Write-Host "0) Salir"
+    Write-Host "1) Estado general NAS | Cuando quieras una foto rápida de salud del sistema."
+    Write-Host "2) Estado de colas Immich | Para ver si IML/video tienen pendientes."
+    Write-Host "3) Drenar IML completo | Úsalo cuando quieras bajar todas las colas de IA."
+    Write-Host "4) Drenar IML OCR | Cuando no está detectando texto nuevo en imágenes."
+    Write-Host "5) Drenar IML Detección de duplicados | Cuando buscas coincidencias repetidas."
+    Write-Host "6) Drenar IML Sidecar metadata | Si cambiaste sidecars y no se reflejan."
+    Write-Host "7) Drenar IML Extracción de metadata | Si faltan EXIF/fecha/geo en nuevos archivos."
+    Write-Host "8) Drenar IML Bibliotecas externas | Si agregaste rutas externas y no aparecen."
+    Write-Host "9) Drenar IML Búsqueda inteligente | Si Smart Search no devuelve resultados nuevos."
+    Write-Host "10) Drenar IML Detección de caras | Si no detecta caras en fotos recientes."
+    Write-Host "11) Drenar IML Reconocimiento facial | Si no agrupa/asigna caras detectadas."
+    Write-Host "12) Monitorear IML hasta fin + cierre túnel | Para dejar todo en cero y volver a modo normal."
+    Write-Host "13) Ejecutar video-autopilot (una corrida) | Para avanzar reproceso sin esperar noche."
+    Write-Host "14) Ejecutar playback-audit-autoheal | Para validar/reparar playback roto."
+    Write-Host "15) Crear backup de estado | Antes de cambios grandes o mantenimiento delicado."
+    Write-Host "16) Restaurar estado | Cuando necesites volver a snapshot conocido."
+    Write-Host "17) Ver logs clave | Para diagnóstico rápido de fallos recientes."
+    Write-Host "18) Iniciar túnel ML (usar GPU PC) | Si quieres procesar IML pesado fuera de TV Box."
+    Write-Host "19) Detener túnel ML | Al terminar, para dejar descansar GPU/CPU local."
+    Write-Host "20) Enviar Telegram de prueba | Para validar credenciales y entrega del bot."
+    Write-Host "0) Salir | Cierra el menú."
     $opt = Read-Host "Elige opción"
 
     try {
