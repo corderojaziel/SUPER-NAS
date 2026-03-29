@@ -76,6 +76,15 @@ def parse_args() -> argparse.Namespace:
     run.add_argument("--max-attempts", type=int, default=3)
     run.add_argument("--audio-bitrate-k", type=int, default=128)
     run.add_argument("--target-maxrate-k", type=int, default=5200)
+    run.add_argument(
+        "--allow-remux-copy",
+        type=int,
+        default=-1,
+        help=(
+            "Controla si se permite remux (-c copy) antes de transcodificar. "
+            "1=permitir, 0=forzar transcode, -1=auto (light=1, heavy=0)."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -524,6 +533,7 @@ def convert_file(
     ffmpeg_bin: str,
     audio_bitrate_k: int,
     target_maxrate_k: int,
+    allow_remux_copy: bool,
 ) -> tuple[bool, str]:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.name + ".tmp.mp4")
@@ -533,21 +543,22 @@ def convert_file(
     except OSError:
         pass
 
-    remux = [
-        ffmpeg_bin,
-        "-y",
-        "-i",
-        str(src),
-        "-c",
-        "copy",
-        "-movflags",
-        "+faststart",
-        str(tmp),
-    ]
-    r1 = subprocess.run(remux, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if r1.returncode == 0 and tmp.is_file() and tmp.stat().st_size > 0:
-        tmp.replace(dst)
-        return True, "remux_copy"
+    if allow_remux_copy:
+        remux = [
+            ffmpeg_bin,
+            "-y",
+            "-i",
+            str(src),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(tmp),
+        ]
+        r1 = subprocess.run(remux, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if r1.returncode == 0 and tmp.is_file() and tmp.stat().st_size > 0:
+            tmp.replace(dst)
+            return True, "remux_copy"
 
     transcode = [
         ffmpeg_bin,
@@ -610,6 +621,15 @@ def run_reprocess(args: argparse.Namespace) -> int:
     if not input_csv.is_file():
         print(f"ERROR: input csv not found: {input_csv}", file=sys.stderr)
         return 1
+    if args.allow_remux_copy not in (-1, 0, 1):
+        print("ERROR: --allow-remux-copy debe ser -1, 0 o 1", file=sys.stderr)
+        return 1
+
+    allow_remux_copy = (
+        bool(args.allow_remux_copy)
+        if args.allow_remux_copy in (0, 1)
+        else (args.run_class == "light")
+    )
 
     attempts = load_attempts(attempts_db)
     ts = time.strftime("%Y%m%d-%H%M%S")
@@ -693,6 +713,7 @@ def run_reprocess(args: argparse.Namespace) -> int:
                 ffmpeg_bin=args.ffmpeg_bin,
                 audio_bitrate_k=args.audio_bitrate_k,
                 target_maxrate_k=args.target_maxrate_k,
+                allow_remux_copy=allow_remux_copy,
             )
             if ok:
                 converted += 1
@@ -722,6 +743,7 @@ def run_reprocess(args: argparse.Namespace) -> int:
     print(f"converted={converted}")
     print(f"failed={failed}")
     print(f"skipped={skipped}")
+    print(f"allow_remux_copy={int(allow_remux_copy)}")
     print(f"attempts_db={attempts_db}")
     print(f"manual_queue={manual_queue}")
 

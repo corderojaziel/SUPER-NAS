@@ -294,10 +294,12 @@ run_batch() {
   local klass="$1"
   local input_csv="$2"
   local limit="$3"
-  local tmp
+  local tmp remux_flag
 
   [ -f "$input_csv" ] || return 0
   tmp="$(mktemp)"
+  remux_flag=0
+  [ "$klass" = "light" ] && remux_flag=1
   if python3 "$MANAGER_BIN" run \
     --class "$klass" \
     --cache-root "$VIDEO_REPROCESS_CACHE_ROOT" \
@@ -312,6 +314,7 @@ run_batch() {
     --max-attempts "$VIDEO_REPROCESS_MAX_ATTEMPTS" \
     --audio-bitrate-k "$VIDEO_REPROCESS_AUDIO_BITRATE_K" \
     --target-maxrate-k "$VIDEO_REPROCESS_TARGET_MAXRATE_K" \
+    --allow-remux-copy "$remux_flag" \
     > "$tmp" 2>> "$LOG_FILE"; then
     RUN_STATUS="OK"
   else

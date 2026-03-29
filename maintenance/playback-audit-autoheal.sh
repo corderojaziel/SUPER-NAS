@@ -364,6 +364,7 @@ if python3 "$MANAGER_BIN" run \
   --max-attempts "$PLAYBACK_AUDIT_AUTOHEAL_MAX_ATTEMPTS" \
   --audio-bitrate-k "$VIDEO_REPROCESS_AUDIO_BITRATE_K" \
   --target-maxrate-k "$VIDEO_REPROCESS_TARGET_MAXRATE_K" \
+  --allow-remux-copy 0 \
   >> "$RUN_STDOUT" 2>> "$LOG_FILE"; then
   run_rc=0
 else
