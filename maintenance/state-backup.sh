@@ -12,6 +12,7 @@ SECRETS_FILE="${SECRETS_FILE:-/etc/nas-secrets}"
 ENV_FILE="${ENV_FILE:-/opt/immich-app/.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-/opt/immich-app/docker-compose.yml}"
 POLICY_FILE="${POLICY_FILE:-/etc/default/nas-video-policy}"
+RESOLVER_SERVICE_FILE="${RESOLVER_SERVICE_FILE:-/etc/systemd/system/immich-video-playback-resolver.service}"
 
 db_value() {
   local key="$1" default="$2" value=""
@@ -34,7 +35,21 @@ mkdir -p "$snap_dir"/{db,config,inventory,cache}
 echo "[$(date '+%F %T')] BACKUP_START dir=$snap_dir"
 
 # Archivos clave de configuracion
-for src in "$ENV_FILE" "$COMPOSE_FILE" "$POLICY_FILE" /etc/nas-disks /etc/nas-retention /etc/nginx/sites-enabled/immich.conf /etc/crontab; do
+for src in \
+  "$ENV_FILE" \
+  "$COMPOSE_FILE" \
+  "$POLICY_FILE" \
+  /etc/nas-disks \
+  /etc/nas-retention \
+  /etc/nas-mounts \
+  /etc/fstab \
+  /etc/nginx/sites-enabled/immich.conf \
+  /etc/crontab \
+  /etc/logrotate.d/supernas \
+  "$RESOLVER_SERVICE_FILE" \
+  /etc/udev/rules.d/80-usb-read-ahead.rules \
+  /etc/sysctl.d/99-nas.conf \
+  /etc/systemd/journald.conf.d/nas.conf; do
   if [ -f "$src" ]; then
     cp -a "$src" "$snap_dir/config/"
   fi
@@ -53,6 +68,10 @@ crontab -l > "$snap_dir/inventory/crontab.txt" 2>/dev/null || true
 $DOCKER_BIN ps --format '{{.Names}}\t{{.Status}}\t{{.Image}}' > "$snap_dir/inventory/docker-ps.txt" || true
 find /var/lib/nas-health -maxdepth 1 -type f -name '*.env' -o -name '*.json' -o -name '*.csv' 2>/dev/null \
   | sort > "$snap_dir/inventory/health-files.txt" || true
+for svc in docker tailscaled smbd immich-video-playback-resolver; do
+  systemctl is-enabled "$svc" > "$snap_dir/inventory/systemctl-${svc}-enabled.txt" 2>&1 || true
+  systemctl is-active "$svc" > "$snap_dir/inventory/systemctl-${svc}-active.txt" 2>&1 || true
+done
 
 # Dump logico DB (seguro para restaurar en otro equipo)
 DB_USER="$(db_value DB_USERNAME immich)"

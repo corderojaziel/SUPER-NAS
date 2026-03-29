@@ -209,6 +209,36 @@ log_step "Verificaciones previas"
 
 source "$CONFIG"
 
+normalize_install_mode() {
+    case "${1:-}" in
+        new|nueva|nuevo|fresh|install|instalacion) echo "new" ;;
+        restore|restauracion|restauración|recovery|recover) echo "restore" ;;
+        *) echo "" ;;
+    esac
+}
+
+INSTALL_MODE_RAW="${INSTALL_MODE:-${NAS_INSTALL_MODE:-}}"
+if [ -n "$INSTALL_MODE_RAW" ]; then
+    INSTALL_MODE="$(normalize_install_mode "$INSTALL_MODE_RAW")"
+    [ -n "$INSTALL_MODE" ] || die "INSTALL_MODE inválido: $INSTALL_MODE_RAW (usar: new o restore)"
+else
+    echo ""
+    echo "Modo de instalación:"
+    echo "  1) Nueva instalación (puede formatear según ALLOW_FORMAT)"
+    echo "  2) Restauración (NUNCA formatea; reutiliza discos existentes)"
+    read -r -p "  Elige 1 o 2: " MODE_CHOICE
+    case "$MODE_CHOICE" in
+        1) INSTALL_MODE="new" ;;
+        2) INSTALL_MODE="restore" ;;
+        *) die "Opción inválida. Cancelado para proteger datos." ;;
+    esac
+fi
+
+if [ "$INSTALL_MODE" = "restore" ]; then
+    ALLOW_FORMAT="no"
+    log_warn "Modo restauración activo: se desactiva cualquier formateo automático."
+fi
+
 # Validación previa del paquete y sintaxis de scripts críticos
 if [ -x "$SCRIPT_DIR/precheck.sh" ]; then
     "$SCRIPT_DIR/precheck.sh" || die "precheck.sh falló; abortando instalación"
@@ -229,8 +259,12 @@ for disk in "$DISK_PHOTOS" "$DISK_BACKUP"; do
     [ -b "$disk" ] || die "Disco no encontrado: $disk — verificar con: lsblk"
 done
 
-# Mostrar info de los discos antes de formatear y pedir confirmación
-log_warn "ADVERTENCIA: Los siguientes discos serán particionados si no tienen ext4:"
+# Mostrar info de discos y pedir confirmación explícita
+if [ "$INSTALL_MODE" = "restore" ]; then
+    log_warn "Modo restauración: voy a reutilizar discos existentes sin formatear."
+else
+    log_warn "ADVERTENCIA: Los siguientes discos pueden ser particionados/formateados según ALLOW_FORMAT."
+fi
 for disk in "$DISK_PHOTOS" "$DISK_BACKUP"; do
     SIZE=$(lsblk -dn -o SIZE "$disk" 2>/dev/null || echo "?")
     MODEL=$(lsblk -dn -o MODEL "$disk" 2>/dev/null || echo "?")
@@ -243,7 +277,7 @@ read -r -p "  ¿Continuar? Escribe 'si' para confirmar: " CONFIRM
 
 # Confirmación reforzada cuando ALLOW_FORMAT está activo.
 # Evita borrado accidental por confusión de /dev/sdX.
-if [ "${ALLOW_FORMAT:-no}" = "yes" ]; then
+if [ "$INSTALL_MODE" = "new" ] && [ "${ALLOW_FORMAT:-no}" = "yes" ]; then
     TOKEN="BORRAR-$(basename "$DISK_PHOTOS")-$(basename "$DISK_BACKUP")"
     log_warn "ALLOW_FORMAT=yes detectado."
     log_warn "Verifica modelo/serial con: lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT"
@@ -253,7 +287,10 @@ if [ "${ALLOW_FORMAT:-no}" = "yes" ]; then
 fi
 
 log_ok "Configuración válida"
-[ "${ALLOW_FORMAT:-no}" = "yes" ] &&     log_warn "ALLOW_FORMAT=yes — los discos con particiones serán borrados con wipefs"
+log_info "Modo seleccionado: $INSTALL_MODE"
+if [ "$INSTALL_MODE" = "new" ] && [ "${ALLOW_FORMAT:-no}" = "yes" ]; then
+    log_warn "ALLOW_FORMAT=yes — los discos con particiones serán borrados con wipefs"
+fi
 # Redirigir todo el output al log de instalación para diagnóstico posterior
 exec > >(tee -a "$LOG") 2>&1
 echo "════ Instalación iniciada: $(date) ════" >> "$LOG"
@@ -510,6 +547,18 @@ format_disk() {
     local DISK="$1" LABEL="$2"
     local PART
     PART=$(partition_path "$DISK")
+
+    if [ "$INSTALL_MODE" = "restore" ]; then
+        if blkid "$PART" 2>/dev/null | grep -q 'TYPE="ext4"'; then
+            log_ok "Restauración: $PART ya tiene ext4, se reutiliza sin formateo"
+            return 0
+        fi
+        if blkid "$DISK" 2>/dev/null | grep -q 'TYPE="ext4"'; then
+            log_ok "Restauración: $DISK tiene ext4 directo, se reutiliza sin formateo"
+            return 0
+        fi
+        die "Modo restauración: no encontré ext4 válido en $DISK/$PART. Aborto para no planchar datos."
+    fi
 
     # ── Caso 1: ya tiene ext4 — asumir que es la instalación correcta ────────
     if blkid "$PART" 2>/dev/null | grep -q "TYPE=\"ext4\""; then
@@ -1070,6 +1119,7 @@ SCRIPTS=(
     "rebuild-video-cache.sh" # Recuperacion total de cache (prepare/light-only/tvbox-all)
     "state-backup.sh"    # Backup rapido de estado (DB + config + inventario)
     "state-restore.sh"   # Restauracion rapida desde snapshot de estado
+    "disaster-restore.sh" # Restauracion integral en caja nueva (discos existentes)
     "manual-retention.sh" # Depuracion manual de respaldos (sin auto-borrado)
     "log-maintenance.sh"  # Rotacion/depuracion mensual de logs tecnicos
     "mount-guard.sh"     # Detecta desmontajes/remontajes y notifica Telegram

@@ -20,6 +20,7 @@ for arg in "${@:2}"; do
 done
 
 BACKUP_ROOT="${BACKUP_ROOT:-/mnt/storage-backup/snapshots/system-state}"
+DB_BACKUP_ROOT="${DB_BACKUP_ROOT:-/mnt/storage-backup/snapshots/immich-db}"
 DOCKER_BIN="${DOCKER_BIN:-/usr/bin/docker}"
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/immich-app}"
 NAS_ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
@@ -59,6 +60,12 @@ fi
 if [ -f "$SNAP_DIR/config/nas-retention" ]; then
   cp -a "$SNAP_DIR/config/nas-retention" /etc/nas-retention
 fi
+if [ -f "$SNAP_DIR/config/nas-mounts" ]; then
+  cp -a "$SNAP_DIR/config/nas-mounts" /etc/nas-mounts
+fi
+if [ -f "$SNAP_DIR/config/fstab" ]; then
+  cp -a "$SNAP_DIR/config/fstab" /etc/fstab
+fi
 if [ -f "$SNAP_DIR/config/nas-secrets" ]; then
   cp -a "$SNAP_DIR/config/nas-secrets" "$SECRETS_FILE"
   chmod 600 "$SECRETS_FILE" || true
@@ -70,15 +77,42 @@ fi
 if [ -f "$SNAP_DIR/config/crontab" ]; then
   cp -a "$SNAP_DIR/config/crontab" /etc/crontab
 fi
+if [ -f "$SNAP_DIR/config/supernas" ]; then
+  cp -a "$SNAP_DIR/config/supernas" /etc/logrotate.d/supernas
+fi
+if [ -f "$SNAP_DIR/config/immich-video-playback-resolver.service" ]; then
+  cp -a "$SNAP_DIR/config/immich-video-playback-resolver.service" /etc/systemd/system/immich-video-playback-resolver.service
+fi
+if [ -f "$SNAP_DIR/config/80-usb-read-ahead.rules" ]; then
+  cp -a "$SNAP_DIR/config/80-usb-read-ahead.rules" /etc/udev/rules.d/80-usb-read-ahead.rules
+fi
+if [ -f "$SNAP_DIR/config/99-nas.conf" ]; then
+  cp -a "$SNAP_DIR/config/99-nas.conf" /etc/sysctl.d/99-nas.conf
+  sysctl --system >/dev/null 2>&1 || true
+fi
+if [ -f "$SNAP_DIR/config/nas.conf" ]; then
+  cp -a "$SNAP_DIR/config/nas.conf" /etc/systemd/journald.conf.d/nas.conf
+  systemctl restart systemd-journald >/dev/null 2>&1 || true
+fi
 if [ -s "$SNAP_DIR/config/root-crontab" ]; then
   crontab "$SNAP_DIR/config/root-crontab" || true
 fi
+
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl enable immich-video-playback-resolver >/dev/null 2>&1 || true
+systemctl restart immich-video-playback-resolver >/dev/null 2>&1 || true
+udevadm control --reload-rules >/dev/null 2>&1 || true
+udevadm trigger >/dev/null 2>&1 || true
+mount -a >/dev/null 2>&1 || true
 
 # Reiniciar stack para tomar .env/docker-compose restaurados
 (cd "$COMPOSE_DIR" && docker compose up -d) >/dev/null 2>&1 || true
 
 if [ "$WITH_DB" = "1" ]; then
   db_dump="$SNAP_DIR/db/immich-db.sql.gz"
+  if [ ! -f "$db_dump" ] && [ -d "$DB_BACKUP_ROOT" ]; then
+    db_dump="$(ls -1t "$DB_BACKUP_ROOT"/immich-db-*.sql.gz 2>/dev/null | head -1 || true)"
+  fi
   if [ -f "$db_dump" ]; then
     DB_USER="$(awk -F= '$1=="DB_USERNAME"{print substr($0, index($0, "=")+1); exit}' "$ENV_FILE" 2>/dev/null || true)"
     [ -n "$DB_USER" ] || DB_USER="immich"

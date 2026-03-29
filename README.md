@@ -47,6 +47,13 @@ Si quieres usar otro perfil de configuración:
 sudo NAS_CONFIG_FILE=/ruta/a/otro-perfil.conf ./install.sh
 ```
 
+Para restaurar en caja nueva con discos existentes (sin formateo):
+
+```bash
+sudo INSTALL_MODE=restore ./install.sh
+sudo /usr/local/bin/disaster-restore.sh latest
+```
+
 ---
 
 ## 🏗️ Arquitectura del sistema
