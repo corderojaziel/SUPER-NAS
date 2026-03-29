@@ -641,7 +641,26 @@ def main() -> int:
         states = {q.name: q for q in client.fetch_queues()}
     except Exception:
         client.token = ""
-        states = {q.name: q for q in client.fetch_queues()}
+        time.sleep(3)
+        try:
+            states = {q.name: q for q in client.fetch_queues()}
+        except Exception as exc:
+            if not args.print_pending_only:
+                print(
+                    time.strftime("%F %T"),
+                    f"API_UNAVAILABLE {exc}",
+                    flush=True,
+                )
+                send_alert_throttled(
+                    args.alert_bin,
+                    "iml_drain:api_unavailable",
+                    max(args.busy_alert_ttl_sec, 900),
+                    (
+                        "⚠️ IML se pausó porque Immich no respondió\n"
+                        "Acción del NAS: reintento automático en el siguiente ciclo."
+                    ),
+                )
+            return 0
 
     if args.print_pending_only:
         print(str(pending_total(states, targets)), flush=True)

@@ -138,10 +138,17 @@ if [ "$pending_after" -eq 0 ] && [ "$IML_AUTOPILOT_STOP_ML_WHEN_IDLE" = "1" ]; t
 fi
 
 if [ "$rc" -ne 0 ] && [ -x "$ALERT_BIN" ]; then
+  last_log_line="$(tail -n 1 "$LOG_FILE" 2>/dev/null || true)"
+  [ -n "$last_log_line" ] || last_log_line="sin detalle adicional en log"
   NAS_ALERT_KEY="iml_autopilot:fail" \
   NAS_ALERT_TTL=900 \
-  "$ALERT_BIN" "⚠️ IML autopilot terminó con error (rc=$rc)
-Revisa: /var/log/iml-autopilot.log" || true
+  "$ALERT_BIN" "⚠️ IML no pudo avanzar en este ciclo
+Estado: pendiente temporal (rc=$rc)
+El NAS lo reintentará solo en el siguiente ciclo.
+Detalle rápido: $last_log_line
+Si persiste:
+1) tail -n 80 /var/log/iml-autopilot.log
+2) /usr/local/bin/iml-autopilot.sh" || true
 fi
 
 exit 0

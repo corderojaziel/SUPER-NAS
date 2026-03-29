@@ -45,6 +45,13 @@ log() { echo "[$(date '+%F %T')] $1" | tee -a "$LOG"; }
 alert() { "$NAS_ALERT_BIN" "$1"; }
 load_status_env() { [ -f "$1" ] && . "$1"; }
 
+normalize_task_status() {
+  case "$1" in
+    OK|WARN|CRIT|FAIL|SKIPPED|WEEKLY_OK|WEEKLY_SKIPPED) echo "$1" ;;
+    *) echo "" ;;
+  esac
+}
+
 friendly_mount() {
   case "$1" in
     /mnt/storage-main) echo "disco principal de fotos" ;;
@@ -375,6 +382,11 @@ else
 
   if [ -x /usr/local/bin/playback-audit-autoheal.sh ]; then
     run_task "Playback audit" "/usr/local/bin/playback-audit-autoheal.sh" "$PLAYBACK_AUDIT_MAX_MIN" && PLAYBACK_AUDIT_RES="OK" || PLAYBACK_AUDIT_RES="FAIL"
+    if [ -f "$PLAYBACK_AUDIT_SUMMARY_FILE" ]; then
+      load_status_env "$PLAYBACK_AUDIT_SUMMARY_FILE"
+      PLAYBACK_AUDIT_STATUS_REAL="$(normalize_task_status "${PLAYBACK_AUDIT_STATUS:-}")"
+      [ -n "$PLAYBACK_AUDIT_STATUS_REAL" ] && PLAYBACK_AUDIT_RES="$PLAYBACK_AUDIT_STATUS_REAL"
+    fi
     sleep 60
   fi
 

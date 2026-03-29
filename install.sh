@@ -1215,6 +1215,8 @@ VIDEO_REPROCESS_MANAGER_BIN=${VIDEO_REPROCESS_MANAGER_BIN:-/usr/local/bin/video-
 VIDEO_REPROCESS_OUTPUT_DIR=${VIDEO_REPROCESS_OUTPUT_DIR:-/var/lib/nas-health/reprocess}
 VIDEO_REPROCESS_CACHE_ROOT=${VIDEO_REPROCESS_CACHE_ROOT:-/var/lib/immich/cache}
 VIDEO_REPROCESS_LEGACY_ROOT=${VIDEO_REPROCESS_LEGACY_ROOT:-/mnt/storage-main/cache}
+LEGACY_CACHE_ROOTS=${LEGACY_CACHE_ROOTS:-}
+CACHE_VIDEOS_CANONICAL_ONLY=${CACHE_VIDEOS_CANONICAL_ONLY:-1}
 VIDEO_REPROCESS_UPLOAD_ROOT=${VIDEO_REPROCESS_UPLOAD_ROOT:-/mnt/storage-main/photos}
 VIDEO_REPROCESS_IMMICH_ROOT=${VIDEO_REPROCESS_IMMICH_ROOT:-/var/lib/immich}
 FAILOVER_ROOT=${FAILOVER_ROOT:-/mnt/storage-backup/failover-main}
@@ -1349,7 +1351,6 @@ Environment=LISTEN_HOST=127.0.0.1
 Environment=LISTEN_PORT=2284
 Environment=IMMICH_API_BASE=http://127.0.0.1:2283
 Environment=CACHE_ROOT=/var/lib/immich/cache
-Environment=LEGACY_CACHE_ROOTS=/mnt/storage-main/cache
 Environment=UPLOAD_HOST_ROOT=/mnt/storage-main/photos
 Environment=IMMICH_LOCAL_ROOT=/var/lib/immich
 Environment=PLACEHOLDER_LANDSCAPE_URI=/__static/video-processing.mp4
@@ -1362,8 +1363,8 @@ Environment=PLACEHOLDER_ERROR_LANDSCAPE_URI=/__static/video-error.mp4
 Environment=PLACEHOLDER_ERROR_PORTRAIT_URI=/__static/video-error-portrait.mp4
 Environment=DIRECT_PLAY_INTERNAL_PREFIX=/__immich-direct/
 Environment=CACHE_INTERNAL_PREFIX=/__cache-video/
-Environment=LEGACY_CACHE_INTERNAL_PREFIX=/__cache-video-legacy/
 Environment=UPLOAD_PREFIX=/usr/src/app/upload/
+Environment=LEGACY_CACHE_INTERNAL_PREFIX=/__cache-video-legacy/
 
 [Install]
 WantedBy=multi-user.target

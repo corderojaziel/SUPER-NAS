@@ -34,9 +34,14 @@ section "ALMACENAMIENTO"
 for m in /mnt/storage-main /mnt/storage-backup /mnt/merged; do
   mountpoint -q "$m" && ok "Mount listo: $m" || fail "Mount no listo: $m"
 done
-for d in /mnt/storage-main/photos /mnt/storage-main/cache /mnt/storage-backup/snapshots /mnt/storage-backup/snapshots/immich-db /opt/immich-app /var/lib/immich/db /var/lib/immich/models /var/lib/immich/cache /var/lib/immich/thumbs /var/lib/immich/encoded-video /var/lib/immich/nginx-cache /var/lib/immich/static; do
+for d in /mnt/storage-main/photos /mnt/storage-backup/snapshots /mnt/storage-backup/snapshots/immich-db /opt/immich-app /var/lib/immich/db /var/lib/immich/models /var/lib/immich/cache /var/lib/immich/thumbs /var/lib/immich/encoded-video /var/lib/immich/nginx-cache /var/lib/immich/static; do
   [ -d "$d" ] && ok "Directorio existe: $d" || fail "Directorio faltante: $d"
 done
+if [ -d /mnt/storage-main/cache ]; then
+  warn "Cache legado detectado en /mnt/storage-main/cache (no es obligatorio en modo canónico)"
+else
+  ok "Sin cache legado obligatorio en HDD (/mnt/storage-main/cache)"
+fi
 for marker in /mnt/merged/.immich /mnt/merged/library/.immich /mnt/merged/backups/.immich /var/lib/immich/thumbs/.immich /var/lib/immich/encoded-video/.immich /var/lib/immich/profile/.immich; do
   [ -f "$marker" ] && ok "Marcador de integridad presente: $marker" || fail "Marcador de integridad faltante: $marker"
 done
@@ -159,6 +164,15 @@ for f in /var/lib/nas-health/mount-status.env /var/lib/nas-health/smart-status.e
 done
 
 section "NGINX / PLAYBACK"
+LEGACY_CACHE_ROOTS_POLICY=""
+if [ -f /etc/default/nas-video-policy ]; then
+  LEGACY_CACHE_ROOTS_POLICY="$(awk -F= '$1=="LEGACY_CACHE_ROOTS"{print substr($0, index($0, "=")+1); exit}' /etc/default/nas-video-policy | tr -d '"' | tr -d "'" | xargs)"
+fi
+if [ -n "$LEGACY_CACHE_ROOTS_POLICY" ]; then
+  LEGACY_FALLBACK_EXPECTED=1
+else
+  LEGACY_FALLBACK_EXPECTED=0
+fi
 if [ -f /etc/nginx/sites-enabled/immich.conf ]; then
   grep -q 'video-processing.mp4' /etc/nginx/sites-enabled/immich.conf && ok "Placeholder de video cableado en nginx" || fail "Nginx no referencia video-processing.mp4"
   grep -q 'video-processing-portrait.mp4' /etc/nginx/sites-enabled/immich.conf && ok "Placeholder vertical cableado en nginx" || fail "Nginx no referencia video-processing-portrait.mp4"
@@ -168,10 +182,14 @@ if [ -f /etc/nginx/sites-enabled/immich.conf ]; then
   else
     fail "Nginx no apunta al cache canonico /var/lib/immich/cache"
   fi
-  if grep -q 'location /__cache-video-legacy/' /etc/nginx/sites-enabled/immich.conf && grep -q 'alias /mnt/storage-main/cache/' /etc/nginx/sites-enabled/immich.conf; then
-    ok "Compatibilidad con cache legado en HDD presente"
+  if [ "$LEGACY_FALLBACK_EXPECTED" -eq 1 ]; then
+    if grep -q 'location /__cache-video-legacy/' /etc/nginx/sites-enabled/immich.conf; then
+      ok "Compatibilidad con cache legado en HDD presente (modo transición)"
+    else
+      fail "Se esperaba fallback legado pero nginx no tiene /__cache-video-legacy/"
+    fi
   else
-    warn "No encontre el fallback opcional al cache legado en HDD"
+    ok "Modo canónico activo: fallback legado no requerido por política"
   fi
   grep -q '__immich-direct/' /etc/nginx/sites-enabled/immich.conf && ok "Alias interno del playback directo presente" || fail "Nginx no expone el playback directo interno"
   grep -q '127.0.0.1:2284' /etc/nginx/sites-enabled/immich.conf && ok "Playback web pasa por el resolutor local" || fail "Playback web no pasa por el resolutor local"
@@ -240,10 +258,14 @@ if systemctl cat immich-video-playback-resolver 2>/dev/null | grep -q 'Environme
 else
   fail "No pude confirmar el CACHE_ROOT del resolutor"
 fi
-if systemctl cat immich-video-playback-resolver 2>/dev/null | grep -q 'Environment=LEGACY_CACHE_ROOTS=/mnt/storage-main/cache'; then
-  ok "Resolutor tiene fallback al cache legado en HDD"
+if [ "$LEGACY_FALLBACK_EXPECTED" -eq 1 ]; then
+  if systemctl cat immich-video-playback-resolver 2>/dev/null | grep -q 'EnvironmentFile=-/etc/default/nas-video-policy'; then
+    ok "Resolutor toma LEGACY_CACHE_ROOTS desde /etc/default/nas-video-policy"
+  else
+    fail "Resolutor no está leyendo la política para LEGACY_CACHE_ROOTS"
+  fi
 else
-  warn "No encontre fallback al cache legado en HDD en el resolutor"
+  ok "Resolutor en modo canónico (sin fallback legado requerido)"
 fi
 
 section "FAILOVER"

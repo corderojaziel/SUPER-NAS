@@ -241,6 +241,30 @@ playable=$(printf '%s\n' "$AUDIT_PARSE_OUT" | awk -F= '/^PLAYABLE=/{print $2+0}'
 processing=$(printf '%s\n' "$AUDIT_PARSE_OUT" | awk -F= '/^PROCESSING=/{print $2+0}')
 broken=$(printf '%s\n' "$AUDIT_PARSE_OUT" | awk -F= '/^BROKEN=/{print $2+0}')
 
+BROKEN_META="$(python3 - "$AUDIT_CSV" <<'PY'
+import csv
+import sys
+
+classes = {}
+with open(sys.argv[1], "r", encoding="utf-8", newline="") as fh:
+    for row in csv.DictReader(fh):
+        cls = (row.get("class") or "").strip()
+        if cls and cls != "playable":
+            classes[cls] = classes.get(cls, 0) + 1
+
+keys = sorted(classes.keys())
+print("BROKEN_CLASSES=" + ",".join(keys))
+print("BROKEN_ONLY_DAMAGED=" + ("1" if keys == ["placeholder_damaged"] else "0"))
+print("BROKEN_ONLY_PLACEHOLDER=" + ("1" if keys and all(k.startswith("placeholder_") for k in keys) else "0"))
+PY
+)"
+echo "$BROKEN_META" >> "$LOG_FILE"
+broken_classes=$(printf '%s\n' "$BROKEN_META" | awk -F= '/^BROKEN_CLASSES=/{print $2}' | tail -1)
+broken_only_damaged=$(printf '%s\n' "$BROKEN_META" | awk -F= '/^BROKEN_ONLY_DAMAGED=/{print $2+0}' | tail -1)
+broken_only_placeholder=$(printf '%s\n' "$BROKEN_META" | awk -F= '/^BROKEN_ONLY_PLACEHOLDER=/{print $2+0}' | tail -1)
+[ -n "$broken_only_damaged" ] || broken_only_damaged=0
+[ -n "$broken_only_placeholder" ] || broken_only_placeholder=0
+
 converted=0
 failed=0
 skipped=0
@@ -339,11 +363,35 @@ echo "$FILTER_OUT" >> "$LOG_FILE"
 candidates=$(printf '%s\n' "$FILTER_OUT" | awk -F= '/^CANDIDATES=/{print $2+0}')
 
 if [ "$candidates" -le 0 ]; then
-  alert "⚠️ Auditoría playback: encontré rotos sin autocorrección local
+  if [ "$broken_only_placeholder" -eq 1 ]; then
+    watchdog_msg="no fue necesario relanzar watchdog."
+    if [ -x "$PLAYBACK_WATCHDOG_BIN" ]; then
+      log "broken_placeholder_detected -> lanzando watchdog"
+      if timeout 900 "$PLAYBACK_WATCHDOG_BIN" >> "$LOG_FILE" 2>&1; then
+        watchdog_msg="relancé watchdog para confirmar recuperación automática."
+      else
+        watchdog_msg="intenté relanzar watchdog; revisar /var/log/playback-watchdog.log."
+      fi
+    fi
+
+    detail_line="Detalle: placeholders detectados (${broken_classes:-placeholder})."
+    [ "$broken_only_damaged" -eq 1 ] && detail_line="Detalle: placeholders de dañado (pueden ser transitorios bajo carga)."
+
+    alert "⚠️ Playback con estado temporal
 Total revisados: $total
 Rotos detectados: $broken
+$detail_line
+Acción del NAS: reintento automático en siguientes ciclos.
+Qué hacer ahora: no corras nada manual por el momento.
+Seguimiento: $watchdog_msg"
+  else
+    alert "⚠️ Auditoría playback: encontré rotos sin autocorrección local
+Total revisados: $total
+Rotos detectados: $broken
+Clases detectadas: ${broken_classes:-desconocido}
 Candidatos TV Box: 0
 Acción: quedan para cola pesada/manual (PC o revisión de fuente)."
+  fi
   write_summary "WARN" "$total" "$playable" "$processing" "$broken" 0 0 0 0
   exit 0
 fi
