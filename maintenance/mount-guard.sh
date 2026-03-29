@@ -9,6 +9,7 @@ set -u
 STATE_DIR="/var/lib/nas-mount-state"
 STATE_FILE="$STATE_DIR/status.db"
 MOUNTS_FILE="/etc/nas-mounts"
+FAILOVER_BIN="${FAILOVER_BIN:-/usr/local/bin/storage-failover.sh}"
 
 mkdir -p "$STATE_DIR"
 touch "$STATE_FILE"
@@ -169,5 +170,11 @@ check_and_recover_mount() {
 check_and_recover_mount "storage_main" "$MOUNT_MAIN"
 check_and_recover_mount "storage_backup" "$MOUNT_BACKUP"
 check_and_recover_mount "storage_merged" "$MOUNT_MERGED" "fuse.mergerfs"
+
+# Si la recuperación local no alcanza y el disco principal quedó en falla grave,
+# este paso activa failover de emergencia al respaldo operativo.
+if [ -x "$FAILOVER_BIN" ]; then
+    "$FAILOVER_BIN" auto >/dev/null 2>&1 || true
+fi
 
 exit 0

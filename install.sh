@@ -1055,6 +1055,8 @@ SCRIPTS=(
     "cache-migrate-to-disk.sh" # Migración manual de cache eMMC -> HDD (sin perder playback)
     "immich-ml-window.sh" # Enciende/apaga IA visual de Immich según horario
     "backup.sh"          # Backup incremental rsync con hard-links
+    "failover-sync.sh"   # Sincroniza espejo operativo para switch de emergencia
+    "storage-failover.sh" # Switch automático/manual al respaldo en falla grave
     "video-optimize.sh"  # Compresión 4K→720p CRF28 ultrafast NEON
     "retry-quarantine.sh" # Reactiva videos en cuarentena (fallo 3/3)
     "cache-monitor.sh"   # Vigilancia de tamaño del cache (no borra)
@@ -1140,6 +1142,17 @@ VIDEO_REPROCESS_CACHE_ROOT=${VIDEO_REPROCESS_CACHE_ROOT:-/var/lib/immich/cache}
 VIDEO_REPROCESS_LEGACY_ROOT=${VIDEO_REPROCESS_LEGACY_ROOT:-/mnt/storage-main/cache}
 VIDEO_REPROCESS_UPLOAD_ROOT=${VIDEO_REPROCESS_UPLOAD_ROOT:-/mnt/storage-main/photos}
 VIDEO_REPROCESS_IMMICH_ROOT=${VIDEO_REPROCESS_IMMICH_ROOT:-/var/lib/immich}
+FAILOVER_ROOT=${FAILOVER_ROOT:-/mnt/storage-backup/failover-main}
+AUTO_FAILOVER_ENABLED=${AUTO_FAILOVER_ENABLED:-1}
+AUTO_FAILBACK_ENABLED=${AUTO_FAILBACK_ENABLED:-1}
+FAILOVER_IO_CHECK_ENABLED=${FAILOVER_IO_CHECK_ENABLED:-1}
+FAILOVER_IO_TIMEOUT_SEC=${FAILOVER_IO_TIMEOUT_SEC:-8}
+FAILOVER_SYNC_ENABLED=${FAILOVER_SYNC_ENABLED:-1}
+FAILOVER_SYNC_PHOTOS_ENABLED=${FAILOVER_SYNC_PHOTOS_ENABLED:-1}
+FAILOVER_SYNC_CACHE_ENABLED=${FAILOVER_SYNC_CACHE_ENABLED:-1}
+FAILOVER_SYNC_NOTIFY_ON_SUCCESS=${FAILOVER_SYNC_NOTIFY_ON_SUCCESS:-0}
+FAILOVER_SYNC_MAX_RUNTIME_MIN=${FAILOVER_SYNC_MAX_RUNTIME_MIN:-240}
+FAILOVER_SYNC_IO_NICE=${FAILOVER_SYNC_IO_NICE:-15}
 VIDEO_REPROCESS_LOCAL_MAX_MB=${VIDEO_REPROCESS_LOCAL_MAX_MB:-220}
 VIDEO_REPROCESS_LOCAL_MAX_DURATION_SEC=${VIDEO_REPROCESS_LOCAL_MAX_DURATION_SEC:-150}
 VIDEO_REPROCESS_LOCAL_MAX_MB_MIN=${VIDEO_REPROCESS_LOCAL_MAX_MB_MIN:-120}
@@ -1228,6 +1241,8 @@ cat > /etc/logrotate.d/supernas << 'EOF'
 /var/log/playback-audit-autoheal.log
 /var/log/playback-watchdog.log
 /var/log/nas-audit.log
+/var/log/storage-failover.log
+/var/log/failover-sync.log
 /var/log/nas-install.log
 /var/log/dockerd-manual.log
 {
@@ -1359,6 +1374,16 @@ MOUNT_MERGED="$MOUNT_MERGED"
 EOF
 chmod 644 /etc/nas-mounts
 log_ok "Montajes registrados → /etc/nas-mounts"
+
+# Preparar espejo operativo para failover desde instalación.
+mkdir -p "${MOUNT_BACKUP}/failover-main/photos" "${MOUNT_BACKUP}/failover-main/cache"
+if [ -x /usr/local/bin/failover-sync.sh ]; then
+    if nice -n 15 ionice -c2 -n7 /usr/local/bin/failover-sync.sh sync >/tmp/failover-sync-install.log 2>&1; then
+        log_ok "Espejo de failover inicial sincronizado"
+    else
+        log_warn "No pude completar el espejo inicial de failover (ver /tmp/failover-sync-install.log)"
+    fi
+fi
 
 # ════════════════════════════════════════════════════════════════════════════
 # 15. CRONTAB

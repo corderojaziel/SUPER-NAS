@@ -96,9 +96,14 @@ else
 fi
 
 section "SCRIPTS DE MANTENIMIENTO"
-for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/video-autopilot.sh /usr/local/bin/iml-autopilot.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/manual-retention.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/playback-watchdog.sh /usr/local/bin/state-backup.sh /usr/local/bin/state-restore.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh; do
+for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/video-autopilot.sh /usr/local/bin/iml-autopilot.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/manual-retention.sh /usr/local/bin/failover-sync.sh /usr/local/bin/storage-failover.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/playback-watchdog.sh /usr/local/bin/state-backup.sh /usr/local/bin/state-restore.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh; do
   if [ -x "$f" ]; then bash -n "$f" >/dev/null 2>&1 && ok "$f instalado y sintaxis válida" || fail "$f con errores de sintaxis"; else fail "$f ausente"; fi
 done
+if grep -q 'api.telegram.org' /usr/local/bin/nas-alert.sh 2>/dev/null; then
+  ok "nas-alert.sh apunta a Telegram API real"
+else
+  fail "nas-alert.sh no parece la versión real (falta Telegram API)"
+fi
 [ -x /usr/local/bin/immich-video-playback-resolver.py ] && python3 -m py_compile /usr/local/bin/immich-video-playback-resolver.py >/dev/null 2>&1 && ok "/usr/local/bin/immich-video-playback-resolver.py instalado y sintaxis válida" || fail "/usr/local/bin/immich-video-playback-resolver.py ausente o inválido"
 if [ -x /usr/local/bin/reconcile-emmc-cache.py ]; then
   python3 -m py_compile /usr/local/bin/reconcile-emmc-cache.py >/dev/null 2>&1 && ok "/usr/local/bin/reconcile-emmc-cache.py instalado y sintaxis válida" || fail "/usr/local/bin/reconcile-emmc-cache.py con errores de sintaxis"
@@ -205,6 +210,16 @@ if [ -f /etc/default/nas-video-policy ] && grep -q '^VIDEO_AUTOPILOT_ENABLED=' /
 else
   warn "Politica no define VIDEO_AUTOPILOT_ENABLED"
 fi
+if [ -f /etc/default/nas-video-policy ] && grep -q '^AUTO_FAILOVER_ENABLED=' /etc/default/nas-video-policy; then
+  ok "Politica define AUTO_FAILOVER_ENABLED"
+else
+  warn "Politica no define AUTO_FAILOVER_ENABLED"
+fi
+if [ -f /etc/default/nas-video-policy ] && grep -q '^FAILOVER_SYNC_ENABLED=' /etc/default/nas-video-policy; then
+  ok "Politica define FAILOVER_SYNC_ENABLED"
+else
+  warn "Politica no define FAILOVER_SYNC_ENABLED"
+fi
 if [ -f /etc/default/nas-video-policy ] && grep -q '^IML_AUTOPILOT_ENABLED=' /etc/default/nas-video-policy; then
   ok "Politica define IML_AUTOPILOT_ENABLED"
 else
@@ -229,6 +244,23 @@ if systemctl cat immich-video-playback-resolver 2>/dev/null | grep -q 'Environme
   ok "Resolutor tiene fallback al cache legado en HDD"
 else
   warn "No encontre fallback al cache legado en HDD en el resolutor"
+fi
+
+section "FAILOVER"
+if [ -x /usr/local/bin/storage-failover.sh ]; then
+  if /usr/local/bin/storage-failover.sh status >/tmp/verify-failover-status.log 2>&1; then
+    ok "storage-failover.sh responde status"
+    grep -q '^failover_active=' /tmp/verify-failover-status.log && ok "Estado failover disponible" || warn "No pude leer failover_active"
+  else
+    fail "storage-failover.sh status falló"
+  fi
+else
+  fail "storage-failover.sh no está instalado"
+fi
+if [ -d /mnt/storage-backup/failover-main/photos ] && [ -d /mnt/storage-backup/failover-main/cache ]; then
+  ok "Espejo operativo failover-main presente (photos+cache)"
+else
+  warn "No encontré espejo operativo completo en /mnt/storage-backup/failover-main"
 fi
 
 section "CRONTAB"
