@@ -60,6 +60,13 @@ Previsualización sin riesgo (sin escribir nada):
 sudo /usr/local/bin/disaster-restore.sh latest --dry-run
 ```
 
+Flujo todo-en-uno desde OS limpio:
+
+```bash
+sudo bash maintenance/bootstrap-restore.sh --repo "$(pwd)" --snapshot latest --dry-run
+sudo bash maintenance/bootstrap-restore.sh --repo "$(pwd)" --snapshot latest
+```
+
 ---
 
 ## 🏗️ Arquitectura del sistema

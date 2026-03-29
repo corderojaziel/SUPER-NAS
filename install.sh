@@ -217,6 +217,13 @@ normalize_install_mode() {
     esac
 }
 
+is_true() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 INSTALL_MODE_RAW="${INSTALL_MODE:-${NAS_INSTALL_MODE:-}}"
 if [ -n "$INSTALL_MODE_RAW" ]; then
     INSTALL_MODE="$(normalize_install_mode "$INSTALL_MODE_RAW")"
@@ -238,6 +245,9 @@ if [ "$INSTALL_MODE" = "restore" ]; then
     ALLOW_FORMAT="no"
     log_warn "Modo restauración activo: se desactiva cualquier formateo automático."
 fi
+
+INSTALL_ASSUME_YES="${INSTALL_ASSUME_YES:-0}"
+INSTALL_FORCE_FORMAT="${INSTALL_FORCE_FORMAT:-0}"
 
 # Validación previa del paquete y sintaxis de scripts críticos
 if [ -x "$SCRIPT_DIR/precheck.sh" ]; then
@@ -272,7 +282,12 @@ for disk in "$DISK_PHOTOS" "$DISK_BACKUP"; do
     log_info "  $disk — $MODEL ($SIZE) [SERIAL: $SERIAL]"
 done
 echo ""
-read -r -p "  ¿Continuar? Escribe 'si' para confirmar: " CONFIRM
+if is_true "$INSTALL_ASSUME_YES"; then
+    CONFIRM="si"
+    log_warn "INSTALL_ASSUME_YES activo: se confirma continuidad automáticamente."
+else
+    read -r -p "  ¿Continuar? Escribe 'si' para confirmar: " CONFIRM
+fi
 [[ "$CONFIRM" == "si" ]] || die "Instalación cancelada por el usuario"
 
 # Confirmación reforzada cuando ALLOW_FORMAT está activo.
@@ -282,7 +297,16 @@ if [ "$INSTALL_MODE" = "new" ] && [ "${ALLOW_FORMAT:-no}" = "yes" ]; then
     log_warn "ALLOW_FORMAT=yes detectado."
     log_warn "Verifica modelo/serial con: lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT"
     echo ""
-    read -r -p "  Confirmación destructiva: escribe '$TOKEN' para continuar: " FORMAT_CONFIRM
+    if is_true "$INSTALL_ASSUME_YES"; then
+        if is_true "$INSTALL_FORCE_FORMAT"; then
+            FORMAT_CONFIRM="$TOKEN"
+            log_warn "INSTALL_FORCE_FORMAT activo: se acepta confirmación destructiva no interactiva."
+        else
+            die "Modo no interactivo con ALLOW_FORMAT=yes requiere INSTALL_FORCE_FORMAT=1 para proteger datos."
+        fi
+    else
+        read -r -p "  Confirmación destructiva: escribe '$TOKEN' para continuar: " FORMAT_CONFIRM
+    fi
     [[ "$FORMAT_CONFIRM" == "$TOKEN" ]] || die "Confirmación destructiva inválida. Abortado para proteger discos."
 fi
 
@@ -1120,6 +1144,7 @@ SCRIPTS=(
     "state-backup.sh"    # Backup rapido de estado (DB + config + inventario)
     "state-restore.sh"   # Restauracion rapida desde snapshot de estado
     "disaster-restore.sh" # Restauracion integral en caja nueva (discos existentes)
+    "bootstrap-restore.sh" # Flujo todo-en-uno desde OS limpio (install restore + restore total)
     "manual-retention.sh" # Depuracion manual de respaldos (sin auto-borrado)
     "log-maintenance.sh"  # Rotacion/depuracion mensual de logs tecnicos
     "mount-guard.sh"     # Detecta desmontajes/remontajes y notifica Telegram
