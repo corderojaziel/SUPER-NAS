@@ -18,7 +18,6 @@ UPLOAD_PREFIX = "/usr/src/app/upload/"
 UPLOAD_HOST_ROOT_DEFAULT = "/mnt/storage-main/photos"
 IMMICH_LOCAL_ROOT_DEFAULT = "/var/lib/immich"
 CACHE_ROOT_DEFAULT = "/var/lib/immich/cache"
-LEGACY_ROOT_DEFAULT = "/mnt/storage-main/cache"
 OUTPUT_DIR_DEFAULT = "/var/lib/nas-health/reprocess"
 ATTEMPTS_DB_DEFAULT = "/var/lib/nas-retry/video-reprocess-light.attempts.tsv"
 MANUAL_QUEUE_DEFAULT = "/var/lib/nas-retry/video-reprocess-manual.tsv"
@@ -52,7 +51,6 @@ def parse_args() -> argparse.Namespace:
 
     common_plan = argparse.ArgumentParser(add_help=False)
     common_plan.add_argument("--cache-root", default=CACHE_ROOT_DEFAULT)
-    common_plan.add_argument("--legacy-root", default=LEGACY_ROOT_DEFAULT)
     common_plan.add_argument("--upload-host-root", default=UPLOAD_HOST_ROOT_DEFAULT)
     common_plan.add_argument("--immich-local-root", default=IMMICH_LOCAL_ROOT_DEFAULT)
     common_plan.add_argument("--output-dir", default=OUTPUT_DIR_DEFAULT)
@@ -203,14 +201,10 @@ def iter_rel_variants(rel_mp4: str) -> Iterable[str]:
     return yield_value
 
 
-def find_cache_path(rel_mp4: str, cache_root: Path, legacy_root: Path) -> str:
+def find_cache_path(rel_mp4: str, cache_root: Path) -> str:
     variants = list(iter_rel_variants(rel_mp4))
     for rel in variants:
         found = resolve_existing_variant(cache_root, rel)
-        if found:
-            return str(found)
-    for rel in variants:
-        found = resolve_existing_variant(legacy_root, rel)
         if found:
             return str(found)
     return ""
@@ -235,7 +229,6 @@ def classify_row(
     size_raw: str,
     *,
     cache_root: Path,
-    legacy_root: Path,
     upload_host_root: Path,
     immich_local_root: Path,
     max_mb_min: float,
@@ -258,7 +251,7 @@ def classify_row(
 
     needs_cache = mb_per_min > max_mb_min if mb_per_min > 0 else True
     rel_mp4 = rel_mp4_for_original(original_path)
-    cache_path = find_cache_path(rel_mp4, cache_root, legacy_root)
+    cache_path = find_cache_path(rel_mp4, cache_root)
     source_path = source_host_path(original_path, upload_host_root, immich_local_root)
 
     if not needs_cache:
@@ -375,7 +368,6 @@ def run_plan(args: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S")
     cache_root = Path(args.cache_root)
-    legacy_root = Path(args.legacy_root)
     upload_host_root = Path(args.upload_host_root)
     immich_local_root = Path(args.immich_local_root)
 
@@ -394,7 +386,6 @@ def run_plan(args: argparse.Namespace) -> int:
             duration_raw,
             size_raw,
             cache_root=cache_root,
-            legacy_root=legacy_root,
             upload_host_root=upload_host_root,
             immich_local_root=immich_local_root,
             max_mb_min=args.max_mb_min,

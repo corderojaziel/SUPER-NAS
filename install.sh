@@ -1048,17 +1048,6 @@ server {
     sendfile on;
   }
 
-  # Compatibilidad temporal: algunos laboratorios cargaron caches antiguos
-  # en HDD antes de mover la politica canonica al eMMC.
-  location /__cache-video-legacy/ {
-    internal;
-    alias /mnt/storage-main/cache/;
-    types { video/mp4 mp4; }
-    default_type video/mp4;
-    add_header Cache-Control "private, max-age=300, no-transform";
-    sendfile on;
-  }
-
   location /__immich-direct/ {
     internal;
     rewrite ^/__immich-direct(/.*)$ $1 break;
@@ -1214,8 +1203,6 @@ VIDEO_PLAYBACK_BROWSER_CACHE_SEC=${VIDEO_PLAYBACK_BROWSER_CACHE_SEC:-300}
 VIDEO_REPROCESS_MANAGER_BIN=${VIDEO_REPROCESS_MANAGER_BIN:-/usr/local/bin/video-reprocess-manager.py}
 VIDEO_REPROCESS_OUTPUT_DIR=${VIDEO_REPROCESS_OUTPUT_DIR:-/var/lib/nas-health/reprocess}
 VIDEO_REPROCESS_CACHE_ROOT=${VIDEO_REPROCESS_CACHE_ROOT:-/var/lib/immich/cache}
-VIDEO_REPROCESS_LEGACY_ROOT=${VIDEO_REPROCESS_LEGACY_ROOT:-/mnt/storage-main/cache}
-LEGACY_CACHE_ROOTS=${LEGACY_CACHE_ROOTS:-}
 CACHE_VIDEOS_CANONICAL_ONLY=${CACHE_VIDEOS_CANONICAL_ONLY:-1}
 VIDEO_REPROCESS_UPLOAD_ROOT=${VIDEO_REPROCESS_UPLOAD_ROOT:-/mnt/storage-main/photos}
 VIDEO_REPROCESS_IMMICH_ROOT=${VIDEO_REPROCESS_IMMICH_ROOT:-/var/lib/immich}
@@ -1364,7 +1351,6 @@ Environment=PLACEHOLDER_ERROR_PORTRAIT_URI=/__static/video-error-portrait.mp4
 Environment=DIRECT_PLAY_INTERNAL_PREFIX=/__immich-direct/
 Environment=CACHE_INTERNAL_PREFIX=/__cache-video/
 Environment=UPLOAD_PREFIX=/usr/src/app/upload/
-Environment=LEGACY_CACHE_INTERNAL_PREFIX=/__cache-video-legacy/
 
 [Install]
 WantedBy=multi-user.target

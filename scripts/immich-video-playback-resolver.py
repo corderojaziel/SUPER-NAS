@@ -37,11 +37,6 @@ IMMICH_LOCAL_ROOT = os.path.abspath(
     os.environ.get("IMMICH_LOCAL_ROOT", "/var/lib/immich")
 )
 CACHE_ROOT = os.path.abspath(os.environ.get("CACHE_ROOT", "/var/lib/immich/cache"))
-LEGACY_CACHE_ROOTS = tuple(
-    os.path.abspath(path.strip())
-    for path in os.environ.get("LEGACY_CACHE_ROOTS", "").split(",")
-    if path.strip()
-)
 PLACEHOLDER_LANDSCAPE_URI = os.environ.get(
     "PLACEHOLDER_LANDSCAPE_URI", "/__static/video-processing.mp4"
 )
@@ -70,9 +65,6 @@ DIRECT_PLAY_INTERNAL_PREFIX = os.environ.get(
     "DIRECT_PLAY_INTERNAL_PREFIX", "/__immich-direct/"
 )
 CACHE_INTERNAL_PREFIX = os.environ.get("CACHE_INTERNAL_PREFIX", "/__cache-video/")
-LEGACY_CACHE_INTERNAL_PREFIX = os.environ.get(
-    "LEGACY_CACHE_INTERNAL_PREFIX", "/__cache-video-legacy/"
-)
 try:
     VIDEO_STREAM_MAX_MB_PER_MIN = float(
         os.environ.get("VIDEO_STREAM_MAX_MB_PER_MIN", "40")
@@ -179,22 +171,18 @@ def safe_cache_path(original_path: str) -> Tuple[str, str, str]:
     rel_mp4 = rel_mp4_for_original(original_path)
 
     search_locations = [
-        (CACHE_INTERNAL_PREFIX, CACHE_ROOT, ("rel", "underscored", "flat")),
-        *[
+        (
+            CACHE_INTERNAL_PREFIX,
+            CACHE_ROOT,
             (
-                LEGACY_CACHE_INTERNAL_PREFIX,
-                root,
-                (
-                    "underscored",
-                    "legacy_asset_prefix",
-                    "legacy_pair_uuid",
-                    "flat",
-                    "stripped",
-                    "rel",
-                ),
-            )
-            for root in LEGACY_CACHE_ROOTS
-        ],
+                "rel",
+                "underscored",
+                "flat",
+                "legacy_asset_prefix",
+                "legacy_pair_uuid",
+                "stripped",
+            ),
+        ),
     ]
 
     for internal_prefix, root, variant_order in search_locations:

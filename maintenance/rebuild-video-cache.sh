@@ -21,7 +21,6 @@ MANAGER_BIN="${VIDEO_REPROCESS_MANAGER_BIN:-/usr/local/bin/video-reprocess-manag
 BACKFILL_BIN="${BACKFILL_HEAVY_CACHE_BIN:-/usr/local/bin/backfill-heavy-cache.py}"
 OUTPUT_DIR="${VIDEO_REPROCESS_OUTPUT_DIR:-/var/lib/nas-health/reprocess}"
 CACHE_ROOT="${VIDEO_REPROCESS_CACHE_ROOT:-/var/lib/immich/cache}"
-LEGACY_ROOT="${VIDEO_REPROCESS_LEGACY_ROOT:-/mnt/storage-main/cache}"
 UPLOAD_ROOT="${VIDEO_REPROCESS_UPLOAD_ROOT:-/mnt/storage-main/photos}"
 IMMICH_ROOT="${VIDEO_REPROCESS_IMMICH_ROOT:-/var/lib/immich}"
 MAX_MB_MIN="${VIDEO_STREAM_MAX_MB_PER_MIN:-40}"
@@ -39,7 +38,6 @@ mkdir -p "$OUTPUT_DIR" /var/lib/nas-retry
 run_plan() {
   python3 "$MANAGER_BIN" plan \
     --cache-root "$CACHE_ROOT" \
-    --legacy-root "$LEGACY_ROOT" \
     --upload-host-root "$UPLOAD_ROOT" \
     --immich-local-root "$IMMICH_ROOT" \
     --output-dir "$OUTPUT_DIR" \
@@ -53,7 +51,6 @@ run_light() {
   python3 "$MANAGER_BIN" run \
     --class light \
     --cache-root "$CACHE_ROOT" \
-    --legacy-root "$LEGACY_ROOT" \
     --upload-host-root "$UPLOAD_ROOT" \
     --immich-local-root "$IMMICH_ROOT" \
     --output-dir "$OUTPUT_DIR" \
@@ -73,7 +70,6 @@ run_heavy_tvbox() {
   fi
   ionice -c3 nice -n 15 python3 "$BACKFILL_BIN" \
     --cache-root "$CACHE_ROOT" \
-    --legacy-root "$LEGACY_ROOT" \
     --max-mb-min "$MAX_MB_MIN"
 }
 

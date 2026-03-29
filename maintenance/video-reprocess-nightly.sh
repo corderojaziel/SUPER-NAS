@@ -21,7 +21,6 @@ MANAGER_BIN="${VIDEO_REPROCESS_MANAGER_BIN:-/usr/local/bin/video-reprocess-manag
 
 VIDEO_REPROCESS_OUTPUT_DIR="${VIDEO_REPROCESS_OUTPUT_DIR:-$HEALTH_DIR/reprocess}"
 VIDEO_REPROCESS_CACHE_ROOT="${VIDEO_REPROCESS_CACHE_ROOT:-/var/lib/immich/cache}"
-VIDEO_REPROCESS_LEGACY_ROOT="${VIDEO_REPROCESS_LEGACY_ROOT:-/mnt/storage-main/cache}"
 VIDEO_REPROCESS_UPLOAD_ROOT="${VIDEO_REPROCESS_UPLOAD_ROOT:-/mnt/storage-main/photos}"
 VIDEO_REPROCESS_IMMICH_ROOT="${VIDEO_REPROCESS_IMMICH_ROOT:-/var/lib/immich}"
 VIDEO_STREAM_MAX_MB_PER_MIN="${VIDEO_STREAM_MAX_MB_PER_MIN:-40}"
@@ -265,7 +264,6 @@ run_plan() {
   log "INICIO: plan de reproceso"
   python3 "$MANAGER_BIN" plan \
     --cache-root "$VIDEO_REPROCESS_CACHE_ROOT" \
-    --legacy-root "$VIDEO_REPROCESS_LEGACY_ROOT" \
     --upload-host-root "$VIDEO_REPROCESS_UPLOAD_ROOT" \
     --immich-local-root "$VIDEO_REPROCESS_IMMICH_ROOT" \
     --output-dir "$VIDEO_REPROCESS_OUTPUT_DIR" \
@@ -303,7 +301,6 @@ run_batch() {
   if python3 "$MANAGER_BIN" run \
     --class "$klass" \
     --cache-root "$VIDEO_REPROCESS_CACHE_ROOT" \
-    --legacy-root "$VIDEO_REPROCESS_LEGACY_ROOT" \
     --upload-host-root "$VIDEO_REPROCESS_UPLOAD_ROOT" \
     --immich-local-root "$VIDEO_REPROCESS_IMMICH_ROOT" \
     --output-dir "$VIDEO_REPROCESS_OUTPUT_DIR" \
@@ -361,12 +358,12 @@ heavy_total="$(csv_count "$HEAVY_FILE")"
 broken_total="$(csv_count "$BROKEN_FILE")"
 log "Plan listo: light=$light_total heavy=$heavy_total broken=$broken_total"
 
-MODE_LABEL="legacy"
+MODE_LABEL="standard"
 if [ "$light_total" -le 0 ] && { [ "$VIDEO_REPROCESS_HEAVY_ENABLED" != "1" ] || [ "$heavy_total" -le 0 ]; }; then
   log "SKIP: no hay candidatos para reproceso"
   RUN_STATUS="SKIPPED"
 elif [ "$VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED" != "1" ]; then
-  log "MODO LEGACY: procesamiento tradicional (sin pausa por carga)"
+  log "MODO STANDARD: procesamiento tradicional (sin pausa por carga)"
   if [ "$light_total" -gt 0 ]; then
     run_batch "light" "$LIGHT_FILE" "$VIDEO_REPROCESS_LIGHT_LIMIT"
   fi

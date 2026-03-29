@@ -40,7 +40,6 @@ PLAYBACK_WATCHDOG_BIN="${PLAYBACK_WATCHDOG_BIN:-/usr/local/bin/playback-watchdog
 
 VIDEO_REPROCESS_OUTPUT_DIR="${VIDEO_REPROCESS_OUTPUT_DIR:-$HEALTH_DIR/reprocess}"
 VIDEO_REPROCESS_CACHE_ROOT="${VIDEO_REPROCESS_CACHE_ROOT:-/var/lib/immich/cache}"
-VIDEO_REPROCESS_LEGACY_ROOT="${VIDEO_REPROCESS_LEGACY_ROOT:-/mnt/storage-main/cache}"
 VIDEO_REPROCESS_UPLOAD_ROOT="${VIDEO_REPROCESS_UPLOAD_ROOT:-/mnt/storage-main/photos}"
 VIDEO_REPROCESS_IMMICH_ROOT="${VIDEO_REPROCESS_IMMICH_ROOT:-/var/lib/immich}"
 VIDEO_STREAM_MAX_MB_PER_MIN="${VIDEO_STREAM_MAX_MB_PER_MIN:-40}"
@@ -303,7 +302,6 @@ fi
 log "INICIO: plan de reproceso para autocorrección"
 if ! python3 "$MANAGER_BIN" plan \
   --cache-root "$VIDEO_REPROCESS_CACHE_ROOT" \
-  --legacy-root "$VIDEO_REPROCESS_LEGACY_ROOT" \
   --upload-host-root "$VIDEO_REPROCESS_UPLOAD_ROOT" \
   --immich-local-root "$VIDEO_REPROCESS_IMMICH_ROOT" \
   --output-dir "$VIDEO_REPROCESS_OUTPUT_DIR" \
@@ -401,7 +399,6 @@ run_rc=0
 if python3 "$MANAGER_BIN" run \
   --class light \
   --cache-root "$VIDEO_REPROCESS_CACHE_ROOT" \
-  --legacy-root "$VIDEO_REPROCESS_LEGACY_ROOT" \
   --upload-host-root "$VIDEO_REPROCESS_UPLOAD_ROOT" \
   --immich-local-root "$VIDEO_REPROCESS_IMMICH_ROOT" \
   --output-dir "$VIDEO_REPROCESS_OUTPUT_DIR" \

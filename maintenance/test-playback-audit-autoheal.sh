@@ -244,7 +244,6 @@ PLAYBACK_AUDIT_AUTOHEAL_CLASSES="not_found http_error unexpected_content placeho
 VIDEO_REPROCESS_MANAGER_BIN=/usr/local/bin/video-reprocess-manager.py
 VIDEO_REPROCESS_OUTPUT_DIR=/var/lib/nas-health/reprocess
 VIDEO_REPROCESS_CACHE_ROOT=/var/lib/immich/cache
-VIDEO_REPROCESS_LEGACY_ROOT=/mnt/storage-main/cache
 VIDEO_REPROCESS_UPLOAD_ROOT=/mnt/storage-main/photos
 VIDEO_REPROCESS_IMMICH_ROOT=/var/lib/immich
 VIDEO_STREAM_MAX_MB_PER_MIN=40

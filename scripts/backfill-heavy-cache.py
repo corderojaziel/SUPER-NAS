@@ -21,7 +21,6 @@ VIDEO_EXTS = (".mp4", ".MP4", ".Mp4", ".mP4")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache-root", default="/var/lib/immich/cache")
-    parser.add_argument("--legacy-root", default="/mnt/storage-main/cache")
     parser.add_argument("--ffmpeg-bin", default="ffmpeg")
     parser.add_argument("--max-mb-min", type=float, default=40.0)
     parser.add_argument("--limit", type=int, default=0, help="0 = sin limite")
@@ -142,12 +141,10 @@ def iter_rel_variants(rel_mp4: str) -> list[str]:
     return vals
 
 
-def cache_exists(cache_root: Path, legacy_root: Path, rel_mp4: str) -> bool:
+def cache_exists(cache_root: Path, rel_mp4: str) -> bool:
     variants = iter_rel_variants(rel_mp4)
     for rel in variants:
         if resolve_existing_variant(cache_root, rel):
-            return True
-        if resolve_existing_variant(legacy_root, rel):
             return True
     return False
 
@@ -216,7 +213,6 @@ def transcode_to_cache(ffmpeg_bin: str, src: Path, dst: Path) -> tuple[bool, str
 def main() -> int:
     args = parse_args()
     cache_root = Path(args.cache_root)
-    legacy_root = Path(args.legacy_root)
     report_dir = Path(args.report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / f"backfill-heavy-cache-{time.strftime('%Y%m%d-%H%M%S')}.csv"
@@ -270,7 +266,7 @@ def main() -> int:
 
             rel_mp4 = rel_mp4_for_original(original_path)
             needs_cache = mbpm > args.max_mb_min if mbpm > 0 else True
-            has_cache = cache_exists(cache_root, legacy_root, rel_mp4)
+            has_cache = cache_exists(cache_root, rel_mp4)
 
             if not needs_cache:
                 stats["light_skip"] += 1

@@ -14,7 +14,6 @@
 set -u
 
 CACHE_ROOT="${CACHE_DIR:-${CACHE_ROOT:-/var/lib/immich/cache}}"
-LEGACY_CACHE_ROOTS="${LEGACY_CACHE_ROOTS:-/mnt/storage-main/cache}"
 PHOTOS="${PHOTOS_DIR:-/mnt/storage-main/photos}"
 DETAIL_LIMIT="${CACHE_AUDIT_DETAIL_LIMIT:-40}"
 NAS_ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
@@ -24,27 +23,7 @@ if [ ! -d "$PHOTOS" ] && [ -d "/mnt/merged" ]; then
 fi
 [ -d "$PHOTOS" ] || exit 0
 
-declare -A SCAN_ROOT_SEEN=()
-SCAN_ROOTS=()
-
-add_scan_root() {
-    local root="$1"
-    root="${root//[$'\t\r\n ']}"
-    [ -n "$root" ] || return 0
-    [ -d "$root" ] || return 0
-    if [ -z "${SCAN_ROOT_SEEN[$root]:-}" ]; then
-        SCAN_ROOT_SEEN[$root]=1
-        SCAN_ROOTS+=("$root")
-    fi
-}
-
-add_scan_root "$CACHE_ROOT"
-IFS=',' read -r -a LEGACY_ROOT_ARR <<< "$LEGACY_CACHE_ROOTS"
-for r in "${LEGACY_ROOT_ARR[@]}"; do
-    add_scan_root "$r"
-done
-
-[ "${#SCAN_ROOTS[@]}" -gt 0 ] || exit 0
+[ -d "$CACHE_ROOT" ] || exit 0
 
 declare -A PHOTO_TOPS=()
 while IFS= read -r d; do
@@ -112,30 +91,25 @@ ORPHAN=0
 SKIPPED_UNMANAGED=0
 DETAIL_SHOWN=0
 
-for scan_root in "${SCAN_ROOTS[@]}"; do
-    while IFS= read -r -d '' cached; do
+while IFS= read -r -d '' cached; do
         TOTAL=$((TOTAL + 1))
 
-        local_rel="${cached#"$scan_root"/}"
+        local_rel="${cached#"$CACHE_ROOT"/}"
         stem="$(basename "$cached" .mp4)"
         stem_l="${stem,,}"
         managed=0
         exists=0
 
-        if [ "$scan_root" = "$CACHE_ROOT" ]; then
-            if [[ "$local_rel" == encoded-video/* ]] || [[ "$stem_l" =~ -mp$ ]]; then
-                SKIPPED_UNMANAGED=$((SKIPPED_UNMANAGED + 1))
-                continue
-            fi
-            top="${local_rel%%/*}"
-            if [ -n "${PHOTO_TOPS[$top]:-}" ]; then
-                managed=1
-                if original_exists_by_rel "$local_rel"; then
-                    exists=1
-                fi
-            fi
-        else
+        if [[ "$local_rel" == encoded-video/* ]] || [[ "$stem_l" =~ -mp$ ]]; then
+            SKIPPED_UNMANAGED=$((SKIPPED_UNMANAGED + 1))
+            continue
+        fi
+        top="${local_rel%%/*}"
+        if [ -n "${PHOTO_TOPS[$top]:-}" ]; then
             managed=1
+            if original_exists_by_rel "$local_rel"; then
+                exists=1
+            fi
         fi
 
         if [ "$managed" -eq 0 ]; then
@@ -164,8 +138,7 @@ for scan_root in "${SCAN_ROOTS[@]}"; do
             echo "ORPHAN-CANDIDATE: $cached"
             DETAIL_SHOWN=$((DETAIL_SHOWN + 1))
         fi
-    done < <(find "$scan_root" \( -type f -o -type l \) -name "*.mp4" -print0 2>/dev/null)
-done
+done < <(find "$CACHE_ROOT" \( -type f -o -type l \) -name "*.mp4" -print0 2>/dev/null)
 
 echo "Cache-audit resumen: total=$TOTAL managed=$MANAGED kept=$KEPT orphan_candidates=$ORPHAN skipped_unmanaged=$SKIPPED_UNMANAGED"
 
