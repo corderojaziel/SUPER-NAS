@@ -9,6 +9,7 @@
 #   /usr/local/bin/disaster-restore.sh latest
 #   /usr/local/bin/disaster-restore.sh latest --with-cache-archive
 #   /usr/local/bin/disaster-restore.sh latest --rebuild-cache-light
+#   /usr/local/bin/disaster-restore.sh latest --dry-run
 #   /usr/local/bin/disaster-restore.sh /mnt/storage-backup/snapshots/system-state/20260329-013000 --skip-verify
 
 set -euo pipefail
@@ -17,14 +18,16 @@ SNAP_INPUT="latest"
 WITH_CACHE_ARCHIVE=0
 REBUILD_CACHE_LIGHT=0
 SKIP_VERIFY=0
+DRY_RUN=0
 
 for arg in "$@"; do
   case "$arg" in
     --with-cache-archive) WITH_CACHE_ARCHIVE=1 ;;
     --rebuild-cache-light) REBUILD_CACHE_LIGHT=1 ;;
     --skip-verify) SKIP_VERIFY=1 ;;
+    --dry-run) DRY_RUN=1 ;;
     --help|-h)
-      echo "Uso: $0 [latest|/ruta/snapshot] [--with-cache-archive] [--rebuild-cache-light] [--skip-verify]"
+      echo "Uso: $0 [latest|/ruta/snapshot] [--with-cache-archive] [--rebuild-cache-light] [--skip-verify] [--dry-run]"
       exit 0
       ;;
     --*) echo "Argumento no reconocido: $arg" >&2; exit 2 ;;
@@ -62,9 +65,11 @@ has_files() {
 }
 
 log "RESTORE_START snapshot=$SNAP_INPUT with_cache_archive=$WITH_CACHE_ARCHIVE rebuild_cache_light=$REBUILD_CACHE_LIGHT"
-alert "🛠️ Inicio de restauración integral
+if [ "$DRY_RUN" != "1" ]; then
+  alert "🛠️ Inicio de restauración integral
 Modo: recuperación en caja nueva con discos existentes.
 Snapshot objetivo: $SNAP_INPUT"
+fi
 
 mount -a >/dev/null 2>&1 || true
 mountpoint -q "$MAIN_MOUNT" || { log "ERROR: $MAIN_MOUNT no está montado"; exit 1; }
@@ -74,6 +79,31 @@ mountpoint -q "$BACKUP_MOUNT" || { log "ERROR: $BACKUP_MOUNT no está montado"; 
 RESTORE_CMD=("$STATE_RESTORE_BIN" "$SNAP_INPUT" "--with-db")
 if [ "$WITH_CACHE_ARCHIVE" = "1" ]; then
   RESTORE_CMD+=("--with-cache")
+fi
+
+if [ "$DRY_RUN" = "1" ]; then
+  log "DRY-RUN: no se aplicarán cambios."
+  "${RESTORE_CMD[@]}" --dry-run || true
+  if has_files "$FAILOVER_CACHE_ROOT"; then
+    log "DRY-RUN: recuperaría cache desde failover-main/cache -> $CACHE_ROOT"
+  elif [ "$WITH_CACHE_ARCHIVE" = "1" ]; then
+    log "DRY-RUN: intentaría restaurar cache desde cache.tar.gz del snapshot"
+  elif [ "$REBUILD_CACHE_LIGHT" = "1" ] && [ -x "$REBUILD_CACHE_BIN" ]; then
+    log "DRY-RUN: reconstruiría cache ligera con $REBUILD_CACHE_BIN light-only"
+  else
+    log "DRY-RUN: cache no se restauraría automáticamente con los flags actuales"
+  fi
+  if [ -x "$FAILOVER_SYNC_BIN" ]; then
+    log "DRY-RUN: ejecutaría sync de cache a failover-main (solo cache)"
+  fi
+  if [ -d "$COMPOSE_DIR" ]; then
+    log "DRY-RUN: ejecutaría docker compose up -d y restart immich-server en $COMPOSE_DIR"
+  fi
+  if [ "$SKIP_VERIFY" != "1" ] && [ -x "$VERIFY_BIN" ]; then
+    log "DRY-RUN: ejecutaría verify.sh y guardaría salida en /tmp/disaster-restore-verify.log"
+  fi
+  log "DRY-RUN_DONE snapshot=$SNAP_INPUT"
+  exit 0
 fi
 
 "${RESTORE_CMD[@]}"

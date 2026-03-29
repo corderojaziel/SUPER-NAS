@@ -54,6 +54,12 @@ sudo INSTALL_MODE=restore ./install.sh
 sudo /usr/local/bin/disaster-restore.sh latest
 ```
 
+Previsualización sin riesgo (sin escribir nada):
+
+```bash
+sudo /usr/local/bin/disaster-restore.sh latest --dry-run
+```
+
 ---
 
 ## 🏗️ Arquitectura del sistema

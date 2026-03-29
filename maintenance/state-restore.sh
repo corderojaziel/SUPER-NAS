@@ -10,11 +10,13 @@ set -euo pipefail
 SNAP_INPUT="${1:-latest}"
 WITH_DB=0
 WITH_CACHE=0
+DRY_RUN=0
 
 for arg in "${@:2}"; do
   case "$arg" in
     --with-db) WITH_DB=1 ;;
     --with-cache) WITH_CACHE=1 ;;
+    --dry-run) DRY_RUN=1 ;;
     *) echo "Argumento no reconocido: $arg" >&2; exit 2 ;;
   esac
 done
@@ -43,6 +45,39 @@ fi
 [ -d "$SNAP_DIR" ] || { echo "Snapshot no existe: $SNAP_DIR" >&2; exit 1; }
 
 echo "[$(date '+%F %T')] RESTORE_START snapshot=$SNAP_DIR with_db=$WITH_DB with_cache=$WITH_CACHE"
+
+if [ "$DRY_RUN" = "1" ]; then
+  db_dump="$SNAP_DIR/db/immich-db.sql.gz"
+  if [ ! -f "$db_dump" ] && [ -d "$DB_BACKUP_ROOT" ]; then
+    db_dump="$(ls -1t "$DB_BACKUP_ROOT"/immich-db-*.sql.gz 2>/dev/null | head -1 || true)"
+  fi
+  cache_archive="$SNAP_DIR/cache/cache.tar.gz"
+
+  echo "DRY-RUN: no se aplicarán cambios."
+  echo "Snapshot: $SNAP_DIR"
+  echo "Aplicaría restauración de configuración base en /opt/immich-app, /etc y systemd."
+  if [ "$WITH_DB" = "1" ]; then
+    if [ -f "$db_dump" ]; then
+      echo "Aplicaría restauración DB desde: $db_dump"
+    else
+      echo "DB solicitada, pero no encontré dump disponible."
+    fi
+  else
+    echo "DB: no solicitada (--with-db no presente)."
+  fi
+  if [ "$WITH_CACHE" = "1" ]; then
+    if [ -f "$cache_archive" ]; then
+      echo "Aplicaría restauración cache desde: $cache_archive"
+    else
+      echo "Cache solicitada, pero no encontré cache.tar.gz en snapshot."
+    fi
+  else
+    echo "Cache: no solicitada (--with-cache no presente)."
+  fi
+  echo "Aplicaría: daemon-reload, restart resolver, mount -a, docker compose up/restart."
+  echo "DRY-RUN_DONE"
+  exit 0
+fi
 
 # Restaurar configuraciones base
 for item in .env docker-compose.yml; do
