@@ -114,24 +114,24 @@ EOF
     WARN_STREAK=1
     [ "$PREV_STATUS" = "WARN" ] && WARN_STREAK=$((PREV_WARN_STREAK + 1))
 
+    echo "$disk|WARN|-1|-1|-1|0|$WARN_STREAK|$(date -Iseconds)" >> "$NEXT_STATE_FILE"
+    if [ "$WARN_STREAK" -lt 3 ]; then
+      # Una lectura puntual fallida no debe escalar a señal temprana.
+      # Esperamos persistencia para reducir falsos positivos.
+      echo "$disk|OK|telemetría SMART temporalmente no disponible (racha=$WARN_STREAK)" >> "$RISKY_FILE"
+      continue
+    fi
+
     DISK_DETAIL="$(disk_detail "$disk" "")"
     echo "$disk|WARN|SMART no disponible" >> "$RISKY_FILE"
-    echo "$disk|WARN|-1|-1|-1|0|$WARN_STREAK|$(date -Iseconds)" >> "$NEXT_STATE_FILE"
     GLOBAL=$(merge_status "$GLOBAL" WARN)
-    NAS_ALERT_KEY="smart_unavailable:${disk}" NAS_ALERT_TTL=21600 alert "⚠️ No pude leer la salud del $DISK_LABEL
-Acción del NAS: sigo en modo seguro.
-Disco detectado: $DISK_DETAIL
-Comandos sugeridos (diagnóstico):
-1) lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINT
-2) /usr/local/bin/smart-check.sh daily"
-    if [ "$WARN_STREAK" -ge 3 ]; then
-      NAS_ALERT_KEY="smart_trend_unavailable:${disk}" NAS_ALERT_TTL=21600 alert "⚠️ Señal temprana persistente en $DISK_LABEL
+    NAS_ALERT_KEY="smart_trend_unavailable:${disk}" NAS_ALERT_TTL=21600 alert "⚠️ Señal temprana persistente en $DISK_LABEL
 No pude leer SMART en varios ciclos seguidos (racha: $WARN_STREAK).
 Esto suele ser telemetría inestable por bridge/cable/puerto USB.
+Disco detectado: $DISK_DETAIL
 Acción sugerida:
 1) reconectar cable/puerto USB
 2) /usr/local/bin/smart-check.sh weekly"
-    fi
     continue
   fi
 
