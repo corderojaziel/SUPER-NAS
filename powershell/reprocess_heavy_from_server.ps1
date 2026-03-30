@@ -22,6 +22,9 @@ if (!(Test-Path $LocalWork)) {
     New-Item -ItemType Directory -Force -Path $LocalWork | Out-Null
 }
 
+Get-ChildItem -Path $LocalWork -File -Include "in_*.bin","out_*.mp4" -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
 $runId = (Get-Date).ToString("yyyyMMdd_HHmmss")
 $logFile = Join-Path $LocalWork "reprocess-heavy-$runId.log"
 $csvLocal = Join-Path $LocalWork "heavy-latest-$runId.csv"

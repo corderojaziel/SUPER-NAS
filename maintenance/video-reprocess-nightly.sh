@@ -386,12 +386,16 @@ else
     elapsed_min=$(( (current_epoch - start_epoch) / 60 ))
     if [ "$VIDEO_REPROCESS_MAX_RUNTIME_MIN" -gt 0 ] && [ "$elapsed_min" -ge "$VIDEO_REPROCESS_MAX_RUNTIME_MIN" ]; then
       log "STOP: max runtime alcanzado (${VIDEO_REPROCESS_MAX_RUNTIME_MIN} min)"
-      alert_throttled \
-        "video_reprocess:max_runtime" \
-        1800 \
-        "⏱️ Reproceso de videos pausado por tiempo máximo
+      pending_now_manual="$(csv_count "$VIDEO_REPROCESS_MANUAL_QUEUE")"
+      pending_now_total=$((light_total + heavy_total + pending_now_manual))
+      if [ "$pending_now_total" -ge "$VIDEO_NOTIFY_BACKLOG_THRESHOLD" ]; then
+        alert_throttled \
+          "video_reprocess:max_runtime" \
+          1800 \
+          "⏱️ Reproceso de videos pausado por tiempo máximo
 Duración máxima alcanzada: ${VIDEO_REPROCESS_MAX_RUNTIME_MIN} min.
 Acción: continuará en la siguiente ventana automática."
+      fi
       break
     fi
 
@@ -411,15 +415,19 @@ Acción: continuará en la siguiente ventana automática."
 
     if is_busy_now; then
       log "BUSY: cpu=${LAST_CPU}% mem=${LAST_MEM}% temp=${LAST_TEMP}C req=${LAST_REQ}/${VIDEO_REPROCESS_REQUEST_WINDOW_SEC}s -> pausa"
-      alert_throttled \
-        "video_reprocess:busy" \
-        "$VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC" \
-        "⏸️ Reproceso de videos en pausa automática por carga
+      pending_now_manual="$(csv_count "$VIDEO_REPROCESS_MANUAL_QUEUE")"
+      pending_now_total=$((light_total + heavy_total + pending_now_manual))
+      if [ "$pending_now_total" -ge "$VIDEO_NOTIFY_BACKLOG_THRESHOLD" ]; then
+        alert_throttled \
+          "video_reprocess:busy" \
+          "$VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC" \
+          "⏸️ Reproceso de videos en pausa automática por carga
 CPU: ${LAST_CPU}% (umbral ${VIDEO_REPROCESS_MAX_CPU_PCT}%)
 RAM: ${LAST_MEM}% (umbral ${VIDEO_REPROCESS_MAX_MEM_PCT}%)
 Temp CPU: ${LAST_TEMP}°C (umbral ${VIDEO_REPROCESS_MAX_TEMP_C}°C)
 Requests: ${LAST_REQ}/${VIDEO_REPROCESS_REQUEST_WINDOW_SEC}s (umbral ${VIDEO_REPROCESS_MAX_REQUESTS_PER_WINDOW})
 Reanuda solo cuando baje la carga."
+      fi
       sleep "$VIDEO_REPROCESS_IDLE_SLEEP_SEC"
       continue
     fi
