@@ -1137,6 +1137,7 @@ SCRIPTS=(
     "ml-temp-guard.sh"   # Guardia térmica 3 niveles (ventilador, throttle, crítico)
     "smart-check.sh"     # Monitoreo SMART diario + test mensual de superficie
     "cache-clean.sh"     # Auditoría de huérfanos de cache (no borra)
+    "temp-clean.sh"      # Depuración semanal de temporales técnicos (sin tocar fotos/videos)
     "cache-migrate-to-disk.sh" # Migración manual de cache eMMC -> HDD (sin perder playback)
     "immich-ml-window.sh" # Enciende/apaga IA visual de Immich según horario
     "backup.sh"          # Backup incremental rsync con hard-links
@@ -1304,6 +1305,7 @@ IML_ML_CONTAINER_NAME=${IML_ML_CONTAINER_NAME:-immich_machine_learning}
 IML_NOTIFY_BACKLOG_THRESHOLD=${IML_NOTIFY_BACKLOG_THRESHOLD:-10}
 IML_NOTIFY_STUCK_MIN=${IML_NOTIFY_STUCK_MIN:-20}
 IML_NOTIFY_STATE_FILE=${IML_NOTIFY_STATE_FILE:-/var/lib/nas-health/iml-notify-state.json}
+TEMP_CLEAN_AGE_DAYS=${TEMP_CLEAN_AGE_DAYS:-7}
 PLAYBACK_AUDIT_ENABLED=${PLAYBACK_AUDIT_ENABLED:-1}
 PLAYBACK_AUDIT_MAX_MIN=${PLAYBACK_AUDIT_MAX_MIN:-45}
 PLAYBACK_AUDIT_IMMICH_API=${PLAYBACK_AUDIT_IMMICH_API:-http://127.0.0.1:2283}
@@ -1352,6 +1354,7 @@ cat > /etc/logrotate.d/supernas << 'EOF'
 /var/log/video-reprocess-nightly.log
 /var/log/playback-audit-autoheal.log
 /var/log/playback-watchdog.log
+/var/log/temp-clean.log
 /var/log/nas-audit.log
 /var/log/storage-failover.log
 /var/log/failover-sync.log

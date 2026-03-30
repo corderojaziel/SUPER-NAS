@@ -45,21 +45,68 @@ function Invoke-External {
         [int]$TimeoutSec = 7200,
         [string]$Label = "cmd"
     )
-    $prevEa = $global:ErrorActionPreference
-    $global:ErrorActionPreference = "Continue"
+    $stdoutFile = Join-Path $env:TEMP ("nas-ext-{0}.out" -f ([guid]::NewGuid().ToString("N")))
+    $stderrFile = Join-Path $env:TEMP ("nas-ext-{0}.err" -f ([guid]::NewGuid().ToString("N")))
+    $proc = $null
+    $timedOut = $false
+    $result = $null
+    $stdout = ""
+    $stderr = ""
     try {
-        $all = & $FilePath @ArgumentList 2>&1
+        $proc = Start-Process -FilePath $FilePath `
+            -ArgumentList $ArgumentList `
+            -NoNewWindow `
+            -PassThru `
+            -RedirectStandardOutput $stdoutFile `
+            -RedirectStandardError $stderrFile
+
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            $timedOut = $true
+            try {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+            catch {}
+        }
+    }
+    catch {
+        $errMsg = $_.Exception.Message
+        $result = [PSCustomObject]@{
+            ExitCode = 9001
+            StdOut   = ""
+            StdErr   = "StartProcessFailed($Label): $errMsg"
+            TimedOut = $false
+        }
     }
     finally {
-        $global:ErrorActionPreference = $prevEa
+        if (Test-Path $stdoutFile) {
+            $stdout = Get-Content -Path $stdoutFile -Raw -ErrorAction SilentlyContinue
+            Remove-Item -Path $stdoutFile -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $stderrFile) {
+            $stderr = Get-Content -Path $stderrFile -Raw -ErrorAction SilentlyContinue
+            Remove-Item -Path $stderrFile -Force -ErrorAction SilentlyContinue
+        }
     }
-    $code = $LASTEXITCODE
-    $text = if ($all) { ($all | Out-String) } else { "" }
-    return [PSCustomObject]@{
-        ExitCode = $code
-        StdOut   = $text
-        StdErr   = $text
+    if ($null -eq $result) {
+        if ($timedOut) {
+            $result = [PSCustomObject]@{
+                ExitCode = 124
+                StdOut   = $stdout
+                StdErr   = "TimedOut($Label) after ${TimeoutSec}s. $stderr"
+                TimedOut = $true
+            }
+        }
+        else {
+            $exitCode = if ($null -ne $proc) { $proc.ExitCode } else { 9002 }
+            $result = [PSCustomObject]@{
+                ExitCode = $exitCode
+                StdOut   = $stdout
+                StdErr   = $stderr
+                TimedOut = $false
+            }
+        }
     }
+    return $result
 }
 
 function Quote-Sq {

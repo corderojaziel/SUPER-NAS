@@ -216,6 +216,9 @@ Cliente → nginx → cache eMMC (thumbnails)
 * `cache-clean.sh`
   👉 audita huérfanos del cache (no borra)
 
+* `temp-clean.sh`
+  👉 depura solo temporales técnicos (reprocess/tmp/cache incompleto), con `--dry-run` y `--apply`
+
 * `cache-migrate-to-disk.sh`
   👉 migra cache de eMMC a HDD con symlinks (manual)
 

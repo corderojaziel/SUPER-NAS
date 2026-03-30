@@ -76,6 +76,7 @@ task_label() {
     "Video optimize") echo "la optimización de videos" ;;
     "Playback audit") echo "la auditoría de reproducción de videos" ;;
     "SMART semanal") echo "la revisión profunda de los discos" ;;
+    "Temp clean semanal") echo "la limpieza semanal de temporales" ;;
     "Backup") echo "la copia de seguridad" ;;
     "Cache monitor") echo "la revisión del tamaño del cache" ;;
     "Cache clean") echo "la auditoría del cache" ;;
@@ -169,6 +170,7 @@ build_summary_notes() {
   [ "$BACKUP_RES" = "FAIL" ] && add_summary_note "La copia de seguridad del día no pudo completarse."
   [ "$CACHE_MONITOR_RES" = "FAIL" ] && add_summary_note "No pude revisar el tamaño del cache de videos."
   [ "$CACHE_CLEAN_RES" = "FAIL" ] && add_summary_note "No pude auditar el cache de videos."
+  [ "$TEMP_CLEAN_RES" = "FAIL" ] && add_summary_note "No pude completar la limpieza semanal de temporales."
   [ "$ML_RES" = "FAIL" ] && add_summary_note "No pude encender la IA nocturna de Immich."
   [ "$DBDUMP_RES" = "FAIL" ] && add_summary_note "No pude guardar la copia lógica de la base de datos."
 
@@ -368,6 +370,7 @@ SMART_RES="OK"
 DBDUMP_RES="SKIPPED"
 CACHE_MONITOR_RES="SKIPPED"
 CACHE_CLEAN_RES="SKIPPED"
+TEMP_CLEAN_RES="WEEKLY_SKIPPED"
 ML_RES="SKIPPED"
 
 if should_skip_heavy; then
@@ -414,6 +417,17 @@ if [ "${GLOBAL_MOUNT_STATUS:-OK}" != "CRIT" ] && [ "${EMMC_STATUS:-OK}" != "CRIT
   if [ -x /usr/local/bin/cache-clean.sh ]; then
     run_task "Cache clean" "/usr/local/bin/cache-clean.sh" 10 && CACHE_CLEAN_RES="OK" || CACHE_CLEAN_RES="FAIL"
   fi
+fi
+
+DOW_WEEKLY=$(date +%u)
+if [ "$DOW_WEEKLY" -eq 7 ]; then
+  if [ -x /usr/local/bin/temp-clean.sh ]; then
+    run_task "Temp clean semanal" "/usr/local/bin/temp-clean.sh --apply" 20 && TEMP_CLEAN_RES="WEEKLY_OK" || TEMP_CLEAN_RES="FAIL"
+  else
+    TEMP_CLEAN_RES="FAIL"
+  fi
+else
+  TEMP_CLEAN_RES="WEEKLY_SKIPPED"
 fi
 
 write_mount_status
@@ -474,6 +488,7 @@ alert "🌙 Resumen de la noche
 💾 Copia de seguridad: $(pretty_status "${BACKUP_RES}")
 📦 Revisión del cache: $(pretty_status "${CACHE_MONITOR_RES}")
 🧹 Auditoría del cache: $(pretty_status "${CACHE_CLEAN_RES}")
+🧽 Temporales semanales: $(pretty_status "${TEMP_CLEAN_RES}")
 🧠 IA nocturna: $(pretty_status "${ML_RES}")
 🔬 Revisión profunda de discos: $(pretty_status "${SMART_RES}")
 🗄️ Copia de la base de datos: $(pretty_status "${DBDUMP_RES}")
