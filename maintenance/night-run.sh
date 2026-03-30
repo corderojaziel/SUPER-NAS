@@ -21,6 +21,10 @@ EMMC_DF_TARGET="${EMMC_DF_TARGET:-/var/lib/immich}"
 DOCKER_BIN="${DOCKER_BIN:-/usr/bin/docker}"
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/immich-app}"
 ML_POLICY_BIN="${ML_POLICY_BIN:-/usr/local/bin/immich-ml-window.sh}"
+IML_DRAIN_BIN="${IML_DRAIN_BIN:-/usr/local/bin/iml-backlog-drain.py}"
+IML_API_URL="${IML_API_URL:-http://127.0.0.1:2283/api}"
+IML_SECRETS_FILE="${IML_SECRETS_FILE:-/etc/nas-secrets}"
+IML_TARGETS="${IML_TARGETS:-duplicateDetection,ocr,sidecar,metadataExtraction,library,smartSearch,faceDetection,facialRecognition}"
 ML_START_HOUR="${ML_START_HOUR:-2}"
 ML_STOP_HOUR="${ML_STOP_HOUR:-6}"
 ML_WINDOW_HOUR="${ML_WINDOW_HOUR:-${NAS_CURRENT_HOUR:-$(date +%H)}}"
@@ -171,7 +175,16 @@ build_summary_notes() {
   [ "$CACHE_MONITOR_RES" = "FAIL" ] && add_summary_note "No pude revisar el tamaño del cache de videos."
   [ "$CACHE_CLEAN_RES" = "FAIL" ] && add_summary_note "No pude auditar el cache de videos."
   [ "$TEMP_CLEAN_RES" = "FAIL" ] && add_summary_note "No pude completar la limpieza semanal de temporales."
-  [ "$ML_RES" = "FAIL" ] && add_summary_note "No pude encender la IA nocturna de Immich."
+  if [ "$ML_RES" = "FAIL" ]; then
+    if [ "${ML_PENDING_COUNT:-0}" -gt 0 ]; then
+      add_summary_note "La IA nocturna no pudo arrancar bien y quedaron ${ML_PENDING_COUNT} pendientes de IML. El autopiloto diurno seguirá procesando durante el día."
+    else
+      add_summary_note "La IA nocturna no respondió como esperaba, pero no quedaron pendientes de IML."
+    fi
+    [ -n "${ML_FAIL_REASON:-}" ] && add_summary_note "Detalle IA nocturna: ${ML_FAIL_REASON}."
+  elif [ "$ML_RES" = "SKIPPED" ] && [ "${ML_PENDING_COUNT:-0}" -gt 0 ]; then
+    add_summary_note "La IA nocturna quedó fuera de ventana o en pausa por seguridad; quedan ${ML_PENDING_COUNT} pendientes y se retomarán en el piloto diurno."
+  fi
   [ "$DBDUMP_RES" = "FAIL" ] && add_summary_note "No pude guardar la copia lógica de la base de datos."
 
   if [ "$VIDEO_RES" = "OK" ] && [ -f "$VIDEO_SUMMARY_FILE" ]; then
@@ -319,36 +332,75 @@ ml_within_window() {
 }
 
 start_night_ml() {
-  local status
+  local status rc pending_before pending_after
+
+  ML_FAIL_REASON=""
+
+  pending_before="$(iml_pending_count)"
+  ML_PENDING_COUNT="$pending_before"
 
   if ! ml_within_window; then
     log "SKIP: ML fuera de ventana nocturna (${ML_WINDOW_HOUR}:00)"
+    ML_FAIL_REASON="fuera de ventana (${ML_WINDOW_HOUR}:00)"
     return 2
   fi
 
   if should_skip_heavy; then
     log "SKIP: ML pausado por estado crítico del NAS"
+    ML_FAIL_REASON="pausa por estado crítico del NAS"
     return 2
   fi
 
   if [ ! -x "$ML_POLICY_BIN" ]; then
     log "FAIL: Falta $ML_POLICY_BIN"
+    ML_FAIL_REASON="falta el script de política ML"
     return 1
   fi
 
-  if timeout 10m "$ML_POLICY_BIN" night-on >/dev/null 2>&1; then
+  if timeout 10m "$ML_POLICY_BIN" night-on >>"$LOG" 2>&1; then
     for _ in $(seq 1 20); do
       status=$("$DOCKER_BIN" inspect -f '{{.State.Status}}' immich_machine_learning 2>/dev/null || echo "missing")
       [ "$status" = "running" ] && {
+        pending_after="$(iml_pending_count)"
+        ML_PENDING_COUNT="$pending_after"
         log "OK: Immich ML y la IA visual quedaron activos para la ventana nocturna"
         return 0
       }
       sleep 3
     done
+    ML_FAIL_REASON="ML no quedó en estado running tras aplicar night-on"
+  else
+    rc=$?
+    ML_FAIL_REASON="night-on devolvió rc=$rc"
+    pending_after="$(iml_pending_count)"
+    ML_PENDING_COUNT="$pending_after"
+    if [ "$pending_after" -eq 0 ]; then
+      log "SKIP: night-on no confirmó arranque, pero no hay pendientes de IML"
+      return 2
+    fi
   fi
 
+  pending_after="$(iml_pending_count)"
+  ML_PENDING_COUNT="$pending_after"
   log "FAIL: No se pudo encender Immich ML"
   return 1
+}
+
+iml_pending_count() {
+  local out
+  if [ ! -x "$IML_DRAIN_BIN" ] || ! command -v python3 >/dev/null 2>&1; then
+    echo 0
+    return 0
+  fi
+  out=$(timeout 45s python3 "$IML_DRAIN_BIN" \
+    --api-url "$IML_API_URL" \
+    --secrets-file "$IML_SECRETS_FILE" \
+    --targets "$IML_TARGETS" \
+    --print-pending-only 2>/dev/null || echo 0)
+  case "$out" in
+    ''|*[!0-9]*) echo 0 ;;
+    *) echo "$out" ;;
+  esac
 }
 
 alert "🌙 Empezó la rutina nocturna
@@ -372,6 +424,8 @@ CACHE_MONITOR_RES="SKIPPED"
 CACHE_CLEAN_RES="SKIPPED"
 TEMP_CLEAN_RES="WEEKLY_SKIPPED"
 ML_RES="SKIPPED"
+ML_PENDING_COUNT=0
+ML_FAIL_REASON=""
 
 if should_skip_heavy; then
   log "SKIP: Se pausaron tareas pesadas por estado crítico del NAS"
@@ -489,7 +543,7 @@ alert "🌙 Resumen de la noche
 📦 Revisión del cache: $(pretty_status "${CACHE_MONITOR_RES}")
 🧹 Auditoría del cache: $(pretty_status "${CACHE_CLEAN_RES}")
 🧽 Temporales semanales: $(pretty_status "${TEMP_CLEAN_RES}")
-🧠 IA nocturna: $(pretty_status "${ML_RES}")
+🧠 IA nocturna: $(pretty_status "${ML_RES}") (pendientes: ${ML_PENDING_COUNT})
 🔬 Revisión profunda de discos: $(pretty_status "${SMART_RES}")
 🗄️ Copia de la base de datos: $(pretty_status "${DBDUMP_RES}")
 📝 Lo más importante:
