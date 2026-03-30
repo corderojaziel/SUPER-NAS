@@ -2,7 +2,7 @@
 $REMOTE_USER    = "root"
 $REMOTE_HOST    = "192.168.100.89"
 $REMOTE_PHOTOS  = "/mnt/storage-main/photos/upload"
-$REMOTE_CACHE   = "/mnt/storage-main/cache"
+$REMOTE_CACHE   = "/var/lib/immich/cache/upload"
 $LOCAL_WORK     = "C:\temp\conversion"
 $REMOTE_LISTA   = "/tmp/lista_videos_automatica.txt"
 
@@ -14,6 +14,7 @@ if (!(Test-Path $LOCAL_WORK)) { New-Item -ItemType Directory -Force $LOCAL_WORK 
 function Log($msg, $color = "Cyan") {
     Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] $msg" -ForegroundColor $color
 }
+$ScaleFilter = "scale=1920:1920:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
 
 # ================= 1. OBTENER LISTA DE ORIGINALES =================
 Log "🔍 Escaneando archivos originales en el NAS..."
@@ -38,9 +39,10 @@ foreach ($f in $videos) {
     $f = $f.Trim()
     $basename = [System.IO.Path]::GetFileName($f)
     
-    # --- REGLA: REVISAR EN CACHÉ DEL NAS ---
-    # Buscamos el archivo directamente en la carpeta cache
-    $remoteFinal = "$REMOTE_CACHE/$basename"
+    # --- REGLA: RUTA CANÓNICA EN CACHÉ ---
+    $relPath = $f.Replace($REMOTE_PHOTOS, "").TrimStart("/")
+    $relMp4 = [System.IO.Path]::ChangeExtension($relPath, ".mp4").Replace("\", "/")
+    $remoteFinal = "$REMOTE_CACHE/$relMp4"
     
     # Verificamos existencia mediante SSH para no descargar por error
     $exists = cmd /c "ssh ${REMOTE_USER}@${REMOTE_HOST} `"if [ -f '$remoteFinal' ]; then echo 1; fi`""
@@ -83,7 +85,8 @@ foreach ($f in $videos) {
         # Configuración NVENC balanceada para cumplir los 40MB/min
         & ffmpeg -y -hwaccel cuda -i "$localIn" `
           -c:v h264_nvenc -preset p4 -rc vbr -cq 28 -b:v 3M -maxrate 4.5M -bufsize 9M `
-          -vf "scale='min(1280,iw)':-2" -c:a aac -b:a 128k "$localOut" 2>$null
+          -vf "$ScaleFilter" -profile:v high -level:v 4.1 -pix_fmt yuv420p `
+          -c:a aac -b:a 128k -movflags +faststart "$localOut" 2>$null
 
         if (Test-Path $localOut) {
             $sizeFinalMB = (Get-Item $localOut).Length / 1MB
@@ -91,6 +94,8 @@ foreach ($f in $videos) {
             # Solo subimos si el ahorro es real
             if ($sizeFinalMB -lt $sizeMB) {
                 $ahorroTotalMB += ($sizeMB - $sizeFinalMB)
+                $remoteDir = [System.IO.Path]::GetDirectoryName($remoteFinal).Replace("\", "/")
+                cmd /c "ssh ${REMOTE_USER}@${REMOTE_HOST} `"mkdir -p '$remoteDir'`""
                 cmd /c "scp -q `"$localOut`" ${REMOTE_USER}@${REMOTE_HOST}:`"$remoteFinal`""
                 Log "    ✅ Procesado y subido a cache: $([math]::Round($sizeFinalMB,1)) MB" "Green"
             } else {

@@ -137,6 +137,22 @@ if crontab -l 2>/dev/null | grep -q 'manual-retention.sh.*--apply'; then
 else
   ok "No hay depuración automática de fotos/videos vía crontab"
 fi
+BACKUP_MODE_POLICY="rsync_snapshot"
+if [ -f /etc/default/nas-video-policy ]; then
+  BACKUP_MODE_POLICY="$(awk -F= '$1=="BACKUP_PHOTOS_MODE"{print substr($0, index($0, "=")+1); exit}' /etc/default/nas-video-policy | tr -d '"' | tr -d "'" | xargs)"
+  [ -n "$BACKUP_MODE_POLICY" ] || BACKUP_MODE_POLICY="rsync_snapshot"
+fi
+if [ "$BACKUP_MODE_POLICY" = "restic" ]; then
+  command -v restic >/dev/null 2>&1 && ok "Motor de backup deduplicado disponible (restic)" || fail "Modo restic activo pero restic no está instalado"
+  RESTIC_PASS_FILE="$(awk -F= '$1=="BACKUP_RESTIC_PASSWORD_FILE"{print substr($0, index($0, "=")+1); exit}' /etc/default/nas-video-policy 2>/dev/null | tr -d '"' | tr -d "'" | xargs)"
+  if [ -n "$RESTIC_PASS_FILE" ] && [ -s "$RESTIC_PASS_FILE" ]; then
+    ok "Password file restic presente: $RESTIC_PASS_FILE"
+  else
+    fail "Password file restic faltante o vacío: ${RESTIC_PASS_FILE:-no-definido}"
+  fi
+else
+  ok "Motor de backup en modo snapshot/rsync"
+fi
 if [ -x /usr/local/bin/video-reprocess-manager.py ]; then
   python3 -m py_compile /usr/local/bin/video-reprocess-manager.py >/dev/null 2>&1 && ok "/usr/local/bin/video-reprocess-manager.py instalado y sintaxis válida" || fail "/usr/local/bin/video-reprocess-manager.py con errores de sintaxis"
 else

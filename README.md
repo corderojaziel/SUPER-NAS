@@ -85,7 +85,7 @@ El sistema está dividido en **3 capas físicas con roles definidos**:
 /mnt/storage-main/
 ├── photos/upload     # ingestión (Immich)
 ├── library/          # archivos organizados
-├── cache/            # videos optimizados (720p)
+├── (sin cache activo legado)
 └── ...
 
 # 🛡️ Disco secundario (respaldo)
@@ -125,12 +125,13 @@ Celular → nginx → Immich → /upload → rename → /library
 ### 🎬 Optimización diferida (pipeline nocturno + autopiloto por carga)
 
 ```text
-/library → video-optimize.sh → /cache (720p)
+/library → video-optimize.sh → /var/lib/immich/cache (canónico)
 ```
 
-* conversión GPU (`h264_nvenc`)
-* fallback automático a CPU (`libx264`)
-* reducción de resolución + bitrate
+* conversión compatible móvil/tablet:
+  `H.264 + yuv420p + faststart + lado largo máx. 1920 + level 4.1`
+* fallback automático a CPU (`libx264`) en flujos shell
+* reproceso pesado en PC/GPU con `powershell/reprocess_heavy_from_server.ps1`
 * evita reprocesar (verificación en cache)
 
 👉 clave:
@@ -143,7 +144,9 @@ la conversión se prioriza en ventana nocturna, pero ahora también puede drenar
 #### 🎥 Videos
 
 ```text
-Cliente → nginx → Immich → /cache (720p)
+Cliente → nginx → resolver playback →
+  - <= 40 MB/min: original directo (con link canónico en cache)
+  - > 40 MB/min: cache canónico en eMMC (/var/lib/immich/cache)
 ```
 
 #### 🖼️ Fotos
@@ -207,7 +210,8 @@ Cliente → nginx → cache eMMC (thumbnails)
 ### 💽 Mantenimiento
 
 * `backup.sh`
-  👉 sincroniza datos hacia el disco de respaldo
+  👉 backup de fotos/videos en modo deduplicado (`restic`) o snapshots (`rsync_snapshot`)
+  👉 soporta `BACKUP_DRY_RUN=1` para prueba sin escritura
 
 * `cache-clean.sh`
   👉 audita huérfanos del cache (no borra)

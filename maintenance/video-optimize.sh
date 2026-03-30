@@ -39,6 +39,7 @@ VIDEO_STREAM_TARGET_MB_PER_MIN="${VIDEO_STREAM_TARGET_MB_PER_MIN:-38}"
 VIDEO_STREAM_LIGHT_REENCODE_MAX_MB_PER_MIN="${VIDEO_STREAM_LIGHT_REENCODE_MAX_MB_PER_MIN:-55}"
 VIDEO_OPTIMIZE_AUDIO_BITRATE_K="${VIDEO_OPTIMIZE_AUDIO_BITRATE_K:-128}"
 VIDEO_OPTIMIZE_MAX_LONG_EDGE="${VIDEO_OPTIMIZE_MAX_LONG_EDGE:-1920}"
+VIDEO_OPTIMIZE_VIDEO_LEVEL="${VIDEO_OPTIMIZE_VIDEO_LEVEL:-4.1}"
 
 mkdir -p "$OUTPUT" "$STATE_DIR" "$HEALTH_DIR" "$(dirname "$LOCK_FILE")"
 touch "$ATTEMPTS_DB" "$FAIL_REPORT" "$MANUAL_REVIEW"
@@ -315,16 +316,25 @@ while IFS= read -r -d '' src; do
   target_video_kbps=$((target_total_kbps - VIDEO_OPTIMIZE_AUDIO_BITRATE_K))
   [ "$target_video_kbps" -lt 700 ] && target_video_kbps=700
   if awk -v cur="$current_mbpm" -v light="$VIDEO_STREAM_LIGHT_REENCODE_MAX_MB_PER_MIN" 'BEGIN{ exit(cur <= light ? 0 : 1) }'; then
-    scale_filter="scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    if [ "${VIDEO_OPTIMIZE_MAX_LONG_EDGE:-0}" -gt 0 ]; then
+      scale_filter="scale=${VIDEO_OPTIMIZE_MAX_LONG_EDGE}:${VIDEO_OPTIMIZE_MAX_LONG_EDGE}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    else
+      scale_filter="scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    fi
     video_preset="veryfast"
   else
-    scale_filter="scale='if(gte(iw\\,ih),min(iw\\,${VIDEO_OPTIMIZE_MAX_LONG_EDGE}),-2)':'if(gte(ih\\,iw),min(ih\\,${VIDEO_OPTIMIZE_MAX_LONG_EDGE}),-2)'"
+    if [ "${VIDEO_OPTIMIZE_MAX_LONG_EDGE:-0}" -gt 0 ]; then
+      scale_filter="scale=${VIDEO_OPTIMIZE_MAX_LONG_EDGE}:${VIDEO_OPTIMIZE_MAX_LONG_EDGE}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    else
+      scale_filter="scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    fi
     video_preset="superfast"
   fi
 
   if timeout "$PER_FILE_TIMEOUT_SEC" nice -n 15 ffmpeg -y -i "$src" \
       -vf "$scale_filter" \
       -c:v libx264 -preset "$video_preset" -b:v "${target_video_kbps}k" -maxrate "${target_video_kbps}k" -bufsize "$((target_video_kbps * 2))k" \
+      -profile:v high -level:v "$VIDEO_OPTIMIZE_VIDEO_LEVEL" \
       -c:a aac -b:a "${VIDEO_OPTIMIZE_AUDIO_BITRATE_K}k" \
       -pix_fmt yuv420p -movflags +faststart "$tmp" >/dev/null 2>&1; then
     if [ -s "$tmp" ]; then

@@ -1,7 +1,8 @@
 # ================= CONFIGURACIÓN =================
 $REMOTE_USER    = "root"
 $REMOTE_HOST    = "192.168.100.89"
-$REMOTE_CACHE   = "/mnt/storage-main/cache"
+$REMOTE_PHOTOS  = "/mnt/storage-main/photos/upload"
+$REMOTE_CACHE   = "/var/lib/immich/cache/upload"
 $LOCAL_WORK     = "C:\Users\jazie\OneDrive\Escritorio\proyecto\conversion"
 
 # Asegúrate de que este nombre sea el correcto de tu lista actual
@@ -11,6 +12,7 @@ $OUTPUT_FILE    = "C:\Users\jazie\OneDrive\Escritorio\faltantes_restantes.txt"
 # ================= PREPARACIÓN =================
 if (!(Test-Path $LOCAL_WORK)) { New-Item -ItemType Directory -Force -Path $LOCAL_WORK | Out-Null }
 function Log($msg, $color = "Cyan") { Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] $msg" -ForegroundColor $color }
+$ScaleFilter = "scale=1920:1920:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
 
 # ================= CARGA =================
 if (!(Test-Path $INPUT_FILE)) { Log "❌ No se encuentra el archivo de entrada"; exit }
@@ -27,7 +29,13 @@ foreach ($line in $videos) {
         
         $remotePath = $parts[0].Trim()
         $basename   = $parts[1].Trim()
-        $remoteFinal = "$REMOTE_CACHE/$basename"
+        if ($remotePath.StartsWith($REMOTE_PHOTOS)) {
+            $relPath = $remotePath.Replace($REMOTE_PHOTOS, "").TrimStart("/")
+            $relMp4 = [System.IO.Path]::ChangeExtension($relPath, ".mp4").Replace("\", "/")
+            $remoteFinal = "$REMOTE_CACHE/$relMp4"
+        } else {
+            $remoteFinal = "$REMOTE_CACHE/$basename"
+        }
 
         Log "🔍 [$($restantes.Count) faltantes] Procesando: $basename" "White"
 
@@ -58,12 +66,15 @@ foreach ($line in $videos) {
         # El filtro format=yuv420p es el que evita el error de "10 bit not supported"
         ffmpeg -y -hwaccel cuda -i "$localIn" `
           -c:v hevc_nvenc -preset p4 -rc vbr -cq 28 -b:v 3M -maxrate 4.5M -bufsize 9M `
-          -vf "scale='min(1280,iw)':-2,format=yuv420p" -c:a aac -b:a 128k "$localOut"
+          -vf "$ScaleFilter" -profile:v main -level:v 4.1 `
+          -c:a aac -b:a 128k -movflags +faststart "$localOut"
 
         if (Test-Path $localOut) {
             if ((Get-Item $localOut).Length -gt 10kb) {
                 # 4. Subida
                 Log "📤 Subiendo a servidor..." "Blue"
+                $remoteDir = [System.IO.Path]::GetDirectoryName($remoteFinal).Replace("\", "/")
+                ssh -o BatchMode=yes "${REMOTE_USER}@${REMOTE_HOST}" "mkdir -p '$remoteDir'" | Out-Null
                 $scpDest = "${REMOTE_USER}@${REMOTE_HOST}:$remoteFinal"
                 scp -q "$localOut" $scpDest
                 

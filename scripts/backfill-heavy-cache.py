@@ -23,6 +23,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-root", default="/var/lib/immich/cache")
     parser.add_argument("--ffmpeg-bin", default="ffmpeg")
     parser.add_argument("--max-mb-min", type=float, default=40.0)
+    parser.add_argument(
+        "--max-long-edge",
+        type=int,
+        default=int(os.environ.get("VIDEO_OPTIMIZE_MAX_LONG_EDGE", "1920")),
+        help="Lado máximo del video de salida para compatibilidad (0 desactiva).",
+    )
+    parser.add_argument(
+        "--video-level",
+        default=os.environ.get("VIDEO_OPTIMIZE_VIDEO_LEVEL", "4.1"),
+        help="Nivel H.264 de salida para clientes móviles.",
+    )
     parser.add_argument("--limit", type=int, default=0, help="0 = sin limite")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--report-dir", default="/root/log-watch")
@@ -157,7 +168,14 @@ def source_host_path(original_path: str) -> Path:
     return (base / rel).resolve()
 
 
-def transcode_to_cache(ffmpeg_bin: str, src: Path, dst: Path) -> tuple[bool, str]:
+def transcode_to_cache(
+    ffmpeg_bin: str,
+    src: Path,
+    dst: Path,
+    *,
+    max_long_edge: int,
+    video_level: str,
+) -> tuple[bool, str]:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.name + ".tmp.mp4")
     try:
@@ -165,6 +183,13 @@ def transcode_to_cache(ffmpeg_bin: str, src: Path, dst: Path) -> tuple[bool, str
             tmp.unlink()
     except OSError:
         pass
+
+    vf_filters = []
+    if max_long_edge > 0:
+        vf_filters.append(
+            f"scale={max_long_edge}:{max_long_edge}:force_original_aspect_ratio=decrease"
+        )
+    vf_filters.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
 
     # Objetivo: mantener calidad usable pero bajo el umbral de ~40 MB/min.
     cmd = [
@@ -181,17 +206,23 @@ def transcode_to_cache(ffmpeg_bin: str, src: Path, dst: Path) -> tuple[bool, str
         "-map",
         "0:a:0?",
         "-vf",
-        "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        ",".join(vf_filters),
         "-c:v",
         "libx264",
         "-preset",
         "veryfast",
         "-crf",
         "22",
+        "-profile:v",
+        "high",
+        "-level:v",
+        video_level,
         "-maxrate",
         "5M",
         "-bufsize",
         "10M",
+        "-pix_fmt",
+        "yuv420p",
         "-c:a",
         "aac",
         "-b:a",
@@ -307,7 +338,13 @@ def main() -> int:
                 fh.flush()
                 continue
 
-            ok, status = transcode_to_cache(args.ffmpeg_bin, src, dst)
+            ok, status = transcode_to_cache(
+                args.ffmpeg_bin,
+                src,
+                dst,
+                max_long_edge=args.max_long_edge,
+                video_level=args.video_level,
+            )
             if ok:
                 stats["converted"] += 1
                 writer.writerow([asset_id, f"{mbpm:.2f}", "yes", "no", "convert", "ok", str(src), str(dst)])

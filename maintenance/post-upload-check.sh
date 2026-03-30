@@ -17,7 +17,12 @@ THUMBS_ROOT="/var/lib/immich/thumbs"
 ENCODED_ROOT="/var/lib/immich/encoded-video"
 PROFILE_ROOT="/var/lib/immich/profile"
 BACKUP_ROOT="/mnt/storage-backup/snapshots"
+POLICY_FILE="/etc/default/nas-video-policy"
 HEALTH_DIR="/var/lib/nas-health"
+BACKUP_PHOTOS_MODE="rsync_snapshot"
+
+[ -f "$POLICY_FILE" ] && . "$POLICY_FILE"
+BACKUP_PHOTOS_MODE="${BACKUP_PHOTOS_MODE:-rsync_snapshot}"
 
 QUERY="${1:-}"
 RESOLVED=""
@@ -111,11 +116,25 @@ elif [ -n "$RESOLVED" ]; then
             warn "Cache de video aun no existe: $CACHE_PATH"
         fi
 
-        LATEST_SNAPSHOT=$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name 'immich-db' | sort | tail -n 1)
-        if [ -n "${LATEST_SNAPSHOT:-}" ] && [ -f "$LATEST_SNAPSHOT/$REL" ]; then
-            ok "Original respaldado en snapshot: $LATEST_SNAPSHOT/$REL"
+        if [ "$BACKUP_PHOTOS_MODE" = "restic" ]; then
+            if command -v restic >/dev/null 2>&1 && [ -n "${BACKUP_RESTIC_REPO:-}" ] && [ -s "${BACKUP_RESTIC_PASSWORD_FILE:-}" ]; then
+                export RESTIC_REPOSITORY="$BACKUP_RESTIC_REPO"
+                export RESTIC_PASSWORD_FILE="$BACKUP_RESTIC_PASSWORD_FILE"
+                if restic snapshots --latest 1 >/tmp/post-upload-restic-snapshot.log 2>&1; then
+                    ok "Hay snapshot restic reciente (modo deduplicado)"
+                else
+                    warn "No pude confirmar snapshot restic reciente"
+                fi
+            else
+                warn "Backup restic configurado, pero faltan prerrequisitos locales para validarlo"
+            fi
         else
-            warn "Original aun no aparece en el ultimo snapshot"
+            LATEST_SNAPSHOT=$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name 'immich-db' | sort | tail -n 1)
+            if [ -n "${LATEST_SNAPSHOT:-}" ] && [ -f "$LATEST_SNAPSHOT/$REL" ]; then
+                ok "Original respaldado en snapshot: $LATEST_SNAPSHOT/$REL"
+            else
+                warn "Original aun no aparece en el ultimo snapshot"
+            fi
         fi
     else
         warn "El asset localizado no parece video; se omiten checks de cache custom"
@@ -135,9 +154,23 @@ for path in "$DB_ROOT" "$THUMBS_ROOT" "$ENCODED_ROOT" "$PROFILE_ROOT" "$CACHE_RO
 done
 
 section "Backups"
-LATEST_SNAPSHOT=$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name 'immich-db' | sort | tail -n 1)
+if [ "$BACKUP_PHOTOS_MODE" = "restic" ]; then
+    if command -v restic >/dev/null 2>&1 && [ -n "${BACKUP_RESTIC_REPO:-}" ] && [ -s "${BACKUP_RESTIC_PASSWORD_FILE:-}" ]; then
+        export RESTIC_REPOSITORY="$BACKUP_RESTIC_REPO"
+        export RESTIC_PASSWORD_FILE="$BACKUP_RESTIC_PASSWORD_FILE"
+        if restic snapshots --latest 1 >/tmp/post-upload-restic-snapshot.log 2>&1; then
+            ok "Último respaldo fotos/videos (restic): disponible"
+        else
+            warn "No pude leer snapshots restic (ver /tmp/post-upload-restic-snapshot.log)"
+        fi
+    else
+        warn "Modo restic activo pero faltan credenciales/ruta para validación local"
+    fi
+else
+    LATEST_SNAPSHOT=$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name 'immich-db' | sort | tail -n 1)
+    [ -n "${LATEST_SNAPSHOT:-}" ] && ok "Ultimo snapshot: $LATEST_SNAPSHOT" || warn "Sin snapshots aun"
+fi
 LATEST_DB_DUMP=$(find "$BACKUP_ROOT/immich-db" -type f -name '*.sql.gz' 2>/dev/null | sort | tail -n 1)
-[ -n "${LATEST_SNAPSHOT:-}" ] && ok "Ultimo snapshot: $LATEST_SNAPSHOT" || warn "Sin snapshots aun"
 if [ -n "${LATEST_DB_DUMP:-}" ]; then
     DB_DUMP_BYTES=$(gzip -dc "$LATEST_DB_DUMP" 2>/dev/null | wc -c || true)
     DB_DUMP_BYTES=${DB_DUMP_BYTES//[[:space:]]/}

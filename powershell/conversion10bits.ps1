@@ -1,11 +1,12 @@
 # ================= CONFIGURACIÓN =================
 $REMOTE_USER    = "root"
 $REMOTE_HOST    = "192.168.100.89"
-$REMOTE_CACHE   = "/mnt/storage-main/cache"
+$REMOTE_CACHE   = "/var/lib/immich/cache/upload"
 $LOCAL_WORK     = "C:\Users\jazie\OneDrive\Escritorio\proyecto\conversion"
 
 # ================= FUNCIONES =================
 function Log($msg, $color = "Cyan") { Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] $msg" -ForegroundColor $color }
+$ScaleFilter = "scale=1920:1920:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
 
 # 1. Buscar archivos que ya están descargados (in_...)
 $archivosIn = Get-ChildItem -Path $LOCAL_WORK -Filter "in_*.mp4"
@@ -29,13 +30,15 @@ foreach ($file in $archivosIn) {
         # 2. Conversión HEVC + CUDA + Fix de color (format=yuv420p)
         & ffmpeg -y -hwaccel cuda -i $file.FullName `
           -c:v hevc_nvenc -preset p4 -rc vbr -cq 28 -b:v 3M -maxrate 4.5M -bufsize 9M `
-          -vf "scale='min(1280,iw)':-2,format=yuv420p" -c:a aac -b:a 128k "$localOut"
+          -vf "$ScaleFilter" -profile:v main -level:v 4.1 `
+          -c:a aac -b:a 128k -movflags +faststart "$localOut"
 
         if (Test-Path $localOut) {
             if ((Get-Item $localOut).Length -gt 10kb) {
                 
                 # 3. Subida directa
                 Log "📤 Subiendo a servidor..." "Blue"
+                ssh -o BatchMode=yes "${REMOTE_USER}@${REMOTE_HOST}" "mkdir -p '$REMOTE_CACHE'" | Out-Null
                 & scp -q "$localOut" "$remoteDest"
 
                 if ($LASTEXITCODE -eq 0) {

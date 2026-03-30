@@ -415,6 +415,7 @@ apt-get install -y -q \
     smartmontools \
     hdparm \
     rsync \
+    restic \
     ffmpeg \
     ethtool \
     parted util-linux \
@@ -425,11 +426,14 @@ apt-get install -y -q \
     libimage-exiftool-perl \
     bc
 
-if apt-cache show cpufrequtils >/dev/null 2>&1; then
+if apt-cache show linux-cpupower >/dev/null 2>&1; then
+    apt-get install -y -q linux-cpupower
+    log_ok "linux-cpupower instalado (control térmico/frecuencia recomendado)"
+elif apt-cache show cpufrequtils >/dev/null 2>&1; then
     apt-get install -y -q cpufrequtils
-    log_ok "cpufrequtils instalado"
+    log_warn "cpufrequtils instalado como fallback legado"
 else
-    log_warn "cpufrequtils no está disponible en esta distro; continúo sin él"
+    log_warn "No encontré linux-cpupower/cpufrequtils en esta distro; continúo sin ese ajuste"
 fi
 
 log_ok "Dependencias instaladas"
@@ -1199,6 +1203,8 @@ cat > /etc/default/nas-video-policy <<EOF
 VIDEO_STREAM_MAX_MB_PER_MIN=${VIDEO_STREAM_MAX_MB_PER_MIN:-40}
 VIDEO_STREAM_TARGET_MB_PER_MIN=${VIDEO_STREAM_TARGET_MB_PER_MIN:-38}
 VIDEO_STREAM_LIGHT_REENCODE_MAX_MB_PER_MIN=${VIDEO_STREAM_LIGHT_REENCODE_MAX_MB_PER_MIN:-55}
+VIDEO_OPTIMIZE_MAX_LONG_EDGE=${VIDEO_OPTIMIZE_MAX_LONG_EDGE:-1920}
+VIDEO_OPTIMIZE_VIDEO_LEVEL=${VIDEO_OPTIMIZE_VIDEO_LEVEL:-4.1}
 VIDEO_PLAYBACK_BROWSER_CACHE_SEC=${VIDEO_PLAYBACK_BROWSER_CACHE_SEC:-300}
 VIDEO_REPROCESS_MANAGER_BIN=${VIDEO_REPROCESS_MANAGER_BIN:-/usr/local/bin/video-reprocess-manager.py}
 VIDEO_REPROCESS_OUTPUT_DIR=${VIDEO_REPROCESS_OUTPUT_DIR:-/var/lib/nas-health/reprocess}
@@ -1217,6 +1223,12 @@ FAILOVER_SYNC_CACHE_ENABLED=${FAILOVER_SYNC_CACHE_ENABLED:-1}
 FAILOVER_SYNC_NOTIFY_ON_SUCCESS=${FAILOVER_SYNC_NOTIFY_ON_SUCCESS:-0}
 FAILOVER_SYNC_MAX_RUNTIME_MIN=${FAILOVER_SYNC_MAX_RUNTIME_MIN:-240}
 FAILOVER_SYNC_IO_NICE=${FAILOVER_SYNC_IO_NICE:-15}
+BACKUP_PHOTOS_MODE=${BACKUP_PHOTOS_MODE:-restic}
+BACKUP_RESTIC_REPO=${BACKUP_RESTIC_REPO:-/mnt/storage-backup/restic/photos}
+BACKUP_RESTIC_PASSWORD_FILE=${BACKUP_RESTIC_PASSWORD_FILE:-/etc/nas-restic-password}
+BACKUP_RESTIC_KEEP_DAILY=${BACKUP_RESTIC_KEEP_DAILY:-7}
+BACKUP_RESTIC_KEEP_WEEKLY=${BACKUP_RESTIC_KEEP_WEEKLY:-4}
+BACKUP_RESTIC_KEEP_MONTHLY=${BACKUP_RESTIC_KEEP_MONTHLY:-3}
 VIDEO_REPROCESS_LOCAL_MAX_MB=${VIDEO_REPROCESS_LOCAL_MAX_MB:-220}
 VIDEO_REPROCESS_LOCAL_MAX_DURATION_SEC=${VIDEO_REPROCESS_LOCAL_MAX_DURATION_SEC:-150}
 VIDEO_REPROCESS_LOCAL_MAX_MB_MIN=${VIDEO_REPROCESS_LOCAL_MAX_MB_MIN:-120}
@@ -1224,6 +1236,7 @@ VIDEO_REPROCESS_LIGHT_LIMIT=${VIDEO_REPROCESS_LIGHT_LIMIT:-0}
 VIDEO_REPROCESS_MAX_ATTEMPTS=${VIDEO_REPROCESS_MAX_ATTEMPTS:-3}
 VIDEO_REPROCESS_AUDIO_BITRATE_K=${VIDEO_REPROCESS_AUDIO_BITRATE_K:-128}
 VIDEO_REPROCESS_TARGET_MAXRATE_K=${VIDEO_REPROCESS_TARGET_MAXRATE_K:-5200}
+VIDEO_REPROCESS_ALLOW_REMUX_LIGHT=${VIDEO_REPROCESS_ALLOW_REMUX_LIGHT:-0}
 VIDEO_REPROCESS_ATTEMPTS_DB=${VIDEO_REPROCESS_ATTEMPTS_DB:-/var/lib/nas-retry/video-reprocess-light.attempts.tsv}
 VIDEO_REPROCESS_MANUAL_QUEUE=${VIDEO_REPROCESS_MANUAL_QUEUE:-/var/lib/nas-retry/video-reprocess-manual.tsv}
 VIDEO_REPROCESS_HEAVY_ENABLED=${VIDEO_REPROCESS_HEAVY_ENABLED:-1}
@@ -1297,6 +1310,21 @@ VIDEO_NOTIFY_VERBOSE=${VIDEO_NOTIFY_VERBOSE:-0}
 EOF
 chmod 0644 /etc/default/nas-video-policy
 log_ok "Politica de video instalada (/etc/default/nas-video-policy)"
+
+RESTIC_PASSWORD_FILE_EFFECTIVE="${BACKUP_RESTIC_PASSWORD_FILE:-/etc/nas-restic-password}"
+if [ ! -s "$RESTIC_PASSWORD_FILE_EFFECTIVE" ]; then
+    mkdir -p "$(dirname "$RESTIC_PASSWORD_FILE_EFFECTIVE")"
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -base64 48 > "$RESTIC_PASSWORD_FILE_EFFECTIVE"
+    else
+        head -c 48 /dev/urandom | base64 > "$RESTIC_PASSWORD_FILE_EFFECTIVE"
+    fi
+    chmod 600 "$RESTIC_PASSWORD_FILE_EFFECTIVE"
+    log_ok "Password de repositorio restic generado en $RESTIC_PASSWORD_FILE_EFFECTIVE"
+else
+    chmod 600 "$RESTIC_PASSWORD_FILE_EFFECTIVE"
+    log_ok "Password de repositorio restic preservado en $RESTIC_PASSWORD_FILE_EFFECTIVE"
+fi
 
 cat > /etc/logrotate.d/supernas << 'EOF'
 /var/log/night-run.log
@@ -1421,7 +1449,7 @@ sed -i "s/^CRIT_GB=.*/CRIT_GB=${CACHE_CRIT_GB}/" /usr/local/bin/cache-monitor.sh
 
 # Persistir retención de backup para que backup.sh lo lea en runtime
 echo "${BACKUP_RETENTION_DAYS}" > /etc/nas-retention
-log_ok "Retención de backup: ${BACKUP_RETENTION_DAYS} días → /etc/nas-retention"
+log_ok "Retención backup snapshots (modo rsync): ${BACKUP_RETENTION_DAYS} días → /etc/nas-retention"
 
 # Persistir rutas de discos para que smart-check.sh use los discos correctos
 # Evita hardcodear /dev/sdX que puede cambiar según orden de detección USB

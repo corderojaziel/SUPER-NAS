@@ -2,7 +2,7 @@
 $REMOTE_USER   = "root"
 $REMOTE_HOST   = "192.168.100.89"
 $REMOTE_PHOTOS = "/mnt/storage-main/photos/upload"
-$REMOTE_CACHE  = "/mnt/storage-main/cache"
+$REMOTE_CACHE  = "/var/lib/immich/cache/upload"
 $LOCAL_WORK    = "C:\temp\conversion"
 $REMOTE_LISTA  = "/tmp/lista_videos_automatica.txt"
 
@@ -14,6 +14,7 @@ if (!(Test-Path $LOCAL_WORK)) { New-Item -ItemType Directory -Force $LOCAL_WORK 
 function Log($msg, $color = "Cyan") {
     Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] $msg" -ForegroundColor $color
 }
+$ScaleFilter = "scale=1920:1920:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
 
 # ================= 1. OBTENER LISTA =================
 Log "🔍 Escaneando archivos en el NAS..."
@@ -38,8 +39,8 @@ foreach ($f in $videos) {
     
     # A. Verificar si ya existe en Cache (para no repetir)
     $relPath = $f.Replace($REMOTE_PHOTOS, "").TrimStart("/")
-    $safeName = $relPath -replace '[\\/:*?"<>|]', '_'
-    $remoteFinal = "$REMOTE_CACHE/$([System.IO.Path]::GetFileNameWithoutExtension($safeName)).mp4"
+    $relMp4 = [System.IO.Path]::ChangeExtension($relPath, ".mp4").Replace("\", "/")
+    $remoteFinal = "$REMOTE_CACHE/$relMp4"
     
     $exists = cmd /c "ssh ${REMOTE_USER}@${REMOTE_HOST} `"if [ -f '$remoteFinal' ]; then echo 1; fi`""
     if ($exists -match "1") { 
@@ -79,11 +80,14 @@ foreach ($f in $videos) {
         # Compresión a 720p para asegurar cumplimiento de la regla
         & ffmpeg -y -hwaccel cuda -i "$localIn" `
           -c:v h264_nvenc -preset p4 -rc vbr -cq 24 -b:v 5M -maxrate 5.5M -bufsize 10M `
-          -vf "scale=1280:-2" -c:a aac -b:a 128k "$localOut" 2>$null
+          -vf "$ScaleFilter" -profile:v high -level:v 4.1 -pix_fmt yuv420p `
+          -c:a aac -b:a 128k -movflags +faststart "$localOut" 2>$null
 
         if (Test-Path $localOut) {
             $sizeFinalMB = (Get-Item $localOut).Length / 1MB
             $ahorroTotalMB += ($sizeMB - $sizeFinalMB)
+            $remoteDir = [System.IO.Path]::GetDirectoryName($remoteFinal).Replace("\", "/")
+            cmd /c "ssh ${REMOTE_USER}@${REMOTE_HOST} `"mkdir -p '$remoteDir'`""
             cmd /c "scp -q `"$localOut`" ${REMOTE_USER}@${REMOTE_HOST}:`"$remoteFinal`""
             Log "    ✅ Procesado y subido." "Green"
         }

@@ -75,6 +75,17 @@ def parse_args() -> argparse.Namespace:
     run.add_argument("--audio-bitrate-k", type=int, default=128)
     run.add_argument("--target-maxrate-k", type=int, default=5200)
     run.add_argument(
+        "--max-long-edge",
+        type=int,
+        default=int(os.environ.get("VIDEO_OPTIMIZE_MAX_LONG_EDGE", "1920")),
+        help="Lado máximo del video de salida para compatibilidad (0 desactiva).",
+    )
+    run.add_argument(
+        "--video-level",
+        default=os.environ.get("VIDEO_OPTIMIZE_VIDEO_LEVEL", "4.1"),
+        help="Nivel H.264 de salida para clientes móviles.",
+    )
+    run.add_argument(
         "--allow-remux-copy",
         type=int,
         default=-1,
@@ -525,6 +536,8 @@ def convert_file(
     audio_bitrate_k: int,
     target_maxrate_k: int,
     allow_remux_copy: bool,
+    max_long_edge: int,
+    video_level: str,
 ) -> tuple[bool, str]:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.name + ".tmp.mp4")
@@ -551,6 +564,13 @@ def convert_file(
             tmp.replace(dst)
             return True, "remux_copy"
 
+    vf_filters = []
+    if max_long_edge > 0:
+        vf_filters.append(
+            f"scale={max_long_edge}:{max_long_edge}:force_original_aspect_ratio=decrease"
+        )
+    vf_filters.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
+
     transcode = [
         ffmpeg_bin,
         "-y",
@@ -565,17 +585,23 @@ def convert_file(
         "-map",
         "0:a:0?",
         "-vf",
-        "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        ",".join(vf_filters),
         "-c:v",
         "libx264",
         "-preset",
         "veryfast",
         "-crf",
         "22",
+        "-profile:v",
+        "high",
+        "-level:v",
+        video_level,
         "-maxrate",
         f"{target_maxrate_k}k",
         "-bufsize",
         f"{target_maxrate_k * 2}k",
+        "-pix_fmt",
+        "yuv420p",
         "-c:a",
         "aac",
         "-b:a",
@@ -619,7 +645,7 @@ def run_reprocess(args: argparse.Namespace) -> int:
     allow_remux_copy = (
         bool(args.allow_remux_copy)
         if args.allow_remux_copy in (0, 1)
-        else (args.run_class == "light")
+        else (args.run_class == "light" and args.max_long_edge <= 0)
     )
 
     attempts = load_attempts(attempts_db)
@@ -705,6 +731,8 @@ def run_reprocess(args: argparse.Namespace) -> int:
                 audio_bitrate_k=args.audio_bitrate_k,
                 target_maxrate_k=args.target_maxrate_k,
                 allow_remux_copy=allow_remux_copy,
+                max_long_edge=args.max_long_edge,
+                video_level=args.video_level,
             )
             if ok:
                 converted += 1

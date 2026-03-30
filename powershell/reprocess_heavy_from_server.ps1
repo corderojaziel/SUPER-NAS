@@ -9,7 +9,8 @@ param(
     [int]$Limit = 0,
     [switch]$PlanOnly,
     [switch]$NoPlan,
-    [switch]$NoNvenc
+    [switch]$NoNvenc,
+    [switch]$ForceReencode
 )
 
 $ErrorActionPreference = "Stop"
@@ -125,9 +126,11 @@ $encoders = (& ffmpeg -hide_banner -encoders 2>$null | Out-String)
 $hasNvenc = (-not $NoNvenc) -and ($encoders -match "h264_nvenc")
 $targetTotalKbps = [math]::Round(($TargetMbPerMin * 8000) / 60)
 $targetVideoKbps = [math]::Max(700, ($targetTotalKbps - $AudioKbps))
+$scaleFilter = "scale=1920:1920:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
 
 Log "Encoder: $(if($hasNvenc){'h264_nvenc'}else{'libx264'})"
 Log "Target: $TargetMbPerMin MB/min (~${targetVideoKbps}k video + ${AudioKbps}k audio)"
+Log "Modo force-reencode: $(if($ForceReencode){'ON'}else{'OFF'})"
 
 $report = New-Object System.Collections.Generic.List[object]
 $countOk = 0
@@ -154,7 +157,7 @@ foreach ($row in $rows) {
     $qDst = Quote-Sq $dst
     $qSrc = Quote-Sq $src
     $rExists = Invoke-External -FilePath "ssh" -ArgumentList ($sshOpts + @("${RemoteUser}@${RemoteHost}", "if [ -s $qDst ]; then echo 1; fi")) -TimeoutSec 60 -Label "ssh-dst-exists"
-    if ($rExists.ExitCode -eq 0 -and $rExists.StdOut -match "1") {
+    if (-not $ForceReencode -and $rExists.ExitCode -eq 0 -and $rExists.StdOut -match "1") {
         $countSkip++
         $report.Add([PSCustomObject]@{asset_id=$asset;status="skip_already_cached";source_path=$src;dest_cache_path=$dst;note=""})
         continue
@@ -183,7 +186,8 @@ foreach ($row in $rows) {
             "-y", "-hwaccel", "cuda", "-i", $localIn,
             "-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr",
             "-b:v", "${targetVideoKbps}k", "-maxrate", "${targetVideoKbps}k", "-bufsize", "$($targetVideoKbps * 2)k",
-            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-vf", $scaleFilter,
+            "-profile:v", "high", "-level:v", "4.1", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "${AudioKbps}k", "-movflags", "+faststart", $localOut
         )
     }
@@ -192,7 +196,8 @@ foreach ($row in $rows) {
             "-y", "-i", $localIn,
             "-c:v", "libx264", "-preset", "veryfast",
             "-b:v", "${targetVideoKbps}k", "-maxrate", "${targetVideoKbps}k", "-bufsize", "$($targetVideoKbps * 2)k",
-            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-vf", $scaleFilter,
+            "-profile:v", "high", "-level:v", "4.1", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "${AudioKbps}k", "-movflags", "+faststart", $localOut
         )
     }
