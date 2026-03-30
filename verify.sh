@@ -132,6 +132,16 @@ if grep -q 'Huérfano eliminado' /usr/local/bin/cache-clean.sh 2>/dev/null; then
 else
   ok "cache-clean.sh está en modo auditoría (sin borrado automático)"
 fi
+if grep -q 'is_safe_delete_target' /usr/local/bin/temp-clean.sh 2>/dev/null; then
+  ok "temp-clean.sh tiene guardas de ruta antes de borrar (solo temporales técnicos)"
+else
+  fail "temp-clean.sh no tiene guardas explícitas de ruta para borrado"
+fi
+if grep -q 'CONFIRM_PHRASE=' /usr/local/bin/manual-retention.sh 2>/dev/null && grep -q -- '--confirm' /usr/local/bin/manual-retention.sh 2>/dev/null; then
+  ok "manual-retention.sh exige confirmación explícita para --apply"
+else
+  fail "manual-retention.sh no exige confirmación explícita para --apply"
+fi
 if crontab -l 2>/dev/null | grep -q 'manual-retention.sh.*--apply'; then
   fail "Existe depuración automática manual-retention.sh --apply en crontab"
 else

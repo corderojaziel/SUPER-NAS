@@ -22,6 +22,8 @@ SNAP_KEEP="${SNAP_KEEP:-1}"
 DB_KEEP="${DB_KEEP:-7}"
 TARGET="${TARGET:-all}" # snapshots|db|all
 NAS_ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
+CONFIRM_PHRASE="${CONFIRM_PHRASE:-BORRAR_RESPALDOS_SUPERNAS}"
+CONFIRM_INPUT="${CONFIRM_INPUT:-}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -32,8 +34,9 @@ while [ $# -gt 0 ]; do
         --target) shift; TARGET="${1:-$TARGET}" ;;
         --snap-dir) shift; SNAP_DIR="${1:-$SNAP_DIR}" ;;
         --db-dir) shift; DB_DIR="${1:-$DB_DIR}" ;;
+        --confirm) shift; CONFIRM_INPUT="${1:-$CONFIRM_INPUT}" ;;
         *)
-            echo "Uso: $0 [--plan|--apply] [--target snapshots|db|all] [--snapshots-keep N] [--db-keep N]"
+            echo "Uso: $0 [--plan|--apply] [--target snapshots|db|all] [--snapshots-keep N] [--db-keep N] [--confirm FRASE]"
             exit 1
             ;;
     esac
@@ -49,20 +52,69 @@ is_number "$DB_KEEP" || DB_KEEP=7
 [ "$SNAP_KEEP" -ge 1 ] || SNAP_KEEP=1
 [ "$DB_KEEP" -ge 1 ] || DB_KEEP=1
 
+if [ "$MODE" = "apply" ] && [ "$CONFIRM_INPUT" != "$CONFIRM_PHRASE" ]; then
+    echo "Bloqueado por seguridad: falta confirmación explícita para borrar respaldos."
+    echo "Reintenta con: --confirm $CONFIRM_PHRASE"
+    exit 2
+fi
+
+realpath_safe() {
+    local p="$1" rp=""
+    rp="$(readlink -f -- "$p" 2>/dev/null || true)"
+    [ -n "$rp" ] && { printf '%s\n' "$rp"; return 0; }
+    rp="$(realpath -- "$p" 2>/dev/null || true)"
+    [ -n "$rp" ] && { printf '%s\n' "$rp"; return 0; }
+    printf '%s\n' "$p"
+}
+
+path_under() {
+    local child="$1" parent="$2"
+    case "${child%/}/" in
+        "${parent%/}/"*) return 0 ;;
+    esac
+    return 1
+}
+
+SNAP_DIR_ABS="$(realpath_safe "$SNAP_DIR")"
+DB_DIR_ABS="$(realpath_safe "$DB_DIR")"
+
+is_safe_retention_target() {
+    local p="$1" rp base
+    rp="$(realpath_safe "$p")"
+    base="$(basename "$rp")"
+
+    if path_under "$rp" "$SNAP_DIR_ABS" && [ -d "$rp" ]; then
+        [[ "$base" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && return 0
+    fi
+    if path_under "$rp" "$DB_DIR_ABS" && [ -f "$rp" ]; then
+        [[ "$base" =~ \.sql\.gz$ ]] && return 0
+    fi
+    return 1
+}
+
 PLAN_COUNT=0
 DELETE_COUNT=0
 DELETE_SIZE_BYTES=0
+SKIPPED_UNSAFE=0
 
 delete_path() {
     local p="$1"
     local size
+    if ! is_safe_retention_target "$p"; then
+        echo "SKIP_UNSAFE: $p"
+        SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
+        return 0
+    fi
     size="$(du -sb "$p" 2>/dev/null | awk '{print $1+0}')"
     PLAN_COUNT=$((PLAN_COUNT + 1))
     if [ "$MODE" = "apply" ]; then
-        rm -rf "$p"
-        DELETE_COUNT=$((DELETE_COUNT + 1))
-        DELETE_SIZE_BYTES=$((DELETE_SIZE_BYTES + size))
-        echo "DELETED: $p"
+        if rm -rf -- "$p"; then
+            DELETE_COUNT=$((DELETE_COUNT + 1))
+            DELETE_SIZE_BYTES=$((DELETE_SIZE_BYTES + size))
+            echo "DELETED: $p"
+        else
+            echo "DELETE_FAIL: $p"
+        fi
     else
         echo "PLAN: $p"
     fi
@@ -100,16 +152,18 @@ if [ "$TARGET" = "db" ] || [ "$TARGET" = "all" ]; then
 fi
 
 freed_gb="$(awk "BEGIN{printf \"%.2f\", $DELETE_SIZE_BYTES/1024/1024/1024}")"
-echo "manual-retention resumen: mode=$MODE target=$TARGET planned=$PLAN_COUNT deleted=$DELETE_COUNT freed_gb=$freed_gb"
+echo "manual-retention resumen: mode=$MODE target=$TARGET planned=$PLAN_COUNT deleted=$DELETE_COUNT skipped_unsafe=$SKIPPED_UNSAFE freed_gb=$freed_gb"
 
 if [ "$MODE" = "apply" ]; then
     "$NAS_ALERT_BIN" "🧰 Depuración manual aplicada
 Target: $TARGET
 Elementos borrados: $DELETE_COUNT
+Saltados por seguridad: $SKIPPED_UNSAFE
 Espacio liberado: ${freed_gb} GB"
 else
     "$NAS_ALERT_BIN" "📋 Plan manual de depuración listo
 Target: $TARGET
 Candidatos: $PLAN_COUNT
+Saltados por seguridad: $SKIPPED_UNSAFE
 Sin borrados. Para aplicar usa --apply."
 fi

@@ -218,12 +218,15 @@ Cliente → nginx → cache eMMC (thumbnails)
 
 * `temp-clean.sh`
   👉 depura solo temporales técnicos (reprocess/tmp/cache incompleto), con `--dry-run` y `--apply`
+  👉 incluye guardas de ruta: si detecta objetivo no seguro, lo salta y lo reporta
 
 * `cache-migrate-to-disk.sh`
   👉 migra cache de eMMC a HDD con symlinks (manual)
 
 * `manual-retention.sh`
   👉 depura respaldos solo bajo decisión manual
+  👉 `--apply` requiere confirmación explícita:
+  `--confirm BORRAR_RESPALDOS_SUPERNAS`
 
 * `smart-check.sh`
   👉 monitorea salud de discos
@@ -441,6 +444,8 @@ Mantener ingestión estable y reproducción eficiente mediante:
 * `smart-check.sh` → salud de discos
 
 👉 Regla operativa: no hay depuración automática de fotos/videos productivos.
+
+👉 Scripts de laboratorio/pruebas (`maintenance/test-*`, `maintenance/v2-regression.sh`, `maintenance/lab-ensure-stack.sh`) quedan bloqueados por defecto y requieren habilitación explícita (`NAS_TEST_MODE=1` o `NAS_LAB_MODE=1`).
 
 ---
 

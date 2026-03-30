@@ -66,6 +66,70 @@ should_notify() {
     return 0
 }
 
+realpath_safe() {
+    local p="$1" rp=""
+    rp="$(readlink -f -- "$p" 2>/dev/null || true)"
+    [ -n "$rp" ] && { printf '%s\n' "$rp"; return 0; }
+    rp="$(realpath -- "$p" 2>/dev/null || true)"
+    [ -n "$rp" ] && { printf '%s\n' "$rp"; return 0; }
+    printf '%s\n' "$p"
+}
+
+path_under() {
+    local child="$1" parent="$2"
+    case "${child%/}/" in
+        "${parent%/}/"*) return 0 ;;
+    esac
+    return 1
+}
+
+is_safe_delete_target() {
+    local p="$1" rp=""
+    local allowed_root="" allowed=0
+    rp="$(realpath_safe "$p")"
+
+    # Nunca permitir limpieza sobre contenido productivo.
+    for forbidden in /mnt/storage-main/photos /mnt/storage-backup/snapshots /mnt/storage-backup/failover-main /usr/src/app/upload; do
+        if path_under "$rp" "$forbidden"; then
+            return 1
+        fi
+    done
+
+    # Permitir borrado solo dentro de raíces técnicas explícitas.
+    for allowed_root in "$REPROCESS_DIR" "$CACHE_ROOT"; do
+        [ -n "$allowed_root" ] || continue
+        allowed_root="$(realpath_safe "$allowed_root")"
+        if path_under "$rp" "$allowed_root"; then
+            allowed=1
+            break
+        fi
+    done
+    if [ "$allowed" -eq 0 ]; then
+        for allowed_root in $TMP_DIRS; do
+            [ -n "$allowed_root" ] || continue
+            allowed_root="$(realpath_safe "$allowed_root")"
+            if path_under "$rp" "$allowed_root"; then
+                allowed=1
+                break
+            fi
+        done
+    fi
+    [ "$allowed" -eq 1 ] || return 1
+
+    # En cache, solo se permiten temporales incompletos conocidos.
+    local cache_abs base
+    cache_abs="$(realpath_safe "$CACHE_ROOT")"
+    if path_under "$rp" "$cache_abs"; then
+        base="$(basename "$rp")"
+        case "$base" in
+            *.tmp.pc.mp4|*.tmp-copy) ;;
+            *) return 1 ;;
+        esac
+    fi
+
+    return 0
+}
+
 declare -A SEEN
 declare -a CANDIDATES
 
@@ -126,6 +190,7 @@ total=0
 total_bytes=0
 deleted=0
 freed_bytes=0
+skipped_unsafe=0
 
 for p in "${CANDIDATES[@]}"; do
     [ -e "$p" ] || continue
@@ -139,6 +204,11 @@ for p in "${CANDIDATES[@]}"; do
     total_bytes=$((total_bytes + size))
 
     if [ "$MODE" = "apply" ]; then
+        if ! is_safe_delete_target "$p"; then
+            skipped_unsafe=$((skipped_unsafe + 1))
+            log "WARN: SKIP target no seguro: $p"
+            continue
+        fi
         if rm -rf -- "$p" 2>/dev/null; then
             deleted=$((deleted + 1))
             freed_bytes=$((freed_bytes + size))
@@ -151,12 +221,13 @@ if [ "$MODE" = "apply" ] && [ "$deleted" -lt "$total" ]; then
     status="WARN"
 fi
 
-log "temp-clean mode=$MODE age_days=$AGE_DAYS candidates=$total candidate_mb=$(to_human_mb "$total_bytes") deleted=$deleted freed_mb=$(to_human_mb "$freed_bytes") status=$status"
+log "temp-clean mode=$MODE age_days=$AGE_DAYS candidates=$total candidate_mb=$(to_human_mb "$total_bytes") deleted=$deleted skipped_unsafe=$skipped_unsafe freed_mb=$(to_human_mb "$freed_bytes") status=$status"
 
 if should_notify; then
     msg="🧽 Limpieza semanal de temporales (${MODE})
 Candidatos: ${total} (~$(to_human_mb "$total_bytes") MB)
 Eliminados: ${deleted}
+Saltados por seguridad: ${skipped_unsafe}
 Liberado: ~$(to_human_mb "$freed_bytes") MB
 Regla: solo temporales (sin tocar fotos/videos productivos)."
     NAS_ALERT_KEY="temp_clean:weekly:${MODE}" NAS_ALERT_TTL=1800 "$ALERT_BIN" "$msg" || true

@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
+if [ "${NAS_LAB_MODE:-0}" != "1" ]; then
+  echo "Bloqueado por seguridad: script de laboratorio (requiere NAS_LAB_MODE=1)." >&2
+  exit 2
+fi
+
 REPO_ROOT="${REPO_ROOT:-/mnt/c/Users/jazie/OneDrive/Escritorio/proyecto}"
 CONFIG_OUT="${CONFIG_OUT:-$REPO_ROOT/config/nas.wsl.generated.conf}"
 API_BASE="${API_BASE:-http://127.0.0.1:2283}"

@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
+if [ "${NAS_LAB_MODE:-0}" != "1" ]; then
+  echo "Bloqueado por seguridad: script de laboratorio (requiere NAS_LAB_MODE=1)." >&2
+  exit 2
+fi
+
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/immich-app}"
 API_BASE="${API_BASE:-http://127.0.0.1:2283}"
 DOCKER_LOG="${DOCKER_LOG:-/var/log/dockerd-manual.log}"

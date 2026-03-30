@@ -20,6 +20,7 @@ TODAY=$(date +%F)
 RETENTION_DAYS="$(cat /etc/nas-retention 2>/dev/null || echo 7)"
 RETENTION_DAYS="${RETENTION_DAYS:-7}"
 MANUAL_RETENTION_BIN="${MANUAL_RETENTION_BIN:-/usr/local/bin/manual-retention.sh}"
+MANUAL_RETENTION_CONFIRM_PHRASE="${MANUAL_RETENTION_CONFIRM_PHRASE:-BORRAR_RESPALDOS_SUPERNAS}"
 POLICY_FILE="/etc/default/nas-video-policy"
 FAILOVER_ROOT="${FAILOVER_ROOT:-/mnt/storage-backup/failover-main}"
 FAILOVER_SYNC_BIN="${FAILOVER_SYNC_BIN:-/usr/local/bin/failover-sync.sh}"
@@ -98,14 +99,14 @@ Qué hacer ahora (TV Box):
     | wc -l
   )"
   if [ "$RETENTION_DAYS" -gt 0 ] && [ -x "$MANUAL_RETENTION_BIN" ]; then
-    if "$MANUAL_RETENTION_BIN" --apply --target snapshots --snapshots-keep "$RETENTION_DAYS" >/tmp/backup-retention.log 2>&1; then
+    if "$MANUAL_RETENTION_BIN" --apply --confirm "$MANUAL_RETENTION_CONFIRM_PHRASE" --target snapshots --snapshots-keep "$RETENTION_DAYS" >/tmp/backup-retention.log 2>&1; then
       :
     else
       alert "⚠️ Falló la depuración automática de snapshots
 La copia sí terminó, pero no pude aplicar retención de $RETENTION_DAYS días.
 Qué correr (TV Box):
 1) /usr/local/bin/manual-retention.sh --plan --target snapshots --snapshots-keep $RETENTION_DAYS
-2) /usr/local/bin/manual-retention.sh --apply --target snapshots --snapshots-keep $RETENTION_DAYS"
+2) /usr/local/bin/manual-retention.sh --apply --confirm $MANUAL_RETENTION_CONFIRM_PHRASE --target snapshots --snapshots-keep $RETENTION_DAYS"
     fi
   fi
 

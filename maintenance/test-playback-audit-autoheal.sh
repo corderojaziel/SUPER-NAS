@@ -1,6 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
+if [ "${NAS_TEST_MODE:-0}" != "1" ]; then
+  echo "Bloqueado por seguridad: este script de pruebas requiere NAS_TEST_MODE=1." >&2
+  exit 2
+fi
+if [ "${NAS_TEST_ALLOW_PROD:-0}" != "1" ] && [ -d /mnt/storage-main/photos ] \
+  && find /mnt/storage-main/photos -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null | grep -q .; then
+  echo "Entorno con datos productivos detectado. Para forzar, exporta NAS_TEST_ALLOW_PROD=1." >&2
+  exit 2
+fi
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT_UNDER_TEST="$REPO_ROOT/maintenance/playback-audit-autoheal.sh"
 ROOT="/tmp/nas-playback-autoheal-tests"
