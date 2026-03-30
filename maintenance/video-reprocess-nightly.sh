@@ -51,7 +51,8 @@ VIDEO_REPROCESS_IDLE_SLEEP_SEC="${VIDEO_REPROCESS_IDLE_SLEEP_SEC:-45}"
 VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC="${VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC:-1800}"
 VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED="${VIDEO_REPROCESS_DYNAMIC_LOAD_ENABLED:-1}"
 VIDEO_NOTIFY_BACKLOG_THRESHOLD="${VIDEO_NOTIFY_BACKLOG_THRESHOLD:-10}"
-VIDEO_NOTIFY_STUCK_MIN="${VIDEO_NOTIFY_STUCK_MIN:-20}"
+VIDEO_NOTIFY_STOP_MIN="${VIDEO_NOTIFY_STOP_MIN:-1440}"
+VIDEO_NOTIFY_STUCK_MIN="${VIDEO_NOTIFY_STUCK_MIN:-$VIDEO_NOTIFY_STOP_MIN}"
 VIDEO_NOTIFY_STATE_FILE="${VIDEO_NOTIFY_STATE_FILE:-$HEALTH_DIR/video-notify-state.env}"
 VIDEO_NOTIFY_VERBOSE="${VIDEO_NOTIFY_VERBOSE:-0}"
 
@@ -89,10 +90,14 @@ load_notify_state() {
   NOTIFY_LAST_PENDING=0
   NOTIFY_STUCK_SINCE=0
   NOTIFY_ALERT_OPEN=0
+  NOTIFY_STOP_REASON=""
+  NOTIFY_STOP_SINCE=0
   [ -f "$VIDEO_NOTIFY_STATE_FILE" ] && . "$VIDEO_NOTIFY_STATE_FILE"
   NOTIFY_LAST_PENDING="${NOTIFY_LAST_PENDING:-0}"
   NOTIFY_STUCK_SINCE="${NOTIFY_STUCK_SINCE:-0}"
   NOTIFY_ALERT_OPEN="${NOTIFY_ALERT_OPEN:-0}"
+  NOTIFY_STOP_REASON="${NOTIFY_STOP_REASON:-}"
+  NOTIFY_STOP_SINCE="${NOTIFY_STOP_SINCE:-0}"
 }
 
 save_notify_state() {
@@ -102,8 +107,23 @@ save_notify_state() {
 NOTIFY_LAST_PENDING=$NOTIFY_LAST_PENDING
 NOTIFY_STUCK_SINCE=$NOTIFY_STUCK_SINCE
 NOTIFY_ALERT_OPEN=$NOTIFY_ALERT_OPEN
+NOTIFY_STOP_REASON="$NOTIFY_STOP_REASON"
+NOTIFY_STOP_SINCE=$NOTIFY_STOP_SINCE
 NOTIFY_TS=$now_ts
 EOF
+}
+
+mark_stop_state() {
+  local reason="$1" now_ts="$2"
+  if [ "$NOTIFY_STOP_SINCE" -le 0 ] || [ "$NOTIFY_STOP_REASON" != "$reason" ]; then
+    NOTIFY_STOP_SINCE="$now_ts"
+    NOTIFY_STOP_REASON="$reason"
+  fi
+}
+
+clear_stop_state() {
+  NOTIFY_STOP_REASON=""
+  NOTIFY_STOP_SINCE=0
 }
 
 if [ ! -f "$MANAGER_BIN" ]; then
@@ -418,15 +438,7 @@ Acción: continuará en la siguiente ventana automática."
       pending_now_manual="$(csv_count "$VIDEO_REPROCESS_MANUAL_QUEUE")"
       pending_now_total=$((light_total + heavy_total + pending_now_manual))
       if [ "$pending_now_total" -ge "$VIDEO_NOTIFY_BACKLOG_THRESHOLD" ]; then
-        alert_throttled \
-          "video_reprocess:busy" \
-          "$VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC" \
-          "⏸️ Reproceso de videos en pausa automática por carga
-CPU: ${LAST_CPU}% (umbral ${VIDEO_REPROCESS_MAX_CPU_PCT}%)
-RAM: ${LAST_MEM}% (umbral ${VIDEO_REPROCESS_MAX_MEM_PCT}%)
-Temp CPU: ${LAST_TEMP}°C (umbral ${VIDEO_REPROCESS_MAX_TEMP_C}°C)
-Requests: ${LAST_REQ}/${VIDEO_REPROCESS_REQUEST_WINDOW_SEC}s (umbral ${VIDEO_REPROCESS_MAX_REQUESTS_PER_WINDOW})
-Reanuda solo cuando baje la carga."
+        mark_stop_state "carga" "$current_epoch"
       fi
       sleep "$VIDEO_REPROCESS_IDLE_SLEEP_SEC"
       continue
@@ -469,19 +481,28 @@ fi
 PENDING_TOTAL=$((light_total + heavy_total + MANUAL_TOTAL))
 NOW_TS="$(date +%s)"
 load_notify_state
+STUCK_MIN=0
+
+if [ "$RUN_STATUS" = "FAIL" ] && [ "$PENDING_TOTAL" -ge "$VIDEO_NOTIFY_BACKLOG_THRESHOLD" ]; then
+  mark_stop_state "errores" "$NOW_TS"
+fi
 
 if [ "$PENDING_TOTAL" -ge "$VIDEO_NOTIFY_BACKLOG_THRESHOLD" ]; then
   if [ "$NOTIFY_LAST_PENDING" -le 0 ] || [ "$PENDING_TOTAL" -lt "$NOTIFY_LAST_PENDING" ] || [ "$NOTIFY_STUCK_SINCE" -le 0 ]; then
     NOTIFY_STUCK_SINCE="$NOW_TS"
+    if [ "$PENDING_TOTAL" -lt "$NOTIFY_LAST_PENDING" ]; then
+      clear_stop_state
+    fi
   fi
   STUCK_MIN=$(( (NOW_TS - NOTIFY_STUCK_SINCE) / 60 ))
-  if [ "$STUCK_MIN" -ge "$VIDEO_NOTIFY_STUCK_MIN" ]; then
+  if [ "$STUCK_MIN" -ge "$VIDEO_NOTIFY_STUCK_MIN" ] && [ -n "$NOTIFY_STOP_REASON" ]; then
     alert_throttled \
-      "video_reprocess:queue_stuck" \
+      "video_reprocess:stopped_24h" \
       "$VIDEO_REPROCESS_BUSY_ALERT_TTL_SEC" \
-      "⚠️ Cola de video alta y sin bajar
+      "⚠️ Reproceso de video detenido por más de 24h
 Pendientes: $PENDING_TOTAL (ligeros $light_total, pesados $heavy_total, manuales $MANUAL_TOTAL).
-Lleva ~${STUCK_MIN} min sin mejora.
+Lleva ~${STUCK_MIN} min sin mejorar.
+Motivo detectado: $NOTIFY_STOP_REASON (TV Box).
 Acción del NAS: sigue reintentando en segundo plano."
     NOTIFY_ALERT_OPEN=1
   fi
@@ -492,6 +513,7 @@ Pendientes actuales: $PENDING_TOTAL (umbral ${VIDEO_NOTIFY_BACKLOG_THRESHOLD})."
   fi
   NOTIFY_ALERT_OPEN=0
   NOTIFY_STUCK_SINCE="$NOW_TS"
+  clear_stop_state
 fi
 
 NOTIFY_LAST_PENDING="$PENDING_TOTAL"
@@ -516,10 +538,7 @@ VIDEO_REPROCESS_STATUS=$RUN_STATUS
 EOF
 
 if [ "$RUN_STATUS" = "FAIL" ]; then
-  alert "⚠️ Reproceso de video con errores
-Acción del NAS: el ciclo terminó incompleto.
-Resultado: convertidos $TOTAL_CONVERTED, fallidos $TOTAL_FAILED, manuales $MANUAL_TOTAL.
-Si quieres relanzar ahora: /usr/local/bin/video-reprocess-nightly.sh"
+  log "FAIL: ciclo incompleto (convertidos=$TOTAL_CONVERTED fallidos=$TOTAL_FAILED manuales=$MANUAL_TOTAL). Notificación solo cuando lleve >=${VIDEO_NOTIFY_STUCK_MIN} min detenido."
   exit 1
 fi
 

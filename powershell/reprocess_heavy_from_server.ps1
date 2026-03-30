@@ -6,6 +6,7 @@ param(
     [string]$LocalWork = "C:\temp\nas-reprocess-heavy",
     [double]$TargetMbPerMin = 38,
     [int]$AudioKbps = 128,
+    [string]$NvencPreset = "p4",
     [int]$Limit = 0,
     [switch]$PlanOnly,
     [switch]$NoPlan,
@@ -134,6 +135,7 @@ $scaleFilter = "scale=1920:1920:force_original_aspect_ratio=decrease,scale=trunc
 Log "Encoder: $(if($hasNvenc){'h264_nvenc'}else{'libx264'})"
 Log "Target: $TargetMbPerMin MB/min (~${targetVideoKbps}k video + ${AudioKbps}k audio)"
 Log "Modo force-reencode: $(if($ForceReencode){'ON'}else{'OFF'})"
+Log "NVENC preset: $NvencPreset"
 
 $report = New-Object System.Collections.Generic.List[object]
 $countOk = 0
@@ -183,7 +185,7 @@ foreach ($row in $rows) {
     if ($hasNvenc) {
         $ffArgs = @(
             "-y", "-hwaccel", "cuda", "-i", $localIn,
-            "-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr",
+            "-c:v", "h264_nvenc", "-preset", $NvencPreset, "-rc", "vbr",
             "-b:v", "${targetVideoKbps}k", "-maxrate", "${targetVideoKbps}k", "-bufsize", "$($targetVideoKbps * 2)k",
             "-vf", $scaleFilter,
             "-profile:v", "high", "-level:v", "4.1", "-pix_fmt", "yuv420p",
