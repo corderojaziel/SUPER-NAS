@@ -1062,6 +1062,25 @@ server {
     proxy_buffering off;
   }
 
+  # ── Upload robusto para app móvil (evita timeouts en /api/assets) ─────
+  # Para videos grandes por Tailscale/datos móviles:
+  # - desactiva buffering de request para stream directo al backend
+  # - extiende timeouts para evitar cortes prematuros
+  location = /api/assets {
+    proxy_pass http://localhost:2283;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    client_max_body_size 50G;
+    client_body_timeout 3600s;
+    send_timeout 3600s;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_connect_timeout 60s;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+  }
+
   # ── Rutas de video/playback ─────────────────────────────────────────────
   # El portal NO debe reproducir a ciegas el original pesado desde el HDD.
   # En su lugar, un resolutor local decide:
