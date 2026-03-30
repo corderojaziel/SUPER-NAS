@@ -40,6 +40,9 @@ VIDEO_STREAM_LIGHT_REENCODE_MAX_MB_PER_MIN="${VIDEO_STREAM_LIGHT_REENCODE_MAX_MB
 VIDEO_OPTIMIZE_AUDIO_BITRATE_K="${VIDEO_OPTIMIZE_AUDIO_BITRATE_K:-128}"
 VIDEO_OPTIMIZE_MAX_LONG_EDGE="${VIDEO_OPTIMIZE_MAX_LONG_EDGE:-1920}"
 VIDEO_OPTIMIZE_VIDEO_LEVEL="${VIDEO_OPTIMIZE_VIDEO_LEVEL:-4.1}"
+VIDEO_DIRECT_COMPAT_VIDEO_CODEC="${VIDEO_DIRECT_COMPAT_VIDEO_CODEC:-h264}"
+VIDEO_DIRECT_COMPAT_PIX_FMT="${VIDEO_DIRECT_COMPAT_PIX_FMT:-yuv420p}"
+VIDEO_DIRECT_COMPAT_LEVEL="${VIDEO_DIRECT_COMPAT_LEVEL:-41}"
 
 mkdir -p "$OUTPUT" "$STATE_DIR" "$HEALTH_DIR" "$(dirname "$LOCK_FILE")"
 touch "$ATTEMPTS_DB" "$FAIL_REPORT" "$MANUAL_REVIEW"
@@ -53,6 +56,7 @@ VIDEO_READY_COUNT=0
 VIDEO_OPTIMIZED_COUNT=0
 VIDEO_PENDING_COUNT=0
 VIDEO_MANUAL_REVIEW_COUNT=0
+VIDEO_LIGHT_INCOMPAT_COUNT=0
 
 write_summary() {
     cat > "$SUMMARY_FILE" <<EOF
@@ -63,6 +67,7 @@ VIDEO_READY_COUNT=${VIDEO_READY_COUNT}
 VIDEO_OPTIMIZED_COUNT=${VIDEO_OPTIMIZED_COUNT}
 VIDEO_PENDING_COUNT=${VIDEO_PENDING_COUNT}
 VIDEO_MANUAL_REVIEW_COUNT=${VIDEO_MANUAL_REVIEW_COUNT}
+VIDEO_LIGHT_INCOMPAT_COUNT=${VIDEO_LIGHT_INCOMPAT_COUNT}
 EOF
 }
 
@@ -222,6 +227,40 @@ is_direct_play_candidate() {
     awk -v size="$size" -v allowed="$allowed" 'BEGIN{ exit(size <= allowed ? 0 : 1) }'
 }
 
+is_direct_compat_candidate() {
+    local src="$1"
+    local meta codec pix level width height codec_l pix_l long_edge
+    meta=$(ffprobe -v error -select_streams v:0 \
+        -show_entries stream=codec_name,pix_fmt,level,width,height \
+        -of default=nokey=1:noprint_wrappers=1 "$src" 2>/dev/null | tr '\n' '|' | sed 's/|$//')
+    [ -n "$meta" ] || return 1
+    IFS='|' read -r codec pix level width height <<EOF
+$meta
+EOF
+    codec_l=$(printf '%s' "$codec" | tr '[:upper:]' '[:lower:]')
+    pix_l=$(printf '%s' "$pix" | tr '[:upper:]' '[:lower:]')
+    [ "$codec_l" = "${VIDEO_DIRECT_COMPAT_VIDEO_CODEC}" ] || return 1
+    [ "$pix_l" = "${VIDEO_DIRECT_COMPAT_PIX_FMT}" ] || return 1
+    if [ -n "$level" ] && [ "$level" != "N/A" ] 2>/dev/null; then
+        if echo "$level" | grep -Eq '^[0-9]+$'; then
+            [ "$level" -le "${VIDEO_DIRECT_COMPAT_LEVEL}" ] || return 1
+        fi
+    fi
+    if [ "${VIDEO_OPTIMIZE_MAX_LONG_EDGE:-0}" -gt 0 ]; then
+        if echo "$width" | grep -Eq '^[0-9]+$' && echo "$height" | grep -Eq '^[0-9]+$'; then
+            if [ "$width" -gt "$height" ]; then
+                long_edge="$width"
+            else
+                long_edge="$height"
+            fi
+            [ "$long_edge" -le "${VIDEO_OPTIMIZE_MAX_LONG_EDGE}" ] || return 1
+        else
+            return 1
+        fi
+    fi
+    return 0
+}
+
 ensure_direct_cache_link() {
     local src="$1" out="$2" dir src_size out_size tmp_copy
     dir="$(dirname "$out")"
@@ -286,13 +325,17 @@ while IFS= read -r -d '' src; do
   mkdir -p "$(dirname "$out")"
 
   if is_direct_play_candidate "$src"; then
-    VIDEO_DIRECT_COUNT=$((VIDEO_DIRECT_COUNT + 1))
-    if ensure_direct_cache_link "$src" "$out"; then
-      log "Cache directo listo sin recompresion: $rel"
-    else
-      log "No pude crear enlace directo en cache: $rel"
+    if is_direct_compat_candidate "$src"; then
+      VIDEO_DIRECT_COUNT=$((VIDEO_DIRECT_COUNT + 1))
+      if ensure_direct_cache_link "$src" "$out"; then
+        log "Cache directo listo sin recompresion: $rel"
+      else
+        log "No pude crear enlace directo en cache: $rel"
+      fi
+      continue
     fi
-    continue
+    VIDEO_LIGHT_INCOMPAT_COUNT=$((VIDEO_LIGHT_INCOMPAT_COUNT + 1))
+    log "Video ligero pero no compatible universalmente, se transcodifica: $rel"
   fi
 
   if [ -L "$out" ]; then
