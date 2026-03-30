@@ -137,6 +137,7 @@ $countOk = 0
 $countSkip = 0
 $countFail = 0
 $index = 0
+$createdDirs = New-Object 'System.Collections.Generic.HashSet[string]'
 
 foreach ($row in $rows) {
     if ($Limit -gt 0 -and $index -ge $Limit) { break }
@@ -156,18 +157,13 @@ foreach ($row in $rows) {
 
     $qDst = Quote-Sq $dst
     $qSrc = Quote-Sq $src
-    $rExists = Invoke-External -FilePath "ssh" -ArgumentList ($sshOpts + @("${RemoteUser}@${RemoteHost}", "if [ -s $qDst ]; then echo 1; fi")) -TimeoutSec 60 -Label "ssh-dst-exists"
-    if (-not $ForceReencode -and $rExists.ExitCode -eq 0 -and $rExists.StdOut -match "1") {
-        $countSkip++
-        $report.Add([PSCustomObject]@{asset_id=$asset;status="skip_already_cached";source_path=$src;dest_cache_path=$dst;note=""})
-        continue
-    }
-
-    $rSrc = Invoke-External -FilePath "ssh" -ArgumentList ($sshOpts + @("${RemoteUser}@${RemoteHost}", "if [ -s $qSrc ]; then echo 1; fi")) -TimeoutSec 60 -Label "ssh-src-exists"
-    if ($rSrc.ExitCode -ne 0 -or -not ($rSrc.StdOut -match "1")) {
-        $countFail++
-        $report.Add([PSCustomObject]@{asset_id=$asset;status="missing_source";source_path=$src;dest_cache_path=$dst;note=""})
-        continue
+    if (-not $ForceReencode) {
+        $rExists = Invoke-External -FilePath "ssh" -ArgumentList ($sshOpts + @("${RemoteUser}@${RemoteHost}", "if [ -s $qDst ]; then echo 1; fi")) -TimeoutSec 60 -Label "ssh-dst-exists"
+        if ($rExists.ExitCode -eq 0 -and $rExists.StdOut -match "1") {
+            $countSkip++
+            $report.Add([PSCustomObject]@{asset_id=$asset;status="skip_already_cached";source_path=$src;dest_cache_path=$dst;note=""})
+            continue
+        }
     }
 
     $localIn = Join-Path $LocalWork ("in_" + $asset + ".bin")
@@ -214,12 +210,15 @@ foreach ($row in $rows) {
     $tmpRemote = "$dst.tmp.pc.mp4"
     $qDir = Quote-Sq $remoteDir
     $qTmp = Quote-Sq $tmpRemote
-    $rMk = Invoke-External -FilePath "ssh" -ArgumentList ($sshOpts + @("${RemoteUser}@${RemoteHost}", "mkdir -p $qDir")) -TimeoutSec 60 -Label "ssh-mkdir"
-    if ($rMk.ExitCode -ne 0) {
-        $countFail++
-        $report.Add([PSCustomObject]@{asset_id=$asset;status="mkdir_failed";source_path=$src;dest_cache_path=$dst;note=(Safe-Text $rMk.StdErr)})
-        Remove-Item $localIn, $localOut -Force -ErrorAction SilentlyContinue
-        continue
+    if (-not $createdDirs.Contains($remoteDir)) {
+        $rMk = Invoke-External -FilePath "ssh" -ArgumentList ($sshOpts + @("${RemoteUser}@${RemoteHost}", "mkdir -p $qDir")) -TimeoutSec 60 -Label "ssh-mkdir"
+        if ($rMk.ExitCode -ne 0) {
+            $countFail++
+            $report.Add([PSCustomObject]@{asset_id=$asset;status="mkdir_failed";source_path=$src;dest_cache_path=$dst;note=(Safe-Text $rMk.StdErr)})
+            Remove-Item $localIn, $localOut -Force -ErrorAction SilentlyContinue
+            continue
+        }
+        [void]$createdDirs.Add($remoteDir)
     }
 
     $rUl = Invoke-External -FilePath "scp" -ArgumentList (@("-q") + $sshOpts + @($localOut, "${RemoteUser}@${RemoteHost}:$tmpRemote")) -TimeoutSec 7200 -Label "scp-upload"
