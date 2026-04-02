@@ -37,6 +37,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--compose-dir", default="/opt/immich-app")
     p.add_argument("--append-ts", action="store_true")
     p.add_argument(
+        "--since-file",
+        default="",
+        help="Archivo con epoch (segundos) del último corte para auditar solo videos nuevos.",
+    )
+    p.add_argument(
+        "--first-run-hours",
+        type=float,
+        default=24.0,
+        help="Si no hay since-file, audita solo este rango inicial (horas).",
+    )
+    p.add_argument(
+        "--all-videos",
+        action="store_true",
+        help="Fuerza auditoría completa (ignora since-file).",
+    )
+    p.add_argument(
         "--deep-ffprobe",
         action="store_true",
         help="Verifica decodificación real (como preview web) en cada playback playable.",
@@ -71,10 +87,46 @@ def login_token(api_base: str, email: str, password: str, timeout_sec: float) ->
     return token
 
 
-def fetch_video_ids(compose_dir: str) -> list[str]:
+def read_since_epoch(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    raw = path.read_text(encoding="utf-8", errors="ignore").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def write_since_epoch(path: Path, epoch: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{max(epoch, 0)}\n", encoding="utf-8")
+
+
+def fetch_video_rows(
+    compose_dir: str,
+    since_epoch: int | None,
+    first_run_hours: float,
+    all_videos: bool,
+) -> list[tuple[str, int]]:
+    where_base = (
+        "a.type='VIDEO' and a.status='active' and a.\"deletedAt\" is null"
+    )
+    if all_videos:
+        where_clause = where_base
+    elif since_epoch is not None and since_epoch > 0:
+        where_clause = f"{where_base} and a.\"createdAt\" > to_timestamp({since_epoch})"
+    else:
+        hrs = max(first_run_hours, 1.0)
+        where_clause = f"{where_base} and a.\"createdAt\" >= now() - interval '{hrs:.3f} hours'"
+
     sql = (
-        "select a.id from asset a "
-        "where a.type='VIDEO' and a.status='active' and a.\"deletedAt\" is null;"
+        "select a.id, floor(extract(epoch from a.\"createdAt\"))::bigint as created_epoch "
+        "from asset a "
+        f"where {where_clause} "
+        "order by a.\"createdAt\" asc;"
     )
     cmd = [
         "docker",
@@ -88,11 +140,26 @@ def fetch_video_ids(compose_dir: str) -> list[str]:
         "-d",
         "immich",
         "-At",
+        "-F",
+        "|",
         "-c",
         sql,
     ]
     out = subprocess.check_output(cmd, cwd=compose_dir, text=True)
-    return [line.strip() for line in out.splitlines() if line.strip()]
+    rows: list[tuple[str, int]] = []
+    for line in out.splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        parts = raw.split("|", 1)
+        aid = parts[0].strip()
+        try:
+            created_epoch = int(parts[1].strip()) if len(parts) > 1 else 0
+        except ValueError:
+            created_epoch = 0
+        if aid:
+            rows.append((aid, max(created_epoch, 0)))
+    return rows
 
 
 def auth_headers(token: str, api_key: str) -> dict[str, str]:
@@ -303,7 +370,18 @@ def main() -> int:
             raise SystemExit("ERROR: usar --api-key o bien --email + --password")
         token = login_token(args.immich_api, args.email, args.password, args.timeout_sec)
 
-    ids = fetch_video_ids(args.compose_dir)
+    since_path = Path(args.since_file).expanduser() if args.since_file else None
+    since_epoch = None
+    if since_path and not args.all_videos:
+        since_epoch = read_since_epoch(since_path)
+
+    id_rows = fetch_video_rows(
+        compose_dir=args.compose_dir,
+        since_epoch=since_epoch,
+        first_run_hours=args.first_run_hours,
+        all_videos=bool(args.all_videos),
+    )
+    ids = [aid for aid, _ in id_rows]
 
     rows: list[dict[str, str | int]] = []
     with ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
@@ -406,6 +484,9 @@ def main() -> int:
     summary = {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "total": len(rows),
+        "scope": "all_videos" if args.all_videos else "new_only",
+        "since_epoch_before": since_epoch,
+        "first_run_hours": args.first_run_hours,
         "by_class": by_class,
         "by_media_status": by_media_status,
         "by_resolver_status": by_resolver_status,
@@ -415,6 +496,17 @@ def main() -> int:
         "deep_ffprobe": bool(args.deep_ffprobe),
     }
     out_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+    if since_path and not args.all_videos:
+        if id_rows:
+            new_since = max(created for _, created in id_rows)
+        elif since_epoch is None:
+            new_since = int(time.time())
+        else:
+            new_since = since_epoch
+        write_since_epoch(since_path, new_since)
+        print(f"SINCE_FILE={since_path}")
+        print(f"SINCE_EPOCH={new_since}")
 
     print(f"OUTPUT_CSV={out_csv}")
     print(f"OUTPUT_JSON={out_json}")

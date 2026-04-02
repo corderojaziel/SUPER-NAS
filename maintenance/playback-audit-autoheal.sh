@@ -26,13 +26,17 @@ PLAYBACK_AUDIT_WORKERS="${PLAYBACK_AUDIT_WORKERS:-24}"
 PLAYBACK_AUDIT_TIMEOUT_SEC="${PLAYBACK_AUDIT_TIMEOUT_SEC:-20}"
 PLAYBACK_AUDIT_SAMPLE_BYTES="${PLAYBACK_AUDIT_SAMPLE_BYTES:-256}"
 PLAYBACK_AUDIT_APPEND_TS="${PLAYBACK_AUDIT_APPEND_TS:-1}"
-PLAYBACK_AUDIT_DEEP_FFPROBE="${PLAYBACK_AUDIT_DEEP_FFPROBE:-0}"
+PLAYBACK_AUDIT_DEEP_FFPROBE="${PLAYBACK_AUDIT_DEEP_FFPROBE:-1}"
 PLAYBACK_AUDIT_FFPROBE_WORKERS="${PLAYBACK_AUDIT_FFPROBE_WORKERS:-4}"
 PLAYBACK_AUDIT_FFPROBE_TIMEOUT_SEC="${PLAYBACK_AUDIT_FFPROBE_TIMEOUT_SEC:-20}"
 PLAYBACK_AUDIT_FFPROBE_SAMPLE_SEC="${PLAYBACK_AUDIT_FFPROBE_SAMPLE_SEC:-2}"
 PLAYBACK_AUDIT_FFPROBE_RETRIES="${PLAYBACK_AUDIT_FFPROBE_RETRIES:-2}"
 PLAYBACK_AUDIT_FFPROBE_RETRY_SLEEP_SEC="${PLAYBACK_AUDIT_FFPROBE_RETRY_SLEEP_SEC:-1.5}"
-PLAYBACK_AUDIT_AUTOHEAL_CLASSES="${PLAYBACK_AUDIT_AUTOHEAL_CLASSES:-not_found http_error unexpected_content placeholder_missing placeholder_damaged placeholder_error}"
+PLAYBACK_AUDIT_FFPROBE_TIMEOUT_IS_ERROR="${PLAYBACK_AUDIT_FFPROBE_TIMEOUT_IS_ERROR:-1}"
+PLAYBACK_AUDIT_SCOPE="${PLAYBACK_AUDIT_SCOPE:-new_only}"
+PLAYBACK_AUDIT_SINCE_FILE="${PLAYBACK_AUDIT_SINCE_FILE:-$HEALTH_DIR/playback-audit.since}"
+PLAYBACK_AUDIT_FIRST_RUN_HOURS="${PLAYBACK_AUDIT_FIRST_RUN_HOURS:-24}"
+PLAYBACK_AUDIT_AUTOHEAL_CLASSES="${PLAYBACK_AUDIT_AUTOHEAL_CLASSES:-not_found http_error resolver_error unexpected_content decode_error placeholder_missing placeholder_damaged placeholder_error}"
 PLAYBACK_AUDIT_AUTOHEAL_LIMIT="${PLAYBACK_AUDIT_AUTOHEAL_LIMIT:-200}"
 PLAYBACK_AUDIT_AUTOHEAL_MAX_ATTEMPTS="${PLAYBACK_AUDIT_AUTOHEAL_MAX_ATTEMPTS:-3}"
 PLAYBACK_AUDIT_TRIGGER_WATCHDOG_ON_PROCESSING="${PLAYBACK_AUDIT_TRIGGER_WATCHDOG_ON_PROCESSING:-1}"
@@ -71,6 +75,9 @@ write_summary() {
   cat > "$SUMMARY_FILE" <<EOF
 PLAYBACK_AUDIT_TS=$(date -Iseconds)
 PLAYBACK_AUDIT_STATUS=$status
+PLAYBACK_AUDIT_SCOPE=$PLAYBACK_AUDIT_SCOPE
+PLAYBACK_AUDIT_SINCE_FILE=$PLAYBACK_AUDIT_SINCE_FILE
+PLAYBACK_AUDIT_FIRST_RUN_HOURS=$PLAYBACK_AUDIT_FIRST_RUN_HOURS
 PLAYBACK_AUDIT_TOTAL=$total
 PLAYBACK_AUDIT_PLAYABLE=$playable
 PLAYBACK_AUDIT_PROCESSING=$processing
@@ -162,6 +169,14 @@ if [ "$PLAYBACK_AUDIT_APPEND_TS" = "1" ]; then
 fi
 if [ "$PLAYBACK_AUDIT_DEEP_FFPROBE" = "1" ]; then
   AUDIT_ARGS+=(--deep-ffprobe)
+fi
+if [ "$PLAYBACK_AUDIT_FFPROBE_TIMEOUT_IS_ERROR" = "1" ]; then
+  AUDIT_ARGS+=(--ffprobe-classify-timeout-as-error)
+fi
+if [ "$PLAYBACK_AUDIT_SCOPE" = "new_only" ]; then
+  AUDIT_ARGS+=(--since-file "$PLAYBACK_AUDIT_SINCE_FILE" --first-run-hours "$PLAYBACK_AUDIT_FIRST_RUN_HOURS")
+else
+  AUDIT_ARGS+=(--all-videos)
 fi
 
 if ! python3 "$AUDIT_BIN" \
@@ -281,6 +296,7 @@ if [ "$broken" -le 0 ]; then
   fi
 
   alert "✅ Auditoría playback completada
+Alcance: $PLAYBACK_AUDIT_SCOPE
 Total revisados: $total
 Playables: $playable
 En procesamiento normal: $processing
@@ -292,6 +308,7 @@ fi
 
 if [ "$PLAYBACK_AUDIT_AUTOHEAL_ENABLED" != "1" ]; then
   alert "⚠️ Auditoría playback detectó videos rotos
+Alcance: $PLAYBACK_AUDIT_SCOPE
 Total revisados: $total
 Rotos detectados: $broken
 Autocorrección: desactivada por política (PLAYBACK_AUDIT_AUTOHEAL_ENABLED=$PLAYBACK_AUDIT_AUTOHEAL_ENABLED)."
@@ -376,6 +393,7 @@ if [ "$candidates" -le 0 ]; then
     [ "$broken_only_damaged" -eq 1 ] && detail_line="Detalle: placeholders de dañado (pueden ser transitorios bajo carga)."
 
     alert "⚠️ Playback con estado temporal
+Alcance: $PLAYBACK_AUDIT_SCOPE
 Total revisados: $total
 Rotos detectados: $broken
 $detail_line
@@ -384,6 +402,7 @@ Qué hacer ahora: no corras nada manual por el momento.
 Seguimiento: $watchdog_msg"
   else
     alert "⚠️ Auditoría playback: encontré rotos sin autocorrección local
+Alcance: $PLAYBACK_AUDIT_SCOPE
 Total revisados: $total
 Rotos detectados: $broken
 Clases detectadas: ${broken_classes:-desconocido}
@@ -436,6 +455,7 @@ else
 fi
 
 alert "🎬 Auditoría playback + autocorrección
+Alcance: $PLAYBACK_AUDIT_SCOPE
 Total revisados: $total
 Playables: $playable
 En procesamiento normal: $processing

@@ -204,7 +204,18 @@ build_summary_notes() {
 
   if [ "$PLAYBACK_AUDIT_RES" = "OK" ] && [ -f "$PLAYBACK_AUDIT_SUMMARY_FILE" ]; then
     load_status_env "$PLAYBACK_AUDIT_SUMMARY_FILE"
-    add_summary_note "Auditoría playback: ${PLAYBACK_AUDIT_PLAYABLE:-0}/${PLAYBACK_AUDIT_TOTAL:-0} playables; rotos detectados ${PLAYBACK_AUDIT_BROKEN:-0}; autocorregidos ${PLAYBACK_AUDIT_AUTOHEAL_CONVERTED:-0}."
+    local playback_scope_raw playback_scope
+    playback_scope_raw="${PLAYBACK_AUDIT_SCOPE:-all}"
+    if [ "$playback_scope_raw" = "new_only" ]; then
+      playback_scope="videos nuevos"
+    else
+      playback_scope="catálogo completo"
+    fi
+    if [ "${PLAYBACK_AUDIT_TOTAL:-0}" -eq 0 ] && [ "$playback_scope_raw" = "new_only" ]; then
+      add_summary_note "Auditoría playback: no hubo videos nuevos para revisar en esta corrida."
+    else
+      add_summary_note "Auditoría playback ($playback_scope): ${PLAYBACK_AUDIT_PLAYABLE:-0}/${PLAYBACK_AUDIT_TOTAL:-0} playables; en proceso ${PLAYBACK_AUDIT_PROCESSING:-0}; rotos detectados ${PLAYBACK_AUDIT_BROKEN:-0}; autocorregidos ${PLAYBACK_AUDIT_AUTOHEAL_CONVERTED:-0}."
+    fi
   fi
 
   [ -n "$SUMMARY_NOTES" ] || add_summary_note "El NAS terminó estable y las tareas principales salieron como se esperaba."

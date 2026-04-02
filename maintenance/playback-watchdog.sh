@@ -9,6 +9,7 @@ SECRETS_FILE="/etc/nas-secrets"
 HEALTH_DIR="/var/lib/nas-health"
 LOG_FILE="/var/log/playback-watchdog.log"
 LOCK_FILE="/var/lock/playback-watchdog.lock"
+SUMMARY_FILE="$HEALTH_DIR/playback-watchdog-summary.env"
 AUDIT_BIN="${PLAYBACK_AUDIT_BIN:-/usr/local/bin/audit_video_playback.py}"
 REPROCESS_BIN="${PLAYBACK_WATCHDOG_REPROCESS_BIN:-/usr/local/bin/video-reprocess-nightly.sh}"
 ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
@@ -28,6 +29,7 @@ PLAYBACK_WATCHDOG_MAX_CYCLES="${PLAYBACK_WATCHDOG_MAX_CYCLES:-4}"
 PLAYBACK_WATCHDOG_INTERVAL_SEC="${PLAYBACK_WATCHDOG_INTERVAL_SEC:-180}"
 PLAYBACK_WATCHDOG_STUCK_ROUNDS="${PLAYBACK_WATCHDOG_STUCK_ROUNDS:-2}"
 PLAYBACK_WATCHDOG_REPROCESS_TIMEOUT_MIN="${PLAYBACK_WATCHDOG_REPROCESS_TIMEOUT_MIN:-240}"
+PLAYBACK_WATCHDOG_NOTIFY="${PLAYBACK_WATCHDOG_NOTIFY:-0}"
 
 IMMICH_ADMIN_EMAIL="${IMMICH_ADMIN_EMAIL:-}"
 IMMICH_ADMIN_PASSWORD="${IMMICH_ADMIN_PASSWORD:-}"
@@ -45,17 +47,33 @@ log() {
 }
 
 alert() {
+  [ "$PLAYBACK_WATCHDOG_NOTIFY" = "1" ] || return 0
   [ -x "$ALERT_BIN" ] || return 0
   NAS_ALERT_SUPPRESS=0 "$ALERT_BIN" "$1" || true
 }
 
+write_summary() {
+  local status="${1:-SKIPPED}" total="${2:-0}" playable="${3:-0}" processing="${4:-0}" broken="${5:-0}" pending="${6:-0}"
+  cat > "$SUMMARY_FILE" <<EOF
+PLAYBACK_WATCHDOG_TS=$(date -Iseconds)
+PLAYBACK_WATCHDOG_STATUS=$status
+PLAYBACK_WATCHDOG_TOTAL=$total
+PLAYBACK_WATCHDOG_PLAYABLE=$playable
+PLAYBACK_WATCHDOG_PROCESSING=$processing
+PLAYBACK_WATCHDOG_BROKEN=$broken
+PLAYBACK_WATCHDOG_PENDING=$pending
+EOF
+}
+
 if [ "$PLAYBACK_WATCHDOG_ENABLED" != "1" ]; then
   log "SKIP: PLAYBACK_WATCHDOG_ENABLED=$PLAYBACK_WATCHDOG_ENABLED"
+  write_summary "SKIPPED" 0 0 0 0 0
   exit 0
 fi
 
 if [ ! -f "$AUDIT_BIN" ] || ! command -v python3 >/dev/null 2>&1; then
   log "ERROR: auditor no disponible: $AUDIT_BIN"
+  write_summary "FAIL" 0 0 0 0 0
   exit 1
 fi
 
@@ -66,6 +84,7 @@ elif [ -n "$IMMICH_ADMIN_EMAIL" ] && [ -n "$IMMICH_ADMIN_PASSWORD" ]; then
   AUTH_ARGS+=(--email "$IMMICH_ADMIN_EMAIL" --password "$IMMICH_ADMIN_PASSWORD")
 else
   log "SKIP: sin credenciales Immich para watchdog"
+  write_summary "SKIPPED" 0 0 0 0 0
   exit 0
 fi
 
@@ -158,6 +177,7 @@ while [ "$cycle" -le "$PLAYBACK_WATCHDOG_MAX_CYCLES" ]; do
 done
 
 if [ "$ok" -eq 1 ]; then
+  write_summary "OK" "${total:-0}" "${playable:-0}" "${processing:-0}" "${broken:-0}" 0
   alert "✅ Watchdog playback completado
 Total revisados: ${total:-0}
 Playables: ${playable:-0}
@@ -167,6 +187,7 @@ Resultado: quedó estable."
   exit 0
 fi
 
+write_summary "WARN" "${total:-0}" "${playable:-0}" "${processing:-0}" "${broken:-0}" $(( ${processing:-0} + ${broken:-0} ))
 alert "⚠️ Watchdog playback terminó con pendientes
 Total revisados: ${total:-0}
 Playables: ${playable:-0}
