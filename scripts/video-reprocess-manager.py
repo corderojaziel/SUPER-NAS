@@ -25,6 +25,7 @@ RUN_REPORT_LATEST = "run-light-latest.csv"
 LIGHT_LATEST = "light-latest.csv"
 HEAVY_LATEST = "heavy-latest.csv"
 BROKEN_LATEST = "broken-latest.csv"
+EXCLUDED_LATEST = "excluded-latest.csv"
 SUMMARY_LATEST = "summary-latest.json"
 
 
@@ -41,6 +42,10 @@ class Row:
     source_path: str
     classify: str
     reason: str
+    width: int
+    height: int
+    is_motion: bool
+    is_4k: bool
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,6 +63,18 @@ def parse_args() -> argparse.Namespace:
     common_plan.add_argument("--local-max-mb", type=float, default=220.0)
     common_plan.add_argument("--local-max-duration-sec", type=float, default=150.0)
     common_plan.add_argument("--local-max-mb-min", type=float, default=120.0)
+    common_plan.add_argument(
+        "--skip-motion-clips",
+        type=int,
+        default=int(os.environ.get("VIDEO_REPROCESS_SKIP_MOTION_CLIPS", "1")),
+        help="1=excluir clips motion photo del reproceso; 0=permitir.",
+    )
+    common_plan.add_argument(
+        "--skip-real-4k",
+        type=int,
+        default=int(os.environ.get("VIDEO_REPROCESS_SKIP_REAL_4K", "0")),
+        help="1=excluir videos 4K reales del reproceso; 0=permitir.",
+    )
 
     plan = sub.add_parser("plan", parents=[common_plan], help="Generate input CSVs.")
     plan.add_argument("--print-summary", action="store_true")
@@ -104,10 +121,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_db_query() -> list[tuple[str, str, str, str]]:
+def run_db_query() -> list[tuple[str, str, str, str, str, str, str]]:
     sql = (
         "select a.id, a.\"originalPath\", coalesce(a.duration,''), "
-        "coalesce(e.\"fileSizeInByte\",0)::text "
+        "coalesce(e.\"fileSizeInByte\",0)::text, "
+        "coalesce(a.width,0)::text, coalesce(a.height,0)::text, "
+        "case when exists ("
+        "  select 1 from asset i "
+        "  where i.\"livePhotoVideoId\"=a.id "
+        "    and i.type='IMAGE' and i.status='active' and i.\"deletedAt\" is null"
+        ") then '1' else '0' end "
         "from asset a "
         "left join asset_exif e on e.\"assetId\"=a.id "
         "where a.type='VIDEO' and a.status='active' and a.\"deletedAt\" is null;"
@@ -130,11 +153,11 @@ def run_db_query() -> list[tuple[str, str, str, str]]:
         sql,
     ]
     out = subprocess.check_output(cmd, cwd="/opt/immich-app", text=True)
-    rows: list[tuple[str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str, str, str]] = []
     for line in out.splitlines():
         parts = line.split("|")
-        if len(parts) == 4:
-            rows.append((parts[0], parts[1], parts[2], parts[3]))
+        if len(parts) == 7:
+            rows.append((parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6]))
     return rows
 
 
@@ -146,6 +169,22 @@ def parse_duration_seconds(value: str) -> float:
         return int(h) * 3600 + int(m) * 60 + float(s)
     except Exception:
         return 0.0
+
+
+def parse_int(value: str, default: int = 0) -> int:
+    try:
+        return int(value or default)
+    except Exception:
+        return default
+
+
+def is_real_4k(width: int, height: int) -> bool:
+    return (width, height) in {
+        (3840, 2160),
+        (2160, 3840),
+        (4096, 2160),
+        (2160, 4096),
+    }
 
 
 def rel_mp4_for_original(original_path: str) -> str:
@@ -244,6 +283,9 @@ def classify_row(
     original_path: str,
     duration_raw: str,
     size_raw: str,
+    width_raw: str,
+    height_raw: str,
+    motion_raw: str,
     *,
     cache_root: Path,
     upload_host_root: Path,
@@ -252,6 +294,8 @@ def classify_row(
     local_max_mb: float,
     local_max_duration_sec: float,
     local_max_mb_min: float,
+    skip_motion_clips: bool,
+    skip_real_4k: bool,
 ) -> Row | None:
     if not original_path.startswith(UPLOAD_PREFIX):
         return None
@@ -261,6 +305,10 @@ def classify_row(
         size_bytes = int(size_raw or "0")
     except Exception:
         size_bytes = 0
+    width = parse_int(width_raw, 0)
+    height = parse_int(height_raw, 0)
+    is_motion = str(motion_raw).strip() in {"1", "true", "TRUE", "yes", "YES"}
+    video_is_4k = is_real_4k(width, height)
 
     mb_per_min = 0.0
     if duration_sec > 0 and size_bytes > 0:
@@ -270,6 +318,44 @@ def classify_row(
     rel_mp4 = rel_mp4_for_original(original_path)
     cache_path = find_cache_path(rel_mp4, cache_root)
     source_path = source_host_path(original_path, upload_host_root, immich_local_root)
+
+    if skip_motion_clips and is_motion:
+        return Row(
+            asset_id=asset_id,
+            original_path=original_path,
+            duration_raw=duration_raw,
+            size_bytes=size_bytes,
+            duration_sec=duration_sec,
+            mb_per_min=mb_per_min,
+            needs_cache=False,
+            cache_path=cache_path,
+            source_path=source_path,
+            classify="excluded_motion",
+            reason="policy_skip_motion",
+            width=width,
+            height=height,
+            is_motion=is_motion,
+            is_4k=video_is_4k,
+        )
+
+    if skip_real_4k and video_is_4k:
+        return Row(
+            asset_id=asset_id,
+            original_path=original_path,
+            duration_raw=duration_raw,
+            size_bytes=size_bytes,
+            duration_sec=duration_sec,
+            mb_per_min=mb_per_min,
+            needs_cache=False,
+            cache_path=cache_path,
+            source_path=source_path,
+            classify="excluded_4k",
+            reason="policy_skip_real_4k",
+            width=width,
+            height=height,
+            is_motion=is_motion,
+            is_4k=video_is_4k,
+        )
 
     if not needs_cache:
         return Row(
@@ -284,6 +370,10 @@ def classify_row(
             source_path=source_path,
             classify="direct_ok",
             reason="light_video",
+            width=width,
+            height=height,
+            is_motion=is_motion,
+            is_4k=video_is_4k,
         )
 
     if cache_path:
@@ -299,6 +389,10 @@ def classify_row(
             source_path=source_path,
             classify="already_cached",
             reason="cache_exists",
+            width=width,
+            height=height,
+            is_motion=is_motion,
+            is_4k=video_is_4k,
         )
 
     src = Path(source_path)
@@ -315,6 +409,10 @@ def classify_row(
             source_path=source_path,
             classify="broken_source",
             reason="source_missing_or_empty",
+            width=width,
+            height=height,
+            is_motion=is_motion,
+            is_4k=video_is_4k,
         )
 
     src_mb = src.stat().st_size / (1024 * 1024)
@@ -336,6 +434,10 @@ def classify_row(
         source_path=source_path,
         classify="light_candidate" if local_candidate else "manual_heavy",
         reason="local_nightly_retry" if local_candidate else "manual_gpu_recommended",
+        width=width,
+        height=height,
+        is_motion=is_motion,
+        is_4k=video_is_4k,
     )
 
 
@@ -353,6 +455,10 @@ def write_csv(path: Path, rows: list[Row]) -> None:
                 "duration_sec",
                 "mb_per_min",
                 "needs_cache",
+                "width",
+                "height",
+                "is_motion",
+                "is_4k",
                 "class",
                 "reason",
             ]
@@ -368,6 +474,10 @@ def write_csv(path: Path, rows: list[Row]) -> None:
                     f"{r.duration_sec:.3f}",
                     f"{r.mb_per_min:.3f}",
                     "yes" if r.needs_cache else "no",
+                    r.width,
+                    r.height,
+                    "yes" if r.is_motion else "no",
+                    "yes" if r.is_4k else "no",
                     r.classify,
                     r.reason,
                 ]
@@ -394,14 +504,18 @@ def run_plan(args: argparse.Namespace) -> int:
     light_candidates: list[Row] = []
     heavy_manual: list[Row] = []
     broken_sources: list[Row] = []
+    excluded_policy: list[Row] = []
     invalid_original = 0
 
-    for asset_id, original_path, duration_raw, size_raw in rows_db:
+    for asset_id, original_path, duration_raw, size_raw, width_raw, height_raw, motion_raw in rows_db:
         row = classify_row(
             asset_id,
             original_path,
             duration_raw,
             size_raw,
+            width_raw,
+            height_raw,
+            motion_raw,
             cache_root=cache_root,
             upload_host_root=upload_host_root,
             immich_local_root=immich_local_root,
@@ -409,12 +523,16 @@ def run_plan(args: argparse.Namespace) -> int:
             local_max_mb=args.local_max_mb,
             local_max_duration_sec=args.local_max_duration_sec,
             local_max_mb_min=args.local_max_mb_min,
+            skip_motion_clips=bool(args.skip_motion_clips),
+            skip_real_4k=bool(args.skip_real_4k),
         )
         if row is None:
             invalid_original += 1
             continue
         if row.classify == "direct_ok":
             direct_ok.append(row)
+        elif row.classify in {"excluded_motion", "excluded_4k"}:
+            excluded_policy.append(row)
         elif row.classify == "already_cached":
             already_cached.append(row)
         elif row.classify == "light_candidate":
@@ -427,11 +545,15 @@ def run_plan(args: argparse.Namespace) -> int:
     light_file = out_dir / f"reprocess-light-{ts}.csv"
     heavy_file = out_dir / f"reprocess-heavy-{ts}.csv"
     broken_file = out_dir / f"reprocess-broken-{ts}.csv"
+    excluded_file = out_dir / f"reprocess-excluded-{ts}.csv"
     summary_file = out_dir / f"reprocess-summary-{ts}.json"
 
     write_csv(light_file, light_candidates)
     write_csv(heavy_file, heavy_manual)
     write_csv(broken_file, broken_sources)
+    write_csv(excluded_file, excluded_policy)
+    excluded_motion_count = sum(1 for r in excluded_policy if r.classify == "excluded_motion")
+    excluded_4k_count = sum(1 for r in excluded_policy if r.classify == "excluded_4k")
 
     summary = {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -442,6 +564,11 @@ def run_plan(args: argparse.Namespace) -> int:
         "light_candidates": len(light_candidates),
         "heavy_manual": len(heavy_manual),
         "broken_sources": len(broken_sources),
+        "excluded_policy": len(excluded_policy),
+        "excluded_motion": excluded_motion_count,
+        "excluded_4k": excluded_4k_count,
+        "skip_motion_clips": bool(args.skip_motion_clips),
+        "skip_real_4k": bool(args.skip_real_4k),
         "max_mb_min": args.max_mb_min,
         "local_max_mb": args.local_max_mb,
         "local_max_duration_sec": args.local_max_duration_sec,
@@ -450,6 +577,7 @@ def run_plan(args: argparse.Namespace) -> int:
             "light": str(light_file),
             "heavy": str(heavy_file),
             "broken": str(broken_file),
+            "excluded": str(excluded_file),
         },
     }
     summary_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -457,6 +585,7 @@ def run_plan(args: argparse.Namespace) -> int:
     write_latest_copy(light_file, LIGHT_LATEST, out_dir)
     write_latest_copy(heavy_file, HEAVY_LATEST, out_dir)
     write_latest_copy(broken_file, BROKEN_LATEST, out_dir)
+    write_latest_copy(excluded_file, EXCLUDED_LATEST, out_dir)
     write_latest_copy(summary_file, SUMMARY_LATEST, out_dir)
 
     print(f"OUTPUT_DIR={out_dir}")
@@ -467,6 +596,9 @@ def run_plan(args: argparse.Namespace) -> int:
     print(f"total_videos={summary['total_videos']}")
     print(f"direct_ok={summary['direct_ok']}")
     print(f"already_cached={summary['already_cached']}")
+    print(f"excluded_policy={summary['excluded_policy']}")
+    print(f"excluded_motion={summary['excluded_motion']}")
+    print(f"excluded_4k={summary['excluded_4k']}")
     print(f"light_candidates={summary['light_candidates']}")
     print(f"heavy_manual={summary['heavy_manual']}")
     print(f"broken_sources={summary['broken_sources']}")

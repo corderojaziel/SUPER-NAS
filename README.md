@@ -149,6 +149,7 @@ la conversión se prioriza en ventana nocturna, pero ahora también puede drenar
 Cliente → nginx → resolver playback →
   - <= 40 MB/min: original directo (con link canónico en cache)
   - > 40 MB/min: cache canónico en eMMC (/var/lib/immich/cache)
+  - exclusiones de reproceso: solo motion clips (política activa)
 ```
 
 #### 🖼️ Fotos
