@@ -73,10 +73,10 @@ except ValueError:
     VIDEO_STREAM_MAX_MB_PER_MIN = 40.0
 try:
     VIDEO_PLAYBACK_BROWSER_CACHE_SEC = int(
-        os.environ.get("VIDEO_PLAYBACK_BROWSER_CACHE_SEC", "300")
+        os.environ.get("VIDEO_PLAYBACK_BROWSER_CACHE_SEC", "3600")
     )
 except ValueError:
-    VIDEO_PLAYBACK_BROWSER_CACHE_SEC = 300
+    VIDEO_PLAYBACK_BROWSER_CACHE_SEC = 3600
 VIDEO_PROBE_BIN = os.environ.get("VIDEO_PROBE_BIN", "ffprobe")
 try:
     VIDEO_PROBE_TIMEOUT_SEC = float(os.environ.get("VIDEO_PROBE_TIMEOUT_SEC", "3"))
