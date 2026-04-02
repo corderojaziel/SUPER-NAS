@@ -486,7 +486,7 @@ if is_true "$ZRAM_USE_NAS_SERVICE" && [ -f "$SCRIPT_DIR/maintenance/zram-nas-app
 [Unit]
 Description=SUPER-NAS ZRAM bootstrap
 DefaultDependencies=no
-After=systemd-modules-load.service local-fs.target
+After=systemd-modules-load.service local-fs.target armbian-zram-config.service zramswap.service
 Before=swap.target multi-user.target
 
 [Service]
