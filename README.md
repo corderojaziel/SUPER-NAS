@@ -90,6 +90,8 @@ El sistema está dividido en **3 capas físicas con roles definidos**:
 
 # 🛡️ Disco secundario (respaldo)
 /mnt/storage-backup/
+├── failover-main/    # espejo operativo para switch automático
+└── snapshots/immich-db/  # respaldo lógico de DB (retención corta)
 ```
 
 ---
@@ -186,6 +188,12 @@ Cliente → nginx → cache eMMC (thumbnails)
 * `video-autopilot.sh`
   👉 drena cola de video sin esperar a la noche, con pausado automático por carga
 
+* `playback-audit-autoheal.sh`
+  👉 audita playback y autocorrige rotos ligeros (por defecto audita solo videos nuevos)
+
+* `playback-watchdog.sh`
+  👉 vigila estancamiento de playback y publica estado en resumen nocturno (sin spam suelto)
+
 * `video-optimize.sh`
   👉 convierte videos a formato optimizado (cache)
 
@@ -212,6 +220,10 @@ Cliente → nginx → cache eMMC (thumbnails)
 * `backup.sh`
   👉 flujo de respaldo operativo (sin snapshots/restic de fotos/videos)
   👉 mantiene espejo de failover vía `failover-sync.sh`
+
+* `failover-sync.sh`
+  👉 sincroniza espejo operativo de fotos + cache a `/mnt/storage-backup/failover-main`
+  👉 no borra fotos/videos automáticamente
 
 * `cache-clean.sh`
   👉 audita huérfanos del cache (no borra)
@@ -272,6 +284,18 @@ Cliente → nginx → cache eMMC (thumbnails)
 
 ---
 
+### 5️⃣ RAIT de discos (espejo + failover automático)
+
+* Esquema implementado: espejo operativo en disco backup + switch automático por falla grave
+* `storage-failover.sh auto` conmutará a `/mnt/storage-backup/failover-main` solo ante condición crítica real
+* `failover-sync.sh` mantiene actualizado el espejo sin borrar productivo
+* retorno a principal cuando vuelve sano (según política `AUTO_FAILBACK_ENABLED`)
+
+👉 nota técnica:
+esto es **RAIT operativo a nivel de flujo**, no RAID de bloque (`mdadm`/ZFS mirror).
+
+---
+
 ## 📊 Comportamiento bajo carga
 
 ### 👥 2 usuarios concurrentes
@@ -314,8 +338,9 @@ Cliente → nginx → cache eMMC (thumbnails)
 
 * sin transcodificación en tiempo real
 * los lotes grandes siguen siendo más eficientes en ventana nocturna
-* sin RAID
+* no usa RAID de bloque clásico (`mdadm`/ZFS)
 * limitado por RAM (4GB)
+* el espejo/failover depende de que `failover-sync` esté al día
 
 ---
 
@@ -335,182 +360,8 @@ Mantener ingestión estable y reproducción eficiente mediante:
 * ✔ arquitectura estable
 * ✔ pipeline funcional
 * ✔ validado bajo carga real
+* ✔ RAIT operativo (espejo + failover + restore de estado)
 * ⚙️ en mejora continua
-
----
-
-* 📥 Recepción masiva de multimedia (Immich)
-* 🎬 Optimización automática de video
-* 🧠 Decisiones inteligentes de procesamiento
-* 💾 Separación de originales vs optimizados
-* ⚙️ Protección ante fallos operativos
-
----
-
-## 📂 Estructura de almacenamiento
-
-```bash
-# Sistema (eMMC)
-/ (eMMC)
-├── /opt/
-├── /usr/local/bin/
-├── /var/log/
-└── ...
-
-# Disco principal
-/mnt/storage-main/
-├── photos/upload
-├── cache
-├── .state
-└── ...
-
-# Disco backup
-/mnt/storage-backup/
-├── photos
-├── cache
-└── ...
-```
-
----
-
-## 🧠 Roles por almacenamiento
-
-### ⚡ eMMC
-
-* Sistema operativo
-* Docker + Immich
-* Scripts y logs
-
-### 💾 storage-main
-
-* Datos activos
-* Cache optimizado
-
-### 🛡️ storage-backup
-
-* Respaldo
-
----
-
-## 🔁 Flujo entre discos
-
-* Entrada → `/storage-main/photos/upload`
-* Procesamiento → `/storage-main/cache`
-* Backup → `/storage-backup/`
-
----
-
-## 🎬 Pipeline de video
-
-* Filtrado por tamaño
-* Detección de duplicados
-* Conversión híbrida (GPU/CPU)
-* Validación de salida
-* Limpieza automática
-
----
-
-## ⚙️ Scripts del sistema
-
-### 🧱 Instalación
-
-* `install.sh` → instalación inicial del sistema
-* `verify.sh` → validación post-instalación
-
----
-
-### 🔁 Operación
-
-* `night-run.sh` → orquestador principal (2:00 AM)
-* `video-optimize.sh` → conversión de videos
-* `nas-alert.sh` → envío de alertas
-
----
-
-### 🛡️ Protección
-
-* `mount-guard.sh` → valida discos montados
-* `ml-temp-guard.sh` → controla carga/temperatura
-* `retry-quarantine.sh` → reintentos (WIP)
-
----
-
-### 💽 Mantenimiento
-
-* `backup.sh` → respaldo operativo sin snapshots/restic de fotos/videos
-* `cache-clean.sh` → auditoría de cache (sin borrado)
-* `cache-migrate-to-disk.sh` → migración manual de cache a HDD
-* `manual-retention.sh` → depuración manual de respaldos de soporte (DB/estado)
-* `smart-check.sh` → salud de discos
-
-👉 Regla operativa: no hay depuración automática de fotos/videos productivos.
-
-👉 Scripts de laboratorio/pruebas (`maintenance/test-*`, `maintenance/v2-regression.sh`, `maintenance/lab-ensure-stack.sh`) quedan bloqueados por defecto y requieren habilitación explícita (`NAS_TEST_MODE=1` o `NAS_LAB_MODE=1`).
-
----
-
-## ⚡ Optimizaciones implementadas
-
-* Filtrado por tamaño
-* Detección de duplicados
-* Conversión híbrida GPU/CPU
-* Reducción de resolución
-* Control de bitrate
-* Validación de archivos
-* Skip automático de errores
-* Fallback automático
-* Control de carga (secuencial)
-* Validación de mounts
-* Limpieza de temporales
-* Alertas automáticas
-
----
-
-## ☁️ Integración con Immich
-
-* Ingesta automática
-* Procesamiento concurrente
-* No interfiere agresivamente con uploads
-
----
-
-## 📡 Alertas
-
-* Telegram (`nas-alert.sh`)
-* Eventos críticos y fallos
-
----
-
-## 📊 Monitoreo
-
-* `btop`, `htop`
-* `du`, `df`, `duf`
-* `docker stats`
-
----
-
-## 🎯 Filosofía
-
-* Estabilidad > rendimiento
-* Procesamiento progresivo
-* Modularidad
-* Tolerancia a fallos
-
----
-
-## ⚠️ Limitaciones
-
-* Hardware limitado
-* Sin RAID
-* Dependencia del disco principal
-
----
-
-## 🧪 Estado
-
-* ✔ Funcional
-* ✔ Automatizado
-* ⚙️ En optimización
 
 ---
 
@@ -518,6 +369,7 @@ Mantener ingestión estable y reproducción eficiente mediante:
 
 * Control de concurrencia dinámico
 * Integración completa de reintentos
+* Métricas históricas de backlog IML/video con tendencia
 * Mejor coordinación con Immich
 
 ---

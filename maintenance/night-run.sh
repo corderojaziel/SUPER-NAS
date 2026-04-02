@@ -20,18 +20,13 @@ NAS_ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
 EMMC_DF_TARGET="${EMMC_DF_TARGET:-/var/lib/immich}"
 DOCKER_BIN="${DOCKER_BIN:-/usr/bin/docker}"
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/immich-app}"
-ML_POLICY_BIN="${ML_POLICY_BIN:-/usr/local/bin/immich-ml-window.sh}"
 IML_DRAIN_BIN="${IML_DRAIN_BIN:-/usr/local/bin/iml-backlog-drain.py}"
+IML_AUTOPILOT_BIN="${IML_AUTOPILOT_BIN:-/usr/local/bin/iml-autopilot.sh}"
 IML_API_URL="${IML_API_URL:-http://127.0.0.1:2283/api}"
 IML_SECRETS_FILE="${IML_SECRETS_FILE:-/etc/nas-secrets}"
 IML_TARGETS="${IML_TARGETS:-duplicateDetection,ocr,sidecar,metadataExtraction,library,smartSearch,faceDetection,facialRecognition}"
-ML_START_HOUR="${ML_START_HOUR:-2}"
-ML_STOP_HOUR="${ML_STOP_HOUR:-6}"
-ML_WINDOW_HOUR="${ML_WINDOW_HOUR:-${NAS_CURRENT_HOUR:-$(date +%H)}}"
-NAS_CURRENT_HOUR="${NAS_CURRENT_HOUR:-$ML_WINDOW_HOUR}"
 VIDEO_OPTIMIZE_MAX_MIN="${VIDEO_OPTIMIZE_MAX_MIN:-180}"
 PLAYBACK_AUDIT_MAX_MIN="${PLAYBACK_AUDIT_MAX_MIN:-45}"
-export NAS_CURRENT_HOUR
 mkdir -p "$HEALTH_DIR" "$(dirname "$LOCK")"
 
 MOUNT_ISSUE_SEEN=0
@@ -176,13 +171,15 @@ build_summary_notes() {
   [ "$TEMP_CLEAN_RES" = "FAIL" ] && add_summary_note "No pude completar la limpieza semanal de temporales."
   if [ "$ML_RES" = "FAIL" ]; then
     if [ "${ML_PENDING_COUNT:-0}" -gt 0 ]; then
-      add_summary_note "La IA nocturna no pudo arrancar bien y quedaron ${ML_PENDING_COUNT} pendientes de IML. El autopiloto diurno seguirá procesando durante el día."
+      add_summary_note "La IA por disponibilidad (24/7) no pudo avanzar bien en este ciclo y quedaron ${ML_PENDING_COUNT} pendientes de IML. Se reintentará automáticamente."
     else
-      add_summary_note "La IA nocturna no respondió como esperaba, pero no quedaron pendientes de IML."
+      add_summary_note "La IA por disponibilidad reportó un error transitorio, pero no quedaron pendientes de IML."
     fi
-    [ -n "${ML_FAIL_REASON:-}" ] && add_summary_note "Detalle IA nocturna: ${ML_FAIL_REASON}."
+    [ -n "${ML_FAIL_REASON:-}" ] && add_summary_note "Detalle IA por disponibilidad: ${ML_FAIL_REASON}."
   elif [ "$ML_RES" = "SKIPPED" ] && [ "${ML_PENDING_COUNT:-0}" -gt 0 ]; then
-    add_summary_note "La IA nocturna quedó fuera de ventana o en pausa por seguridad; quedan ${ML_PENDING_COUNT} pendientes y se retomarán en el piloto diurno."
+    add_summary_note "La IA por disponibilidad quedó temporalmente en pausa por seguridad de carga; quedan ${ML_PENDING_COUNT} pendientes y se retomarán automáticamente."
+  elif [ "$ML_RES" = "SKIPPED" ] && [ "${ML_PENDING_COUNT:-0}" -eq 0 ]; then
+    add_summary_note "IA por disponibilidad: sin pendientes al cierre de esta corrida."
   fi
   [ "$DBDUMP_RES" = "FAIL" ] && add_summary_note "No pude guardar la copia lógica de la base de datos."
 
@@ -333,78 +330,55 @@ should_skip_heavy() {
   return 1
 }
 
-ml_within_window() {
-  local hour start stop
-  hour=$((10#${ML_WINDOW_HOUR}))
-  start=$((10#${ML_START_HOUR}))
-  stop=$((10#${ML_STOP_HOUR}))
-  [ "$hour" -ge "$start" ] && [ "$hour" -lt "$stop" ]
-}
-
 start_night_ml() {
-  local status rc pending_before pending_after
+  local rc pending_before pending_after
 
   ML_FAIL_REASON=""
 
   pending_before="$(iml_pending_count)"
   ML_PENDING_COUNT="$pending_before"
   if [ "$pending_before" -le 0 ]; then
-    log "SKIP: IA nocturna sin pendientes de IML"
+    log "SKIP: IA 24/7 por disponibilidad sin pendientes de IML"
     ML_FAIL_REASON="sin pendientes"
     return 2
   fi
 
-  if ! ml_within_window; then
-    log "SKIP: ML fuera de ventana nocturna (${ML_WINDOW_HOUR}:00)"
-    ML_FAIL_REASON="fuera de ventana (${ML_WINDOW_HOUR}:00)"
-    return 2
-  fi
-
   if should_skip_heavy; then
-    log "SKIP: ML pausado por estado crítico del NAS"
+    log "SKIP: IML pausado por estado crítico del NAS"
     ML_FAIL_REASON="pausa por estado crítico del NAS"
     return 2
   fi
 
-  if [ ! -x "$ML_POLICY_BIN" ]; then
-    log "FAIL: Falta $ML_POLICY_BIN"
-    ML_FAIL_REASON="falta el script de política ML"
+  if [ ! -x "$IML_AUTOPILOT_BIN" ]; then
+    log "FAIL: Falta $IML_AUTOPILOT_BIN"
+    ML_FAIL_REASON="falta script de autopiloto IML"
     return 1
   fi
 
-  if timeout 10m "$ML_POLICY_BIN" night-on >>"$LOG" 2>&1; then
-    for _ in $(seq 1 20); do
-      status=$("$DOCKER_BIN" inspect -f '{{.State.Status}}' immich_machine_learning 2>/dev/null || echo "missing")
-      [ "$status" = "running" ] && {
-        pending_after="$(iml_pending_count)"
-        ML_PENDING_COUNT="$pending_after"
-        log "OK: Immich ML y la IA visual quedaron activos para la ventana nocturna"
-        return 0
-      }
-      sleep 3
-    done
+  if timeout 15m "$IML_AUTOPILOT_BIN" >>"$LOG" 2>&1; then
     pending_after="$(iml_pending_count)"
     ML_PENDING_COUNT="$pending_after"
-    if [ "$pending_after" -eq 0 ]; then
-      log "SKIP: night-on no confirmó running, pero no hay pendientes de IML"
-      ML_FAIL_REASON="sin pendientes"
-      return 2
+    if [ "$pending_after" -lt "$pending_before" ]; then
+      log "OK: IML 24/7 avanzó en esta corrida ($pending_before -> $pending_after)"
+    else
+      log "OK: IML 24/7 ejecutó ciclo sin reducción visible ($pending_before -> $pending_after)"
     fi
-    ML_FAIL_REASON="ML no quedó en estado running tras aplicar night-on"
+    return 0
   else
     rc=$?
-    ML_FAIL_REASON="night-on devolvió rc=$rc"
+    ML_FAIL_REASON="iml-autopilot devolvió rc=$rc"
     pending_after="$(iml_pending_count)"
     ML_PENDING_COUNT="$pending_after"
     if [ "$pending_after" -eq 0 ]; then
-      log "SKIP: night-on no confirmó arranque, pero no hay pendientes de IML"
+      log "SKIP: iml-autopilot devolvió rc=$rc, pero no quedaron pendientes de IML"
+      ML_FAIL_REASON="sin pendientes"
       return 2
     fi
   fi
 
   pending_after="$(iml_pending_count)"
   ML_PENDING_COUNT="$pending_after"
-  log "FAIL: No se pudo encender Immich ML"
+  log "FAIL: IML 24/7 no pudo avanzar en este ciclo"
   return 1
 }
 
@@ -565,7 +539,7 @@ alert "🌙 Resumen de la noche
 📦 Revisión del cache: $(pretty_status "${CACHE_MONITOR_RES}")
 🧹 Auditoría del cache: $(pretty_status "${CACHE_CLEAN_RES}")
 🧽 Temporales semanales: $(pretty_status "${TEMP_CLEAN_RES}")
-🧠 IA nocturna: $(pretty_status "${ML_RES}") (pendientes: ${ML_PENDING_COUNT})
+🧠 IA 24/7 por disponibilidad: $(pretty_status "${ML_RES}") (pendientes: ${ML_PENDING_COUNT})
 🔬 Revisión profunda de discos: $(pretty_status "${SMART_RES}")
 🗄️ Copia de la base de datos: $(pretty_status "${DBDUMP_RES}")
 📝 Lo más importante:

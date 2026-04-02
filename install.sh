@@ -1628,15 +1628,10 @@ log_step "Configurando crontab"
 CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 
 # ── Secuencia nocturna ────────────────────────────────────────────────────
-# Cola: video → SMART semanal → backup → cache → IA nocturna → DB backup
+# Cola: video → SMART semanal → backup → cache → IML 24/7 (estado) → DB backup
 # Razón del horario 2 AM: CPU frío (35°C), sin usuarios activos,
 # 4 horas de margen antes de las 6 AM para completar todo.
 0 2 * * * /usr/local/bin/night-run.sh
-
-# ── Política diurna de IA visual ──────────────────────────────────────────
-# Mantiene Smart Search disponible, pero apaga cargas pesadas (caras/OCR/
-# duplicados) para priorizar UX durante el día.
-0 6 * * * /usr/local/bin/immich-ml-window.sh day-off
 
 # ── Guardia térmica reactiva ──────────────────────────────────────────────
 # Independiente de night-run.sh: detecta sobrecalentamiento en cualquier
@@ -1695,7 +1690,7 @@ if crontab -l 2>/dev/null | grep -q "night-run"; then
     log_warn "Crontab ya tiene night-run — omitiendo (revisar manualmente con: crontab -e)"
 else
     { crontab -l 2>/dev/null || true; echo "$CRON_CONTENT"; } | crontab -
-    log_ok "Crontab configurado (12 entradas)"
+    log_ok "Crontab configurado (bloque NAS instalado)"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1797,7 +1792,7 @@ echo -e "  Immich (Tailscale):  ${BOLD}http://${TAILSCALE_IP}:2283${NC}"
 echo ""
 echo -e "  Perfil IA inicial:   ${BOLD}Smart Search sí · OCR/caritas/duplicados no${NC}"
 echo -e "  Mapa y lugares:      ${BOLD}activos${NC}"
-echo -e "  IA nocturna pesada:  ${BOLD}apagada al instalar · 2 AM a 6 AM si el NAS está sano${NC}"
+echo -e "  IA 24/7 disponible:  ${BOLD}activa por carga (CPU/RAM/temp/requests)${NC}"
 echo ""
 echo -e "  Logs de instalación: ${BOLD}$LOG${NC}"
 echo -e "  Log nocturno:        ${BOLD}/var/log/night-run.log${NC}"
