@@ -40,9 +40,11 @@ VIDEO_STREAM_LIGHT_REENCODE_MAX_MB_PER_MIN="${VIDEO_STREAM_LIGHT_REENCODE_MAX_MB
 VIDEO_OPTIMIZE_AUDIO_BITRATE_K="${VIDEO_OPTIMIZE_AUDIO_BITRATE_K:-128}"
 VIDEO_OPTIMIZE_MAX_LONG_EDGE="${VIDEO_OPTIMIZE_MAX_LONG_EDGE:-1920}"
 VIDEO_OPTIMIZE_VIDEO_LEVEL="${VIDEO_OPTIMIZE_VIDEO_LEVEL:-4.1}"
+VIDEO_OPTIMIZE_MAX_FPS="${VIDEO_OPTIMIZE_MAX_FPS:-30}"
 VIDEO_DIRECT_COMPAT_VIDEO_CODEC="${VIDEO_DIRECT_COMPAT_VIDEO_CODEC:-h264}"
 VIDEO_DIRECT_COMPAT_PIX_FMT="${VIDEO_DIRECT_COMPAT_PIX_FMT:-yuv420p}"
 VIDEO_DIRECT_COMPAT_LEVEL="${VIDEO_DIRECT_COMPAT_LEVEL:-41}"
+VIDEO_DIRECT_COMPAT_MAX_FPS="${VIDEO_DIRECT_COMPAT_MAX_FPS:-60}"
 
 mkdir -p "$OUTPUT" "$STATE_DIR" "$HEALTH_DIR" "$(dirname "$LOCK_FILE")"
 touch "$ATTEMPTS_DB" "$FAIL_REPORT" "$MANUAL_REVIEW"
@@ -229,12 +231,12 @@ is_direct_play_candidate() {
 
 is_direct_compat_candidate() {
     local src="$1"
-    local meta codec pix level width height codec_l pix_l long_edge
+    local meta codec pix level width height fps codec_l pix_l long_edge
     meta=$(ffprobe -v error -select_streams v:0 \
-        -show_entries stream=codec_name,pix_fmt,level,width,height \
+        -show_entries stream=codec_name,pix_fmt,level,width,height,avg_frame_rate \
         -of default=nokey=1:noprint_wrappers=1 "$src" 2>/dev/null | tr '\n' '|' | sed 's/|$//')
     [ -n "$meta" ] || return 1
-    IFS='|' read -r codec pix level width height <<EOF
+    IFS='|' read -r codec pix level width height fps <<EOF
 $meta
 EOF
     codec_l=$(printf '%s' "$codec" | tr '[:upper:]' '[:lower:]')
@@ -257,6 +259,19 @@ EOF
         else
             return 1
         fi
+    fi
+    if [ "${VIDEO_DIRECT_COMPAT_MAX_FPS:-0}" -gt 0 ] && [ -n "$fps" ] && [ "$fps" != "N/A" ]; then
+        awk -v rate="$fps" -v max="${VIDEO_DIRECT_COMPAT_MAX_FPS}" '
+            BEGIN {
+                if (rate ~ /^[0-9]+\/[0-9]+$/) {
+                    split(rate, a, "/")
+                    if (a[2] == 0) exit 1
+                    v = a[1] / a[2]
+                } else {
+                    v = rate + 0
+                }
+                exit(v <= max ? 0 : 1)
+            }' || return 1
     fi
     return 0
 }
@@ -372,6 +387,9 @@ while IFS= read -r -d '' src; do
       scale_filter="scale=trunc(iw/2)*2:trunc(ih/2)*2"
     fi
     video_preset="superfast"
+  fi
+  if [ "${VIDEO_OPTIMIZE_MAX_FPS:-0}" -gt 0 ]; then
+    scale_filter="${scale_filter},fps=${VIDEO_OPTIMIZE_MAX_FPS}"
   fi
 
   if timeout "$PER_FILE_TIMEOUT_SEC" nice -n 15 ffmpeg -y -i "$src" \

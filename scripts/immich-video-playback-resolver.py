@@ -88,11 +88,40 @@ try:
     )
 except ValueError:
     VIDEO_CORRUPT_CACHE_TTL_SEC = 300.0
+VIDEO_DIRECT_COMPAT_VIDEO_CODEC = os.environ.get(
+    "VIDEO_DIRECT_COMPAT_VIDEO_CODEC", "h264"
+).strip().lower()
+VIDEO_DIRECT_COMPAT_PIX_FMT = os.environ.get(
+    "VIDEO_DIRECT_COMPAT_PIX_FMT", "yuv420p"
+).strip().lower()
+try:
+    VIDEO_DIRECT_COMPAT_LEVEL = int(os.environ.get("VIDEO_DIRECT_COMPAT_LEVEL", "41"))
+except ValueError:
+    VIDEO_DIRECT_COMPAT_LEVEL = 41
+try:
+    VIDEO_DIRECT_COMPAT_MAX_LONG_EDGE = int(
+        os.environ.get("VIDEO_DIRECT_COMPAT_MAX_LONG_EDGE", "1920")
+    )
+except ValueError:
+    VIDEO_DIRECT_COMPAT_MAX_LONG_EDGE = 1920
+try:
+    VIDEO_DIRECT_COMPAT_MAX_FPS = float(
+        os.environ.get("VIDEO_DIRECT_COMPAT_MAX_FPS", "60")
+    )
+except ValueError:
+    VIDEO_DIRECT_COMPAT_MAX_FPS = 60.0
+try:
+    VIDEO_DIRECT_COMPAT_CACHE_TTL_SEC = float(
+        os.environ.get("VIDEO_DIRECT_COMPAT_CACHE_TTL_SEC", "300")
+    )
+except ValueError:
+    VIDEO_DIRECT_COMPAT_CACHE_TTL_SEC = 300.0
 DAMAGED_LIST_PATH = os.path.abspath(
     os.environ.get("DAMAGED_VIDEO_LIST_PATH", "/var/lib/nas-health/damaged-videos.txt")
 )
 ASSET_PLAYBACK_RE = re.compile(r"^/api/assets/([0-9a-f-]+)/video/playback$")
 CORRUPT_CACHE: dict[str, Tuple[float, bool]] = {}
+DIRECT_COMPAT_CACHE: dict[str, Tuple[float, bool]] = {}
 
 
 def rel_mp4_for_original(original_path: str) -> str:
@@ -328,6 +357,92 @@ def is_probably_corrupt(path: str) -> bool:
     return corrupt
 
 
+def parse_frame_rate(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        text = str(value).strip()
+        if "/" in text:
+            num, den = text.split("/", 1)
+            den_v = float(den)
+            if den_v == 0:
+                return 0.0
+            return float(num) / den_v
+        return float(text)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def is_direct_compatible(path: str) -> bool:
+    now = time.time()
+    cached = DIRECT_COMPAT_CACHE.get(path)
+    if cached and (now - cached[0]) < VIDEO_DIRECT_COMPAT_CACHE_TTL_SEC:
+        return cached[1]
+
+    cmd = [
+        VIDEO_PROBE_BIN,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=codec_name,pix_fmt,level,width,height,avg_frame_rate,r_frame_rate",
+        "-of",
+        "json",
+        path,
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=max(VIDEO_PROBE_TIMEOUT_SEC, 0.5),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        DIRECT_COMPAT_CACHE[path] = (now, False)
+        return False
+
+    if result.returncode != 0:
+        DIRECT_COMPAT_CACHE[path] = (now, False)
+        return False
+
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        DIRECT_COMPAT_CACHE[path] = (now, False)
+        return False
+
+    stream = ((payload.get("streams") or [{}])[0]) if isinstance(payload, dict) else {}
+    codec = str(stream.get("codec_name") or "").lower()
+    pix_fmt = str(stream.get("pix_fmt") or "").lower()
+    level_raw = stream.get("level")
+    width = int(stream.get("width") or 0)
+    height = int(stream.get("height") or 0)
+    fps = parse_frame_rate(stream.get("avg_frame_rate")) or parse_frame_rate(
+        stream.get("r_frame_rate")
+    )
+
+    compatible = True
+    if VIDEO_DIRECT_COMPAT_VIDEO_CODEC and codec != VIDEO_DIRECT_COMPAT_VIDEO_CODEC:
+        compatible = False
+    if VIDEO_DIRECT_COMPAT_PIX_FMT and pix_fmt != VIDEO_DIRECT_COMPAT_PIX_FMT:
+        compatible = False
+    try:
+        level = int(level_raw or 0)
+    except (TypeError, ValueError):
+        level = 0
+    if VIDEO_DIRECT_COMPAT_LEVEL > 0 and level > VIDEO_DIRECT_COMPAT_LEVEL:
+        compatible = False
+    if VIDEO_DIRECT_COMPAT_MAX_LONG_EDGE > 0 and max(width, height) > VIDEO_DIRECT_COMPAT_MAX_LONG_EDGE:
+        compatible = False
+    if VIDEO_DIRECT_COMPAT_MAX_FPS > 0 and fps > VIDEO_DIRECT_COMPAT_MAX_FPS:
+        compatible = False
+
+    DIRECT_COMPAT_CACHE[path] = (now, compatible)
+    return compatible
+
+
 def is_marked_damaged(path: str) -> bool:
     if not os.path.isfile(DAMAGED_LIST_PATH):
         return False
@@ -445,6 +560,8 @@ class PlaybackResolverHandler(BaseHTTPRequestHandler):
         if not os.path.isfile(original_host_path):
             return False
         if is_probably_corrupt(original_host_path):
+            return False
+        if not is_direct_compatible(original_host_path):
             return False
 
         size_bytes = get_asset_size_bytes(asset)

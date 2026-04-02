@@ -7,6 +7,7 @@ param(
     [double]$TargetMbPerMin = 38,
     [int]$AudioKbps = 128,
     [string]$NvencPreset = "p4",
+    [double]$MaxFps = 30,
     [int]$Limit = 0,
     [switch]$PlanOnly,
     [switch]$NoPlan,
@@ -97,7 +98,14 @@ function Invoke-External {
             }
         }
         else {
-            $exitCode = if ($null -ne $proc) { $proc.ExitCode } else { 9002 }
+            if ($null -ne $proc) {
+                try { $proc.Refresh() } catch {}
+                $exitCode = $proc.ExitCode
+                if ($null -eq $exitCode) { $exitCode = 0 }
+            }
+            else {
+                $exitCode = 9002
+            }
             $result = [PSCustomObject]@{
                 ExitCode = $exitCode
                 StdOut   = $stdout
@@ -159,9 +167,12 @@ if (-not $NoPlan) {
 
 Log "Descargando insumo heavy: $RemoteHeavyCsv"
 $rCsv = Invoke-External -FilePath "scp" -ArgumentList (@("-q") + $sshOpts + @("${RemoteUser}@${RemoteHost}:$RemoteHeavyCsv", $csvLocal)) -TimeoutSec 1800 -Label "scp-heavy-csv"
-if ($rCsv.ExitCode -ne 0 -or -not (Test-Path $csvLocal)) {
+if (-not (Test-Path $csvLocal)) {
     Log "No pude descargar CSV heavy: $(Safe-Text $rCsv.StdErr)" "Red"
     throw "CSV heavy no disponible"
+}
+if ($rCsv.ExitCode -ne 0) {
+    Log "scp-heavy-csv devolvió exit=$($rCsv.ExitCode), pero el archivo local quedó disponible. Continúo." "DarkYellow"
 }
 
 $rows = Import-Csv -Path $csvLocal
@@ -178,9 +189,13 @@ $hasNvenc = (-not $NoNvenc) -and ($encoders -match "h264_nvenc")
 $targetTotalKbps = [math]::Round(($TargetMbPerMin * 8000) / 60)
 $targetVideoKbps = [math]::Max(700, ($targetTotalKbps - $AudioKbps))
 $scaleFilter = "scale=1920:1920:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+if ($MaxFps -gt 0) {
+    $scaleFilter = "$scaleFilter,fps=$MaxFps"
+}
 
 Log "Encoder: $(if($hasNvenc){'h264_nvenc'}else{'libx264'})"
 Log "Target: $TargetMbPerMin MB/min (~${targetVideoKbps}k video + ${AudioKbps}k audio)"
+Log "FPS max: $(if($MaxFps -gt 0){$MaxFps}else{'source'})"
 Log "Modo force-reencode: $(if($ForceReencode){'ON'}else{'OFF'})"
 Log "NVENC preset: $NvencPreset"
 
@@ -235,7 +250,7 @@ foreach ($row in $rows) {
             "-c:v", "h264_nvenc", "-preset", $NvencPreset, "-rc", "vbr",
             "-b:v", "${targetVideoKbps}k", "-maxrate", "${targetVideoKbps}k", "-bufsize", "$($targetVideoKbps * 2)k",
             "-vf", $scaleFilter,
-            "-profile:v", "high", "-level:v", "4.1", "-pix_fmt", "yuv420p",
+            "-profile:v", "high", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "${AudioKbps}k", "-movflags", "+faststart", $localOut
         )
     }

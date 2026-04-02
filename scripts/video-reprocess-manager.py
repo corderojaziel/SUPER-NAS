@@ -86,6 +86,12 @@ def parse_args() -> argparse.Namespace:
         help="Nivel H.264 de salida para clientes móviles.",
     )
     run.add_argument(
+        "--max-fps",
+        type=float,
+        default=float(os.environ.get("VIDEO_OPTIMIZE_MAX_FPS", "30")),
+        help="FPS máximo del cache de salida para compatibilidad móvil (0 desactiva).",
+    )
+    run.add_argument(
         "--allow-remux-copy",
         type=int,
         default=-1,
@@ -538,6 +544,7 @@ def convert_file(
     allow_remux_copy: bool,
     max_long_edge: int,
     video_level: str,
+    max_fps: float,
 ) -> tuple[bool, str]:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.name + ".tmp.mp4")
@@ -570,6 +577,8 @@ def convert_file(
             f"scale={max_long_edge}:{max_long_edge}:force_original_aspect_ratio=decrease"
         )
     vf_filters.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
+    if max_fps > 0:
+        vf_filters.append(f"fps={max_fps:.3f}")
 
     transcode = [
         ffmpeg_bin,
@@ -733,6 +742,7 @@ def run_reprocess(args: argparse.Namespace) -> int:
                 allow_remux_copy=allow_remux_copy,
                 max_long_edge=args.max_long_edge,
                 video_level=args.video_level,
+                max_fps=args.max_fps,
             )
             if ok:
                 converted += 1
