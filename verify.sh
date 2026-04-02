@@ -263,10 +263,26 @@ if [ -f /etc/default/nas-video-policy ] && grep -q '^VIDEO_REPROCESS_MANUAL_QUEU
 else
   warn "Politica no define VIDEO_REPROCESS_MANUAL_QUEUE"
 fi
-if [ -f /etc/default/nas-video-policy ] && grep -q '^CACHE_VIDEOS_CANONICAL_ONLY=1' /etc/default/nas-video-policy; then
-  ok "Política canónica estricta habilitada (CACHE_VIDEOS_CANONICAL_ONLY=1)"
+if [ -f /etc/default/nas-video-policy ] && grep -q '^CACHE_VIDEOS_CANONICAL_MODE=' /etc/default/nas-video-policy; then
+  mode="$(grep '^CACHE_VIDEOS_CANONICAL_MODE=' /etc/default/nas-video-policy | tail -n1 | cut -d= -f2 | tr -d '\"' | tr 'A-Z' 'a-z')"
+  case "$mode" in
+    prefer)
+      ok "Política canónica en modo prefer (canónico primero + fallback legacy)"
+      ;;
+    strict)
+      ok "Política canónica en modo strict (sin fallback legacy)"
+      ;;
+    full)
+      warn "Política canónica en modo full (legacy completo habilitado)"
+      ;;
+    *)
+      warn "CACHE_VIDEOS_CANONICAL_MODE tiene valor no reconocido: '$mode'"
+      ;;
+  esac
+elif [ -f /etc/default/nas-video-policy ] && grep -q '^CACHE_VIDEOS_CANONICAL_ONLY=1' /etc/default/nas-video-policy; then
+  ok "Compatibilidad legacy detectada (CACHE_VIDEOS_CANONICAL_ONLY=1)"
 else
-  warn "Política canónica estricta no está explícita (falta CACHE_VIDEOS_CANONICAL_ONLY=1)"
+  warn "Política canónica no está explícita (falta CACHE_VIDEOS_CANONICAL_MODE)"
 fi
 if systemctl is-active --quiet immich-video-playback-resolver 2>/dev/null; then
   ok "Resolutor de playback web activo"
@@ -281,7 +297,7 @@ fi
 if systemctl cat immich-video-playback-resolver 2>/dev/null | grep -q 'LEGACY_CACHE_INTERNAL_PREFIX'; then
   fail "Resolutor aún incluye prefijo legacy interno; fase canónica estricta requiere removerlo"
 else
-  ok "Resolutor en modo canónico estricto (sin prefijo legacy)"
+  ok "Resolutor sin prefijo legacy interno (compatible con modo canónico prefer/strict)"
 fi
 
 section "FAILOVER"

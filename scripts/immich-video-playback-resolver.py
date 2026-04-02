@@ -13,12 +13,15 @@ Authorization del request original contra la API local de Immich.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Iterable, Tuple
 from urllib.error import HTTPError, URLError
@@ -142,12 +145,52 @@ try:
     )
 except ValueError:
     VIDEO_DIRECT_COMPAT_CACHE_TTL_SEC = 300.0
+try:
+    ASSET_CACHE_TTL_SEC = float(os.environ.get("ASSET_CACHE_TTL_SEC", "90"))
+except ValueError:
+    ASSET_CACHE_TTL_SEC = 90.0
+try:
+    ASSET_CACHE_MAX = int(os.environ.get("ASSET_CACHE_MAX", "2048"))
+except ValueError:
+    ASSET_CACHE_MAX = 2048
+
+CACHE_VIDEOS_CANONICAL_MODE = (
+    os.environ.get("CACHE_VIDEOS_CANONICAL_MODE", "").strip().lower()
+)
+if not CACHE_VIDEOS_CANONICAL_MODE:
+    legacy_flag = os.environ.get("CACHE_VIDEOS_CANONICAL_ONLY", "").strip().lower()
+    if legacy_flag in ("1", "true", "yes", "on"):
+        CACHE_VIDEOS_CANONICAL_MODE = "prefer"
+    else:
+        CACHE_VIDEOS_CANONICAL_MODE = "full"
+if CACHE_VIDEOS_CANONICAL_MODE not in ("strict", "prefer", "full"):
+    CACHE_VIDEOS_CANONICAL_MODE = "prefer"
+
+try:
+    CACHE_VIDEOS_LEGACY_FALLBACK_LOG_EVERY = int(
+        os.environ.get("CACHE_VIDEOS_LEGACY_FALLBACK_LOG_EVERY", "100")
+    )
+except ValueError:
+    CACHE_VIDEOS_LEGACY_FALLBACK_LOG_EVERY = 100
+
 DAMAGED_LIST_PATH = os.path.abspath(
     os.environ.get("DAMAGED_VIDEO_LIST_PATH", "/var/lib/nas-health/damaged-videos.txt")
 )
 ASSET_PLAYBACK_RE = re.compile(r"^/api/assets/([0-9a-f-]+)/video/playback$")
 CORRUPT_CACHE: dict[str, Tuple[float, bool]] = {}
 DIRECT_COMPAT_CACHE: dict[str, Tuple[float, bool]] = {}
+ASSET_CACHE: "OrderedDict[str, Tuple[float, int, dict]]" = OrderedDict()
+ASSET_CACHE_LOCK = threading.Lock()
+LEGACY_FALLBACK_COUNT = 0
+LEGACY_FALLBACK_BY_VARIANT: dict[str, int] = {}
+LEGACY_FALLBACK_LOCK = threading.Lock()
+CANONICAL_VARIANTS = ("rel", "flat")
+LEGACY_VARIANTS = (
+    "underscored",
+    "legacy_asset_prefix",
+    "legacy_pair_uuid",
+    "stripped",
+)
 
 
 def rel_mp4_for_original(original_path: str) -> str:
@@ -222,32 +265,60 @@ def iter_rel_variants(rel_mp4: str, variant_order: Iterable[str]) -> Iterable[st
             yield rel_variant
 
 
-def safe_cache_path(original_path: str) -> Tuple[str, str, str]:
-    rel_mp4 = rel_mp4_for_original(original_path)
+def track_legacy_fallback(variant: str) -> None:
+    global LEGACY_FALLBACK_COUNT
+    with LEGACY_FALLBACK_LOCK:
+        LEGACY_FALLBACK_COUNT += 1
+        LEGACY_FALLBACK_BY_VARIANT[variant] = LEGACY_FALLBACK_BY_VARIANT.get(variant, 0) + 1
+        count = LEGACY_FALLBACK_COUNT
+        variant_count = LEGACY_FALLBACK_BY_VARIANT[variant]
+    if (
+        CACHE_VIDEOS_LEGACY_FALLBACK_LOG_EVERY > 0
+        and count % CACHE_VIDEOS_LEGACY_FALLBACK_LOG_EVERY == 0
+    ):
+        print(
+            f"[resolver] fallback legacy acumulado={count} "
+            f"ultima_variante={variant} hits_variante={variant_count}",
+            flush=True,
+        )
 
-    search_locations = [
-        (
-            CACHE_INTERNAL_PREFIX,
-            CACHE_ROOT,
-            (
-                "rel",
-                "underscored",
-                "flat",
-                "legacy_asset_prefix",
-                "legacy_pair_uuid",
-                "stripped",
-            ),
-        ),
-    ]
+
+def cache_variant_order(mode: str) -> Tuple[str, ...]:
+    if mode == "strict":
+        return CANONICAL_VARIANTS
+    if mode == "prefer":
+        return CANONICAL_VARIANTS + LEGACY_VARIANTS
+    return (
+        "rel",
+        "underscored",
+        "flat",
+        "legacy_asset_prefix",
+        "legacy_pair_uuid",
+        "stripped",
+    )
+
+
+def safe_cache_path(original_path: str) -> Tuple[str, str, str, str]:
+    rel_mp4 = rel_mp4_for_original(original_path)
+    variant_order = cache_variant_order(CACHE_VIDEOS_CANONICAL_MODE)
+    search_locations = [(CACHE_INTERNAL_PREFIX, CACHE_ROOT, variant_order)]
 
     for internal_prefix, root, variant_order in search_locations:
         for rel_variant in iter_rel_variants(rel_mp4, variant_order):
             resolved = resolve_existing_variant(root, rel_variant)
             if resolved:
                 found_rel_variant, candidate = resolved
-                return internal_prefix, found_rel_variant, candidate
+                variant_kind = (
+                    "canonical" if rel_variant in CANONICAL_VARIANTS else "legacy"
+                )
+                if (
+                    CACHE_VIDEOS_CANONICAL_MODE == "prefer"
+                    and variant_kind == "legacy"
+                ):
+                    track_legacy_fallback(rel_variant)
+                return internal_prefix, found_rel_variant, candidate, variant_kind
 
-    return CACHE_INTERNAL_PREFIX, rel_mp4, safe_join(CACHE_ROOT, rel_mp4)
+    return CACHE_INTERNAL_PREFIX, rel_mp4, safe_join(CACHE_ROOT, rel_mp4), "miss"
 
 
 def safe_original_host_path(original_path: str) -> str:
@@ -500,7 +571,7 @@ class PlaybackResolverHandler(BaseHTTPRequestHandler):
             return
 
         asset_id = match.group(1)
-        status, asset = self.fetch_asset(asset_id)
+        status, asset = self.fetch_asset_cached(asset_id)
 
         missing_asset = is_missing_asset_response(status, asset)
         if status in (401, 403, 404) or missing_asset:
@@ -524,13 +595,23 @@ class PlaybackResolverHandler(BaseHTTPRequestHandler):
 
         original_path = asset.get("originalPath") or ""
         try:
-            cache_internal_prefix, rel_mp4, cache_path = safe_cache_path(original_path)
+            cache_internal_prefix, rel_mp4, cache_path, cache_variant_kind = safe_cache_path(
+                original_path
+            )
             host_original_path = safe_original_host_path(original_path)
         except ValueError as exc:
             self.send_error(500, str(exc))
             return
 
-        if self.can_stream_original(asset, host_original_path):
+        cache_exists = os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0
+
+        if cache_exists:
+            internal_uri = cache_internal_prefix + quote(rel_mp4, safe="/")
+            source = "optimized-cache"
+            cache_control = (
+                f"private, max-age={VIDEO_PLAYBACK_BROWSER_CACHE_SEC}, no-transform"
+            )
+        elif self.can_stream_original(asset, host_original_path):
             if ensure_direct_cache_link(host_original_path, cache_path):
                 internal_uri = cache_internal_prefix + quote(rel_mp4, safe="/")
                 source = "direct-cache-link"
@@ -543,17 +624,14 @@ class PlaybackResolverHandler(BaseHTTPRequestHandler):
             cache_control = (
                 f"private, max-age={VIDEO_PLAYBACK_BROWSER_CACHE_SEC}, no-transform"
             )
-        elif os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0:
-            internal_uri = cache_internal_prefix + quote(rel_mp4, safe="/")
-            source = "optimized-cache"
-            cache_control = (
-                f"private, max-age={VIDEO_PLAYBACK_BROWSER_CACHE_SEC}, no-transform"
-            )
         else:
             if not os.path.isfile(host_original_path):
                 reason = "missing"
             elif is_marked_damaged(host_original_path):
                 reason = "damaged"
+            elif self.is_likely_heavy_asset(asset, host_original_path):
+                # Si es claramente pesado, no gastamos ffprobe aquí.
+                reason = "processing"
             elif is_probably_corrupt(host_original_path):
                 reason = "damaged"
             else:
@@ -568,6 +646,10 @@ class PlaybackResolverHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "video/mp4")
         self.send_header("Cache-Control", cache_control)
         self.send_header("X-Video-Source", source)
+        if cache_variant_kind == "legacy":
+            self.send_header("X-Video-Cache-Variant", "legacy-fallback")
+        elif cache_variant_kind == "canonical":
+            self.send_header("X-Video-Cache-Variant", "canonical")
         self.end_headers()
 
     def placeholder_for_reason(self, asset: dict, reason: str) -> str:
@@ -587,10 +669,6 @@ class PlaybackResolverHandler(BaseHTTPRequestHandler):
     def can_stream_original(self, asset: dict, original_host_path: str) -> bool:
         if not os.path.isfile(original_host_path):
             return False
-        if is_probably_corrupt(original_host_path):
-            return False
-        if not is_direct_compatible(original_host_path):
-            return False
 
         size_bytes = get_asset_size_bytes(asset)
         if size_bytes <= 0:
@@ -599,7 +677,58 @@ class PlaybackResolverHandler(BaseHTTPRequestHandler):
         if size_bytes <= 0 or duration_seconds <= 0:
             return False
 
-        return size_bytes <= get_allowed_bytes(duration_seconds)
+        if size_bytes > get_allowed_bytes(duration_seconds):
+            return False
+
+        # Solo para candidatos de directo ligero validamos compatibilidad.
+        if not is_direct_compatible(original_host_path):
+            return False
+        return True
+
+    def is_likely_heavy_asset(self, asset: dict, original_host_path: str) -> bool:
+        size_bytes = get_asset_size_bytes(asset)
+        if size_bytes <= 0:
+            try:
+                size_bytes = os.path.getsize(original_host_path)
+            except OSError:
+                return False
+        duration_seconds = parse_duration_seconds(asset.get("duration"))
+        if size_bytes <= 0 or duration_seconds <= 0:
+            return False
+        return size_bytes > get_allowed_bytes(duration_seconds)
+
+    def auth_fingerprint(self) -> str:
+        raw = "|".join(
+            (
+                self.headers.get("Cookie") or "",
+                self.headers.get("Authorization") or "",
+                self.headers.get("X-API-Key") or "",
+            )
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+    def fetch_asset_cached(self, asset_id: str) -> Tuple[int, dict]:
+        if ASSET_CACHE_TTL_SEC <= 0 or ASSET_CACHE_MAX <= 0:
+            return self.fetch_asset(asset_id)
+
+        now = time.time()
+        cache_key = f"{asset_id}:{self.auth_fingerprint()}"
+        with ASSET_CACHE_LOCK:
+            cached = ASSET_CACHE.get(cache_key)
+            if cached and (now - cached[0]) < ASSET_CACHE_TTL_SEC:
+                ASSET_CACHE.move_to_end(cache_key)
+                return cached[1], dict(cached[2])
+            if cached:
+                ASSET_CACHE.pop(cache_key, None)
+
+        status, asset = self.fetch_asset(asset_id)
+        if status == 200:
+            with ASSET_CACHE_LOCK:
+                ASSET_CACHE[cache_key] = (now, status, dict(asset))
+                ASSET_CACHE.move_to_end(cache_key)
+                while len(ASSET_CACHE) > ASSET_CACHE_MAX:
+                    ASSET_CACHE.popitem(last=False)
+        return status, asset
 
     def fetch_asset(self, asset_id: str) -> Tuple[int, dict]:
         request = Request(
