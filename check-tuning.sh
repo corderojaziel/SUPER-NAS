@@ -62,6 +62,24 @@ if [ -f /sys/block/zram0/comp_algorithm ]; then
     fi
 fi
 
+if systemctl list-unit-files 2>/dev/null | grep -q '^zram-nas\.service'; then
+    if systemctl is-enabled zram-nas.service >/dev/null 2>&1; then
+        ok "zram-nas.service habilitado (persistencia de zstd en cada boot)"
+    else
+        warn "zram-nas.service no está habilitado" "systemctl enable --now zram-nas.service"
+    fi
+else
+    warn "zram-nas.service no encontrado" "re-ejecutar install.sh para instalar servicio ZRAM robusto"
+fi
+
+if systemctl list-unit-files 2>/dev/null | grep -q '^zramswap\.service'; then
+    if systemctl is-enabled zramswap.service >/dev/null 2>&1; then
+        warn "zramswap legado sigue habilitado" "systemctl disable --now zramswap.service"
+    else
+        ok "zramswap legado deshabilitado"
+    fi
+fi
+
 check_sysctl "vm.swappiness"              "10"  "Swappiness (preferencia por RAM sobre swap)"
 check_sysctl "vm.dirty_ratio"             "20"  "Dirty ratio (escrituras pendientes máx)"
 check_sysctl "vm.dirty_background_ratio"  "10"  "Dirty background (flush automático)"
@@ -621,7 +639,7 @@ if swapon --show 2>/dev/null | grep -q zram; then
         fi
     fi
 else
-    warn "ZRAM no activo — no se puede verificar zstd/NEON" "systemctl restart zramswap"
+    warn "ZRAM no activo — no se puede verificar zstd/NEON" "systemctl restart zram-nas.service"
 fi
 
 # ── PASO 6: WireGuard ChaCha20 con AES/NEON ───────────────────────────────

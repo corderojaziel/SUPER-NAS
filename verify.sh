@@ -12,6 +12,14 @@ section "SISTEMA"
 if grep -qi armbian /etc/os-release 2>/dev/null || grep -qi armbian /etc/armbian-release 2>/dev/null; then ok "Armbian detectado"; else warn "No se detectó Armbian"; fi
 if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then ok "BBR TCP activo"; else fail "BBR TCP no activo"; fi
 if swapon --show 2>/dev/null | grep -q zram; then ok "ZRAM activo"; else warn "ZRAM no activo"; fi
+if systemctl list-unit-files 2>/dev/null | grep -q '^zram-nas\.service'; then
+  if systemctl is-enabled zram-nas.service >/dev/null 2>&1; then ok "zram-nas.service habilitado"; else warn "zram-nas.service no habilitado"; fi
+else
+  warn "zram-nas.service no instalado"
+fi
+if systemctl list-unit-files 2>/dev/null | grep -q '^zramswap\.service'; then
+  if systemctl is-enabled zramswap.service >/dev/null 2>&1; then warn "zramswap legado sigue habilitado"; else ok "zramswap legado deshabilitado"; fi
+fi
 TEMP_FILE=""; for zone in /sys/class/thermal/thermal_zone*/temp; do [ -f "$zone" ] && { TEMP_FILE="$zone"; break; }; done
 if [ -n "$TEMP_FILE" ]; then TEMP_C=$(( $(cat "$TEMP_FILE") / 1000 )); [ "$TEMP_C" -lt 70 ] && ok "Temperatura CPU: ${TEMP_C}°C" || warn "Temperatura CPU: ${TEMP_C}°C"; else warn "No se encontró sensor térmico"; fi
 
@@ -101,7 +109,7 @@ else
 fi
 
 section "SCRIPTS DE MANTENIMIENTO"
-for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/video-autopilot.sh /usr/local/bin/iml-autopilot.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/manual-retention.sh /usr/local/bin/failover-sync.sh /usr/local/bin/storage-failover.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/playback-watchdog.sh /usr/local/bin/temp-clean.sh /usr/local/bin/state-backup.sh /usr/local/bin/state-restore.sh /usr/local/bin/disaster-restore.sh /usr/local/bin/bootstrap-restore.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh; do
+for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/video-autopilot.sh /usr/local/bin/iml-autopilot.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/manual-retention.sh /usr/local/bin/failover-sync.sh /usr/local/bin/storage-failover.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/playback-watchdog.sh /usr/local/bin/temp-clean.sh /usr/local/bin/state-backup.sh /usr/local/bin/state-restore.sh /usr/local/bin/disaster-restore.sh /usr/local/bin/bootstrap-restore.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh /usr/local/bin/zram-nas-apply.sh; do
   if [ -x "$f" ]; then bash -n "$f" >/dev/null 2>&1 && ok "$f instalado y sintaxis válida" || fail "$f con errores de sintaxis"; else fail "$f ausente"; fi
 done
 if grep -q 'api.telegram.org' /usr/local/bin/nas-alert.sh 2>/dev/null; then

@@ -273,6 +273,9 @@ ROOT_ENABLE_COMMIT_TUNING="${ROOT_ENABLE_COMMIT_TUNING:-0}"
 ROOT_COMMIT_INTERVAL_SEC="${ROOT_COMMIT_INTERVAL_SEC:-300}"
 HDD_APM_ENABLE="${HDD_APM_ENABLE:-1}"
 HDD_APM_LEVEL="${HDD_APM_LEVEL:-254}"
+ZRAM_ALGO="${ZRAM_ALGO:-zstd}"
+ZRAM_PERCENT="${ZRAM_PERCENT:-30}"
+ZRAM_USE_NAS_SERVICE="${ZRAM_USE_NAS_SERVICE:-1}"
 
 # Verificar que los discos existen como block devices
 for disk in "$DISK_PHOTOS" "$DISK_BACKUP"; do
@@ -472,13 +475,45 @@ log_ok "Dependencias instaladas"
 # reduce la RAM disponible para los contenedores.
 log_step "Configurando ZRAM"
 
-cat > /etc/default/zramswap << 'EOF'
-ALGO=zstd     # zstd: mejor ratio que lz4, rutas NEON en aarch64
-PERCENT=30    # 30% de 4GB = ~1.2GB swap virtual sin tocar el disco
+cat > /etc/default/zramswap << EOF
+ALGO=${ZRAM_ALGO}
+PERCENT=${ZRAM_PERCENT}
 EOF
 
-systemctl restart zramswap 2>/dev/null || true
-log_ok "ZRAM configurado (zstd 30% ≈ 1.2 GB swap virtual)"
+if is_true "$ZRAM_USE_NAS_SERVICE" && [ -f "$SCRIPT_DIR/maintenance/zram-nas-apply.sh" ]; then
+    install -m 0755 "$SCRIPT_DIR/maintenance/zram-nas-apply.sh" /usr/local/bin/zram-nas-apply.sh
+    cat > /etc/systemd/system/zram-nas.service << 'EOF'
+[Unit]
+Description=SUPER-NAS ZRAM bootstrap
+DefaultDependencies=no
+After=systemd-modules-load.service local-fs.target
+Before=swap.target multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zram-nas-apply.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=swap.target
+EOF
+
+    if systemctl list-unit-files 2>/dev/null | grep -q '^zramswap\.service'; then
+        systemctl disable --now zramswap.service >/dev/null 2>&1 || true
+    fi
+
+    systemctl daemon-reload
+    systemctl enable zram-nas.service >/dev/null 2>&1 || true
+    if systemctl restart zram-nas.service; then
+        log_ok "ZRAM configurado con zram-nas.service (${ZRAM_ALGO} ${ZRAM_PERCENT}%)"
+    else
+        log_warn "zram-nas.service no pudo iniciarse; aplico fallback con zramswap"
+        systemctl restart zramswap 2>/dev/null || true
+    fi
+else
+    log_warn "No encontré maintenance/zram-nas-apply.sh o ZRAM_USE_NAS_SERVICE=0; uso zramswap legado"
+    systemctl restart zramswap 2>/dev/null || true
+fi
 
 # ════════════════════════════════════════════════════════════════════════════
 # 5. OPTIMIZACIONES DE KERNEL
@@ -1234,6 +1269,7 @@ log_step "Instalando scripts de mantenimiento"
 SCRIPTS=(
     "nas-alert.sh"       # Alertas Telegram — prerequisito de todos los demás
     "ml-temp-guard.sh"   # Guardia térmica 3 niveles (ventilador, throttle, crítico)
+    "zram-nas-apply.sh"  # Reconfigura zram0 con secuencia robusta (reset + zstd)
     "smart-check.sh"     # Monitoreo SMART diario + test mensual de superficie
     "cache-clean.sh"     # Auditoría de huérfanos de cache (no borra)
     "temp-clean.sh"      # Depuración semanal de temporales técnicos (sin tocar fotos/videos)
