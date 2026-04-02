@@ -82,12 +82,38 @@ try:
     VIDEO_PROBE_TIMEOUT_SEC = float(os.environ.get("VIDEO_PROBE_TIMEOUT_SEC", "3"))
 except ValueError:
     VIDEO_PROBE_TIMEOUT_SEC = 3.0
+_legacy_corrupt_ttl_raw = os.environ.get("VIDEO_CORRUPT_CACHE_TTL_SEC")
+if _legacy_corrupt_ttl_raw is not None:
+    try:
+        _legacy_corrupt_ttl = float(_legacy_corrupt_ttl_raw)
+    except ValueError:
+        _legacy_corrupt_ttl = 300.0
+else:
+    _legacy_corrupt_ttl = None
+
 try:
-    VIDEO_CORRUPT_CACHE_TTL_SEC = float(
-        os.environ.get("VIDEO_CORRUPT_CACHE_TTL_SEC", "300")
+    VIDEO_CORRUPT_CACHE_TTL_OK_SEC = float(
+        os.environ.get(
+            "VIDEO_CORRUPT_CACHE_TTL_OK_SEC",
+            str(_legacy_corrupt_ttl if _legacy_corrupt_ttl is not None else 3600.0),
+        )
     )
 except ValueError:
-    VIDEO_CORRUPT_CACHE_TTL_SEC = 300.0
+    VIDEO_CORRUPT_CACHE_TTL_OK_SEC = (
+        _legacy_corrupt_ttl if _legacy_corrupt_ttl is not None else 3600.0
+    )
+
+try:
+    VIDEO_CORRUPT_CACHE_TTL_FAIL_SEC = float(
+        os.environ.get(
+            "VIDEO_CORRUPT_CACHE_TTL_FAIL_SEC",
+            str(_legacy_corrupt_ttl if _legacy_corrupt_ttl is not None else 300.0),
+        )
+    )
+except ValueError:
+    VIDEO_CORRUPT_CACHE_TTL_FAIL_SEC = (
+        _legacy_corrupt_ttl if _legacy_corrupt_ttl is not None else 300.0
+    )
 VIDEO_DIRECT_COMPAT_VIDEO_CODEC = os.environ.get(
     "VIDEO_DIRECT_COMPAT_VIDEO_CODEC", "h264"
 ).strip().lower()
@@ -349,8 +375,10 @@ def has_video_stream(path: str) -> bool:
 def is_probably_corrupt(path: str) -> bool:
     now = time.time()
     cached = CORRUPT_CACHE.get(path)
-    if cached and (now - cached[0]) < VIDEO_CORRUPT_CACHE_TTL_SEC:
-        return cached[1]
+    if cached:
+        ttl = VIDEO_CORRUPT_CACHE_TTL_FAIL_SEC if cached[1] else VIDEO_CORRUPT_CACHE_TTL_OK_SEC
+        if ttl > 0 and (now - cached[0]) < ttl:
+            return cached[1]
 
     corrupt = not has_video_stream(path)
     CORRUPT_CACHE[path] = (now, corrupt)
