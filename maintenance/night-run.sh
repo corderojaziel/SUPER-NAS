@@ -348,6 +348,11 @@ start_night_ml() {
 
   pending_before="$(iml_pending_count)"
   ML_PENDING_COUNT="$pending_before"
+  if [ "$pending_before" -le 0 ]; then
+    log "SKIP: IA nocturna sin pendientes de IML"
+    ML_FAIL_REASON="sin pendientes"
+    return 2
+  fi
 
   if ! ml_within_window; then
     log "SKIP: ML fuera de ventana nocturna (${ML_WINDOW_HOUR}:00)"
@@ -378,6 +383,13 @@ start_night_ml() {
       }
       sleep 3
     done
+    pending_after="$(iml_pending_count)"
+    ML_PENDING_COUNT="$pending_after"
+    if [ "$pending_after" -eq 0 ]; then
+      log "SKIP: night-on no confirmó running, pero no hay pendientes de IML"
+      ML_FAIL_REASON="sin pendientes"
+      return 2
+    fi
     ML_FAIL_REASON="ML no quedó en estado running tras aplicar night-on"
   else
     rc=$?
