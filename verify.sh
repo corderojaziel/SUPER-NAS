@@ -130,10 +130,10 @@ if grep -E '^[[:space:]]*[^#].*--delete' /usr/local/bin/backup.sh 2>/dev/null; t
 else
   ok "backup.sh no usa --delete (sin depuración automática de fotos/videos)"
 fi
-if grep -Eq 'rm -rf .*snapshots|head -n -[0-9]+' /usr/local/bin/backup.sh 2>/dev/null; then
-  fail "backup.sh aún contiene poda automática de snapshots"
+if grep -Eq 'run_backup_restic|rsync_snapshot|BACKUP_RESTIC|manual-retention|--link-dest' /usr/local/bin/backup.sh 2>/dev/null; then
+  fail "backup.sh aún contiene lógica legacy de snapshots/restic para fotos/videos"
 else
-  ok "backup.sh no contiene poda automática de snapshots"
+  ok "backup.sh sin lógica snapshot/restic para fotos/videos"
 fi
 if grep -q 'Huérfano eliminado' /usr/local/bin/cache-clean.sh 2>/dev/null; then
   fail "cache-clean.sh sigue en modo borrado automático"
@@ -155,21 +155,15 @@ if crontab -l 2>/dev/null | grep -q 'manual-retention.sh.*--apply'; then
 else
   ok "No hay depuración automática de fotos/videos vía crontab"
 fi
-BACKUP_MODE_POLICY="rsync_snapshot"
+BACKUP_MODE_POLICY="disabled"
 if [ -f /etc/default/nas-video-policy ]; then
   BACKUP_MODE_POLICY="$(awk -F= '$1=="BACKUP_PHOTOS_MODE"{print substr($0, index($0, "=")+1); exit}' /etc/default/nas-video-policy | tr -d '"' | tr -d "'" | xargs)"
-  [ -n "$BACKUP_MODE_POLICY" ] || BACKUP_MODE_POLICY="rsync_snapshot"
+  [ -n "$BACKUP_MODE_POLICY" ] || BACKUP_MODE_POLICY="disabled"
 fi
-if [ "$BACKUP_MODE_POLICY" = "restic" ]; then
-  command -v restic >/dev/null 2>&1 && ok "Motor de backup deduplicado disponible (restic)" || fail "Modo restic activo pero restic no está instalado"
-  RESTIC_PASS_FILE="$(awk -F= '$1=="BACKUP_RESTIC_PASSWORD_FILE"{print substr($0, index($0, "=")+1); exit}' /etc/default/nas-video-policy 2>/dev/null | tr -d '"' | tr -d "'" | xargs)"
-  if [ -n "$RESTIC_PASS_FILE" ] && [ -s "$RESTIC_PASS_FILE" ]; then
-    ok "Password file restic presente: $RESTIC_PASS_FILE"
-  else
-    fail "Password file restic faltante o vacío: ${RESTIC_PASS_FILE:-no-definido}"
-  fi
+if [ "$BACKUP_MODE_POLICY" = "disabled" ] || [ "$BACKUP_MODE_POLICY" = "none" ] || [ "$BACKUP_MODE_POLICY" = "off" ]; then
+  ok "Backup de fotos/videos desactivado por política (sin snapshots/restic)"
 else
-  ok "Motor de backup en modo snapshot/rsync"
+  fail "BACKUP_PHOTOS_MODE no permitido ($BACKUP_MODE_POLICY). Debe estar en disabled/none/off."
 fi
 if [ -x /usr/local/bin/video-reprocess-manager.py ]; then
   python3 -m py_compile /usr/local/bin/video-reprocess-manager.py >/dev/null 2>&1 && ok "/usr/local/bin/video-reprocess-manager.py instalado y sintaxis válida" || fail "/usr/local/bin/video-reprocess-manager.py con errores de sintaxis"

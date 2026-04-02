@@ -428,7 +428,6 @@ apt-get install -y -q \
     smartmontools \
     hdparm \
     rsync \
-    restic \
     ffmpeg \
     ethtool \
     parted util-linux \
@@ -873,7 +872,7 @@ fi
 # Si se crean antes del mount, quedan ocultas debajo del punto de montaje y
 # mergerfs termina escribiendo todo en el branch de cache.
 mkdir -p "$MOUNT_PHOTOS/photos" "$MOUNT_PHOTOS/cache"
-mkdir -p "$MOUNT_BACKUP/snapshots" "$MOUNT_BACKUP/snapshots/immich-db"
+mkdir -p "$MOUNT_BACKUP/snapshots" "$MOUNT_BACKUP/snapshots/immich-db" "$MOUNT_BACKUP/snapshots/system-state"
 
 if ! mountpoint -q "$MOUNT_MERGED" && find "$MOUNT_MERGED" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then
     log_warn "$MOUNT_MERGED tenía contenido residual local — limpiándolo antes de montar mergerfs"
@@ -1378,12 +1377,7 @@ FAILOVER_SYNC_CACHE_ENABLED=${FAILOVER_SYNC_CACHE_ENABLED:-1}
 FAILOVER_SYNC_NOTIFY_ON_SUCCESS=${FAILOVER_SYNC_NOTIFY_ON_SUCCESS:-0}
 FAILOVER_SYNC_MAX_RUNTIME_MIN=${FAILOVER_SYNC_MAX_RUNTIME_MIN:-240}
 FAILOVER_SYNC_IO_NICE=${FAILOVER_SYNC_IO_NICE:-15}
-BACKUP_PHOTOS_MODE=${BACKUP_PHOTOS_MODE:-restic}
-BACKUP_RESTIC_REPO=${BACKUP_RESTIC_REPO:-/mnt/storage-backup/restic/photos}
-BACKUP_RESTIC_PASSWORD_FILE=${BACKUP_RESTIC_PASSWORD_FILE:-/etc/nas-restic-password}
-BACKUP_RESTIC_KEEP_DAILY=${BACKUP_RESTIC_KEEP_DAILY:-7}
-BACKUP_RESTIC_KEEP_WEEKLY=${BACKUP_RESTIC_KEEP_WEEKLY:-4}
-BACKUP_RESTIC_KEEP_MONTHLY=${BACKUP_RESTIC_KEEP_MONTHLY:-3}
+BACKUP_PHOTOS_MODE=${BACKUP_PHOTOS_MODE:-disabled}
 VIDEO_REPROCESS_LOCAL_MAX_MB=${VIDEO_REPROCESS_LOCAL_MAX_MB:-220}
 VIDEO_REPROCESS_LOCAL_MAX_DURATION_SEC=${VIDEO_REPROCESS_LOCAL_MAX_DURATION_SEC:-150}
 VIDEO_REPROCESS_LOCAL_MAX_MB_MIN=${VIDEO_REPROCESS_LOCAL_MAX_MB_MIN:-120}
@@ -1468,20 +1462,7 @@ EOF
 chmod 0644 /etc/default/nas-video-policy
 log_ok "Politica de video instalada (/etc/default/nas-video-policy)"
 
-RESTIC_PASSWORD_FILE_EFFECTIVE="${BACKUP_RESTIC_PASSWORD_FILE:-/etc/nas-restic-password}"
-if [ ! -s "$RESTIC_PASSWORD_FILE_EFFECTIVE" ]; then
-    mkdir -p "$(dirname "$RESTIC_PASSWORD_FILE_EFFECTIVE")"
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -base64 48 > "$RESTIC_PASSWORD_FILE_EFFECTIVE"
-    else
-        head -c 48 /dev/urandom | base64 > "$RESTIC_PASSWORD_FILE_EFFECTIVE"
-    fi
-    chmod 600 "$RESTIC_PASSWORD_FILE_EFFECTIVE"
-    log_ok "Password de repositorio restic generado en $RESTIC_PASSWORD_FILE_EFFECTIVE"
-else
-    chmod 600 "$RESTIC_PASSWORD_FILE_EFFECTIVE"
-    log_ok "Password de repositorio restic preservado en $RESTIC_PASSWORD_FILE_EFFECTIVE"
-fi
+log_ok "Snapshots/restic de fotos/videos desactivados por diseño (BACKUP_PHOTOS_MODE=${BACKUP_PHOTOS_MODE:-disabled})"
 
 cat > /etc/logrotate.d/supernas << 'EOF'
 /var/log/night-run.log
@@ -1605,9 +1586,9 @@ fi
 sed -i "s/^WARN_GB=.*/WARN_GB=${CACHE_WARN_GB}/" /usr/local/bin/cache-monitor.sh
 sed -i "s/^CRIT_GB=.*/CRIT_GB=${CACHE_CRIT_GB}/" /usr/local/bin/cache-monitor.sh
 
-# Persistir retención de backup para que backup.sh lo lea en runtime
+# Persistir valor heredado (compatibilidad histórica; ya no gobierna fotos/videos)
 echo "${BACKUP_RETENTION_DAYS}" > /etc/nas-retention
-log_ok "Retención backup snapshots (modo rsync): ${BACKUP_RETENTION_DAYS} días → /etc/nas-retention"
+log_ok "Retención heredada guardada en /etc/nas-retention (${BACKUP_RETENTION_DAYS} días)"
 
 # Persistir rutas de discos para que smart-check.sh use los discos correctos
 # Evita hardcodear /dev/sdX que puede cambiar según orden de detección USB

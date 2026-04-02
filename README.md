@@ -210,8 +210,8 @@ Cliente → nginx → cache eMMC (thumbnails)
 ### 💽 Mantenimiento
 
 * `backup.sh`
-  👉 backup de fotos/videos en modo deduplicado (`restic`) o snapshots (`rsync_snapshot`)
-  👉 soporta `BACKUP_DRY_RUN=1` para prueba sin escritura
+  👉 flujo de respaldo operativo (sin snapshots/restic de fotos/videos)
+  👉 mantiene espejo de failover vía `failover-sync.sh`
 
 * `cache-clean.sh`
   👉 audita huérfanos del cache (no borra)
@@ -224,7 +224,7 @@ Cliente → nginx → cache eMMC (thumbnails)
   👉 migra cache de eMMC a HDD con symlinks (manual)
 
 * `manual-retention.sh`
-  👉 depura respaldos solo bajo decisión manual
+  👉 depura respaldos de soporte (DB/estado) solo bajo decisión manual
   👉 `--apply` requiere confirmación explícita:
   `--confirm BORRAR_RESPALDOS_SUPERNAS`
 
@@ -437,10 +437,10 @@ Mantener ingestión estable y reproducción eficiente mediante:
 
 ### 💽 Mantenimiento
 
-* `backup.sh` → sincronización de datos
+* `backup.sh` → respaldo operativo sin snapshots/restic de fotos/videos
 * `cache-clean.sh` → auditoría de cache (sin borrado)
 * `cache-migrate-to-disk.sh` → migración manual de cache a HDD
-* `manual-retention.sh` → depuración manual de respaldos
+* `manual-retention.sh` → depuración manual de respaldos de soporte (DB/estado)
 * `smart-check.sh` → salud de discos
 
 👉 Regla operativa: no hay depuración automática de fotos/videos productivos.

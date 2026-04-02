@@ -123,34 +123,6 @@ sync_dir() {
   return 1
 }
 
-latest_snapshot_dir() {
-  local base="/mnt/storage-backup/snapshots" latest=""
-  [ -d "$base" ] || return 1
-  latest="$(
-    find "$base" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
-      | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' \
-      | sort \
-      | tail -1
-  )"
-  [ -n "$latest" ] || return 1
-  printf '%s\n' "$base/$latest"
-}
-
-seed_photos_from_latest_snapshot() {
-  local dst="$1" snap=""
-  mkdir -p "$dst"
-  if [ "$(find "$dst" -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
-    return 0
-  fi
-  snap="$(latest_snapshot_dir || true)"
-  [ -n "$snap" ] || return 0
-  if cp -al "$snap"/. "$dst"/ >/dev/null 2>&1; then
-    log "SEED_OK: fotos iniciales hardlink desde snapshot $snap"
-  else
-    log "SEED_WARN: no pude sembrar desde snapshot $snap"
-  fi
-}
-
 sync_cmd() {
   local photos_src photos_dst cache_src cache_dst
   photos_src="$MOUNT_MAIN/photos"
@@ -186,7 +158,6 @@ Qué correr (TV Box):
 
   if is_true "$SYNC_PHOTOS_ENABLED"; then
     if [ -d "$photos_src" ]; then
-      seed_photos_from_latest_snapshot "$photos_dst"
       sync_dir "$photos_src" "$photos_dst" "photos" || failed=1
     else
       log "SYNC_WARN: photos src ausente ($photos_src)"

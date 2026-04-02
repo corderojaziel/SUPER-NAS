@@ -17,12 +17,8 @@ THUMBS_ROOT="/var/lib/immich/thumbs"
 ENCODED_ROOT="/var/lib/immich/encoded-video"
 PROFILE_ROOT="/var/lib/immich/profile"
 BACKUP_ROOT="/mnt/storage-backup/snapshots"
-POLICY_FILE="/etc/default/nas-video-policy"
+FAILOVER_ROOT="/mnt/storage-backup/failover-main"
 HEALTH_DIR="/var/lib/nas-health"
-BACKUP_PHOTOS_MODE="rsync_snapshot"
-
-[ -f "$POLICY_FILE" ] && . "$POLICY_FILE"
-BACKUP_PHOTOS_MODE="${BACKUP_PHOTOS_MODE:-rsync_snapshot}"
 
 QUERY="${1:-}"
 RESOLVED=""
@@ -110,31 +106,23 @@ elif [ -n "$RESOLVED" ]; then
 
     if is_video "$REL"; then
         CACHE_PATH="$CACHE_ROOT/${REL%.*}.mp4"
+        FAILOVER_ORIG="$FAILOVER_ROOT/photos/$REL"
+        FAILOVER_CACHE="$FAILOVER_ROOT/cache/${REL%.*}.mp4"
         if [ -f "$CACHE_PATH" ]; then
             ok "Cache de video presente: $CACHE_PATH"
         else
             warn "Cache de video aun no existe: $CACHE_PATH"
         fi
 
-        if [ "$BACKUP_PHOTOS_MODE" = "restic" ]; then
-            if command -v restic >/dev/null 2>&1 && [ -n "${BACKUP_RESTIC_REPO:-}" ] && [ -s "${BACKUP_RESTIC_PASSWORD_FILE:-}" ]; then
-                export RESTIC_REPOSITORY="$BACKUP_RESTIC_REPO"
-                export RESTIC_PASSWORD_FILE="$BACKUP_RESTIC_PASSWORD_FILE"
-                if restic snapshots --latest 1 >/tmp/post-upload-restic-snapshot.log 2>&1; then
-                    ok "Hay snapshot restic reciente (modo deduplicado)"
-                else
-                    warn "No pude confirmar snapshot restic reciente"
-                fi
-            else
-                warn "Backup restic configurado, pero faltan prerrequisitos locales para validarlo"
-            fi
+        if [ -f "$FAILOVER_ORIG" ]; then
+            ok "Espejo failover de original presente: $FAILOVER_ORIG"
         else
-            LATEST_SNAPSHOT=$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name 'immich-db' | sort | tail -n 1)
-            if [ -n "${LATEST_SNAPSHOT:-}" ] && [ -f "$LATEST_SNAPSHOT/$REL" ]; then
-                ok "Original respaldado en snapshot: $LATEST_SNAPSHOT/$REL"
-            else
-                warn "Original aun no aparece en el ultimo snapshot"
-            fi
+            warn "Espejo failover de original ausente: $FAILOVER_ORIG"
+        fi
+        if [ -f "$FAILOVER_CACHE" ]; then
+            ok "Espejo failover de cache presente: $FAILOVER_CACHE"
+        else
+            warn "Espejo failover de cache ausente: $FAILOVER_CACHE"
         fi
     else
         warn "El asset localizado no parece video; se omiten checks de cache custom"
@@ -154,21 +142,15 @@ for path in "$DB_ROOT" "$THUMBS_ROOT" "$ENCODED_ROOT" "$PROFILE_ROOT" "$CACHE_RO
 done
 
 section "Backups"
-if [ "$BACKUP_PHOTOS_MODE" = "restic" ]; then
-    if command -v restic >/dev/null 2>&1 && [ -n "${BACKUP_RESTIC_REPO:-}" ] && [ -s "${BACKUP_RESTIC_PASSWORD_FILE:-}" ]; then
-        export RESTIC_REPOSITORY="$BACKUP_RESTIC_REPO"
-        export RESTIC_PASSWORD_FILE="$BACKUP_RESTIC_PASSWORD_FILE"
-        if restic snapshots --latest 1 >/tmp/post-upload-restic-snapshot.log 2>&1; then
-            ok "Último respaldo fotos/videos (restic): disponible"
-        else
-            warn "No pude leer snapshots restic (ver /tmp/post-upload-restic-snapshot.log)"
-        fi
-    else
-        warn "Modo restic activo pero faltan credenciales/ruta para validación local"
-    fi
+if [ -d "$FAILOVER_ROOT/photos" ]; then
+    ok "Espejo failover de fotos presente: $FAILOVER_ROOT/photos"
 else
-    LATEST_SNAPSHOT=$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name 'immich-db' | sort | tail -n 1)
-    [ -n "${LATEST_SNAPSHOT:-}" ] && ok "Ultimo snapshot: $LATEST_SNAPSHOT" || warn "Sin snapshots aun"
+    warn "Espejo failover de fotos ausente: $FAILOVER_ROOT/photos"
+fi
+if [ -d "$FAILOVER_ROOT/cache" ]; then
+    ok "Espejo failover de cache presente: $FAILOVER_ROOT/cache"
+else
+    warn "Espejo failover de cache ausente: $FAILOVER_ROOT/cache"
 fi
 LATEST_DB_DUMP=$(find "$BACKUP_ROOT/immich-db" -type f -name '*.sql.gz' 2>/dev/null | sort | tail -n 1)
 if [ -n "${LATEST_DB_DUMP:-}" ]; then

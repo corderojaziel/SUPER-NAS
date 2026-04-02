@@ -266,11 +266,22 @@ fi
 
 # PostgreSQL — parámetros activos
 if docker inspect immich_postgres &>/dev/null; then
+    db_env_value() {
+        local key="$1" default="$2" value=""
+        if [ -f /opt/immich-app/.env ]; then
+            value=$(awk -F= -v key="$key" '$1==key{print substr($0, index($0, "=")+1); exit}' /opt/immich-app/.env)
+        fi
+        [ -n "$value" ] || value="$default"
+        printf '%s\n' "$value"
+    }
+    DB_USER_CFG="$(db_env_value DB_USERNAME immich)"
+    DB_NAME_CFG="$(db_env_value DB_DATABASE_NAME immich)"
+
     check_pg() {
         local PARAM="$1" EXPECTED="$2" DESC="$3"
         local ACTUAL
         ACTUAL=$(docker exec immich_postgres \
-            psql -U postgres -tAc "SHOW $PARAM;" 2>/dev/null | tr -d ' ')
+            psql -U "$DB_USER_CFG" -d "$DB_NAME_CFG" -At -c "SHOW $PARAM;" 2>/dev/null | tr -d ' ')
         if [ -n "$ACTUAL" ]; then
             # Normalizar unidades (512MB vs 524288kB)
             ok "$DESC ($PARAM = $ACTUAL)"
@@ -278,7 +289,7 @@ if docker inspect immich_postgres &>/dev/null; then
             fail "$DESC ($PARAM)" "$EXPECTED"
         fi
     }
-    check_pg "shared_buffers"       "512MB"  "PostgreSQL shared_buffers"
+    check_pg "shared_buffers"       "768MB"  "PostgreSQL shared_buffers"
     check_pg "work_mem"             "16MB"   "PostgreSQL work_mem"
     check_pg "max_connections"      "50"     "PostgreSQL max_connections"
     check_pg "effective_cache_size" "2GB"    "PostgreSQL effective_cache_size"

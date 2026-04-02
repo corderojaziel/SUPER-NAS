@@ -48,7 +48,6 @@ No lancé otra para evitar trabajo duplicado."
 log() { echo "[$(date '+%F %T')] $1" | tee -a "$LOG"; }
 alert() { "$NAS_ALERT_BIN" "$1"; }
 load_status_env() { [ -f "$1" ] && . "$1"; }
-
 normalize_task_status() {
   case "$1" in
     OK|WARN|CRIT|FAIL|SKIPPED|WEEKLY_OK|WEEKLY_SKIPPED) echo "$1" ;;
