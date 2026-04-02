@@ -7,11 +7,14 @@
 #   daily   -> lectura rápida de health + temperatura + atributos
 #   weekly  -> lectura más visible para resumen semanal
 #   monthly -> test corto de superficie
+#   extended -> inicia test largo (trimestral) sin bloquear el pipeline
 # ═══════════════════════════════════════════════════════════════════════════
 MODE="${1:-daily}"
 DISK_LIST="/dev/sda /dev/sdb"
 [ -f /etc/nas-disks ] && DISK_LIST=$(cat /etc/nas-disks)
 SMARTCTL_BIN="${SMARTCTL_BIN:-smartctl}"
+LCC_DELTA_THRESHOLD="${LCC_DELTA_THRESHOLD:-300}"
+LCC_STREAK_MIN_ALERT="${LCC_STREAK_MIN_ALERT:-2}"
 STATE_DIR="/var/lib/nas-health"
 mkdir -p "$STATE_DIR"
 STATUS_FILE="$STATE_DIR/smart-status.env"
@@ -114,7 +117,7 @@ EOF
     WARN_STREAK=1
     [ "$PREV_STATUS" = "WARN" ] && WARN_STREAK=$((PREV_WARN_STREAK + 1))
 
-    echo "$disk|WARN|-1|-1|-1|0|$WARN_STREAK|$(date -Iseconds)" >> "$NEXT_STATE_FILE"
+    echo "$disk|WARN|-1|-1|-1|0|$WARN_STREAK|$(date -Iseconds)|0|0|0" >> "$NEXT_STATE_FILE"
     if [ "$WARN_STREAK" -lt 3 ]; then
       # Una lectura puntual fallida no debe escalar a señal temprana.
       # Esperamos persistencia para reducir falsos positivos.
@@ -142,6 +145,8 @@ Acción sugerida:
   PENDING=$(printf '%s' "$OUT" | awk '/Current_Pending_Sector/{print $10}' | head -1)
   OFFLINE=$(printf '%s' "$OUT" | awk '/Offline_Uncorrectable/{print $10}' | head -1)
   TEMP=$(printf '%s' "$OUT" | awk '/Temperature_Celsius|Temperature_Internal/{print $10}' | head -1)
+  LCC=$(printf '%s' "$OUT" | awk '/Load_Cycle_Count/{print $10}' | head -1)
+  POH=$(printf '%s' "$OUT" | awk '/Power_On_Hours/{print $10}' | head -1)
   STATUS="OK"
   REASON="healthy"
   USER_REASON="sin señales preocupantes"
@@ -150,6 +155,8 @@ Acción sugerida:
   [ -z "$PENDING" ] && PENDING=0
   [ -z "$OFFLINE" ] && OFFLINE=0
   [ -z "$TEMP" ] && TEMP=0
+  [ -z "$LCC" ] && LCC=0
+  [ -z "$POH" ] && POH=0
 
   PREV_LINE="$(read_prev_state "$disk")"
   PREV_STATUS=""
@@ -158,8 +165,11 @@ Acción sugerida:
   PREV_OFFLINE=0
   PREV_TEMP=0
   PREV_WARN_STREAK=0
+  PREV_LCC=0
+  PREV_POH=0
+  PREV_LCC_WARN_STREAK=0
   if [ -n "$PREV_LINE" ]; then
-    IFS='|' read -r _ PREV_STATUS PREV_REALLOC PREV_PENDING PREV_OFFLINE PREV_TEMP PREV_WARN_STREAK _ <<EOF
+    IFS='|' read -r _ PREV_STATUS PREV_REALLOC PREV_PENDING PREV_OFFLINE PREV_TEMP PREV_WARN_STREAK _ PREV_LCC PREV_POH PREV_LCC_WARN_STREAK <<EOF
 $PREV_LINE
 EOF
   fi
@@ -168,6 +178,9 @@ EOF
   PREV_OFFLINE="$(to_int_or_default "$PREV_OFFLINE" 0)"
   PREV_TEMP="$(to_int_or_default "$PREV_TEMP" 0)"
   PREV_WARN_STREAK="$(to_int_or_default "$PREV_WARN_STREAK" 0)"
+  PREV_LCC="$(to_int_or_default "$PREV_LCC" 0)"
+  PREV_POH="$(to_int_or_default "$PREV_POH" 0)"
+  PREV_LCC_WARN_STREAK="$(to_int_or_default "$PREV_LCC_WARN_STREAK" 0)"
 
   if printf '%s' "$HEALTH" | grep -qi 'FAILED'; then
     STATUS="CRIT"
@@ -198,6 +211,23 @@ EOF
       REASON="Self-test con errores"
       USER_REASON="la prueba interna del disco encontró errores"
     fi
+  elif [ "$MODE" = "extended" ]; then
+    ESTIMATED_MIN=$("$SMARTCTL_BIN" $SMART_DEV_OPTS -c "$disk" 2>/dev/null | \
+      awk '/Extended self-test routine/{getline; if (match($0,/[0-9]+/)) print substr($0,RSTART,RLENGTH)}' | head -1)
+    [ -n "$ESTIMATED_MIN" ] || ESTIMATED_MIN=120
+    if "$SMARTCTL_BIN" $SMART_DEV_OPTS -t long "$disk" >/dev/null 2>&1; then
+      NAS_ALERT_KEY="smart_extended_start:${disk}" NAS_ALERT_TTL=86400 alert "🔬 Long test iniciado en $DISK_LABEL
+Duración estimada: ~${ESTIMATED_MIN} min.
+Esta validación corre en segundo plano para no frenar el NAS."
+    else
+      STATUS="WARN"
+      REASON="No pude iniciar long test"
+      USER_REASON="el bridge o el disco rechazó la prueba extendida"
+      NAS_ALERT_KEY="smart_extended_start_fail:${disk}" NAS_ALERT_TTL=21600 alert "⚠️ No pude iniciar long test en $DISK_LABEL
+Sugerencia:
+1) smartctl $SMART_DEV_OPTS -c $disk
+2) smartctl $SMART_DEV_OPTS -t long $disk"
+    fi
   fi
 
   WARN_STREAK=0
@@ -207,9 +237,27 @@ EOF
   REALLOC_UP=0
   PENDING_UP=0
   OFFLINE_UP=0
+  LCC_UP=0
+  LCC_DELTA=0
+  LCC_WARN_STREAK=0
   [ "$REALLOC" -gt "$PREV_REALLOC" ] && REALLOC_UP=1
   [ "$PENDING" -gt "$PREV_PENDING" ] && PENDING_UP=1
   [ "$OFFLINE" -gt "$PREV_OFFLINE" ] && OFFLINE_UP=1
+  if [ "$LCC" -gt "$PREV_LCC" ] && [ "$PREV_LCC" -gt 0 ]; then
+    LCC_DELTA=$((LCC - PREV_LCC))
+    if [ "$LCC_DELTA" -ge "$LCC_DELTA_THRESHOLD" ]; then
+      LCC_UP=1
+      LCC_WARN_STREAK=$((PREV_LCC_WARN_STREAK + 1))
+    fi
+  fi
+  if [ "$LCC_UP" -eq 0 ]; then
+    LCC_WARN_STREAK=0
+  fi
+  if [ "$LCC_WARN_STREAK" -ge "$LCC_STREAK_MIN_ALERT" ] && [ "$STATUS" = "OK" ]; then
+    STATUS="WARN"
+    REASON="LCC delta alto"
+    USER_REASON="el disco muestra demasiados ciclos de parqueo de cabezal"
+  fi
 
   TEMP_SUSTAINED=0
   if [ "$TEMP" -ge 50 ] && [ "$PREV_TEMP" -ge 50 ] && [ "$STATUS" = "WARN" ]; then
@@ -217,7 +265,7 @@ EOF
   fi
 
   echo "$disk|$STATUS|$REASON" >> "$RISKY_FILE"
-  echo "$disk|$STATUS|$REALLOC|$PENDING|$OFFLINE|$TEMP|$WARN_STREAK|$(date -Iseconds)" >> "$NEXT_STATE_FILE"
+  echo "$disk|$STATUS|$REALLOC|$PENDING|$OFFLINE|$TEMP|$WARN_STREAK|$(date -Iseconds)|$LCC|$POH|$LCC_WARN_STREAK" >> "$NEXT_STATE_FILE"
   GLOBAL=$(merge_status "$GLOBAL" "$STATUS")
 
   case "$STATUS" in
@@ -229,7 +277,7 @@ Disco exacto: $DISK_DETAIL
 Comandos sugeridos (diagnóstico):
 1) smartctl $SMART_DEV_OPTS -a $disk
 2) /usr/local/bin/smart-check.sh weekly"
-      if [ "$WARN_STREAK" -ge 3 ] || [ "$REALLOC_UP" -eq 1 ] || [ "$PENDING_UP" -eq 1 ] || [ "$OFFLINE_UP" -eq 1 ] || [ "$TEMP_SUSTAINED" -eq 1 ]; then
+      if [ "$WARN_STREAK" -ge 3 ] || [ "$REALLOC_UP" -eq 1 ] || [ "$PENDING_UP" -eq 1 ] || [ "$OFFLINE_UP" -eq 1 ] || [ "$TEMP_SUSTAINED" -eq 1 ] || [ "$LCC_WARN_STREAK" -ge "$LCC_STREAK_MIN_ALERT" ]; then
         TREND_MSG="⚠️ Tendencia de riesgo en $DISK_LABEL
 Señal WARN repetida o en aumento (racha WARN: $WARN_STREAK)."
         [ "$REALLOC_UP" -eq 1 ] && TREND_MSG="$TREND_MSG
@@ -240,6 +288,11 @@ Señal WARN repetida o en aumento (racha WARN: $WARN_STREAK)."
 - OfflineUncorrectable subió: $PREV_OFFLINE -> $OFFLINE"
         [ "$TEMP_SUSTAINED" -eq 1 ] && TREND_MSG="$TREND_MSG
 - Temperatura alta sostenida: ${PREV_TEMP}°C -> ${TEMP}°C"
+        if [ "$LCC_WARN_STREAK" -ge "$LCC_STREAK_MIN_ALERT" ]; then
+          TREND_MSG="$TREND_MSG
+- Load_Cycle_Count subió en exceso (delta: $LCC_DELTA, racha: $LCC_WARN_STREAK).
+  Sugerencia: revisar APM del disco (hdparm -B 254 $disk)."
+        fi
         TREND_MSG="$TREND_MSG
 Acción sugerida: programar revisión/reemplazo preventivo."
         NAS_ALERT_KEY="smart_trend:${disk}" NAS_ALERT_TTL=21600 alert "$TREND_MSG"

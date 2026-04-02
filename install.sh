@@ -264,6 +264,16 @@ fi
 # Evitar instalación con contraseña por defecto — es un riesgo de seguridad
 [[ "$DB_PASSWORD" != "CambiarEsto2024" ]] || die "Cambia DB_PASSWORD en $CONFIG antes de continuar"
 
+# ── Perfil conservador de I/O (ajustable por nas.conf) ───────────────────
+# HDD commit=120 reduce flush de journal sin llevar al extremo 300s.
+# Root eMMC: noatime sí por defecto; commit tuning queda opcional.
+STORAGE_COMMIT_INTERVAL_SEC="${STORAGE_COMMIT_INTERVAL_SEC:-120}"
+ROOT_ENABLE_NOATIME="${ROOT_ENABLE_NOATIME:-1}"
+ROOT_ENABLE_COMMIT_TUNING="${ROOT_ENABLE_COMMIT_TUNING:-0}"
+ROOT_COMMIT_INTERVAL_SEC="${ROOT_COMMIT_INTERVAL_SEC:-300}"
+HDD_APM_ENABLE="${HDD_APM_ENABLE:-1}"
+HDD_APM_LEVEL="${HDD_APM_LEVEL:-254}"
+
 # Verificar que los discos existen como block devices
 for disk in "$DISK_PHOTOS" "$DISK_BACKUP"; do
     [ -b "$disk" ] || die "Disco no encontrado: $disk — verificar con: lsblk"
@@ -542,6 +552,60 @@ EOF
 sysctl -p /etc/sysctl.d/99-nas.conf > /dev/null
 log_ok "Parámetros de kernel aplicados (BBR, buffers 16MB, swappiness=10)"
 
+# ── noatime en raíz eMMC (modo conservador) ──────────────────────────────
+# Default: activa solo noatime (bajo riesgo, menos escritura de metadatos).
+# commit en "/" queda opcional para evitar ampliar demasiado la ventana de
+# metadatos pendientes en caso de corte eléctrico.
+if is_true "$ROOT_ENABLE_NOATIME"; then
+    log_step "Aplicando tuning de atime en raíz eMMC"
+    ROOT_REMOUNT_OPTS="remount,noatime"
+    if is_true "$ROOT_ENABLE_COMMIT_TUNING"; then
+        ROOT_REMOUNT_OPTS="${ROOT_REMOUNT_OPTS},commit=${ROOT_COMMIT_INTERVAL_SEC}"
+    fi
+    if mount -o "$ROOT_REMOUNT_OPTS" / >/dev/null 2>&1; then
+        log_ok "Raíz remount con: $ROOT_REMOUNT_OPTS"
+    else
+        log_warn "No pude hacer remount de / con $ROOT_REMOUNT_OPTS (se mantiene configuración actual)"
+    fi
+
+    TMP_FSTAB=$(mktemp)
+    awk -v add_commit="$(is_true "$ROOT_ENABLE_COMMIT_TUNING" && echo 1 || echo 0)" \
+        -v commit_sec="$ROOT_COMMIT_INTERVAL_SEC" '
+        function hasopt(opts, key) {
+            n=split(opts, arr, ",")
+            for (i=1; i<=n; i++) if (arr[i]==key) return 1
+            return 0
+        }
+        function hasprefix(opts, prefix) {
+            n=split(opts, arr, ",")
+            for (i=1; i<=n; i++) if (index(arr[i], prefix)==1) return i
+            return 0
+        }
+        $1 !~ /^#/ && $2=="/" {
+            if (!hasopt($4, "noatime")) $4=$4 ",noatime"
+            idx=hasprefix($4, "commit=")
+            if (add_commit==1) {
+                if (idx>0) {
+                    n=split($4, arr, ",")
+                    arr[idx]="commit=" commit_sec
+                    $4=arr[1]
+                    for (i=2; i<=n; i++) $4=$4 "," arr[i]
+                } else {
+                    $4=$4 ",commit=" commit_sec
+                }
+            }
+        }
+        { print }
+    ' /etc/fstab > "$TMP_FSTAB"
+    cat "$TMP_FSTAB" > /etc/fstab
+    rm -f "$TMP_FSTAB"
+    ROOT_FSTAB_SUFFIX=""
+    if is_true "$ROOT_ENABLE_COMMIT_TUNING"; then
+        ROOT_FSTAB_SUFFIX=",commit=$ROOT_COMMIT_INTERVAL_SEC"
+    fi
+    log_ok "fstab raíz actualizado (noatime${ROOT_FSTAB_SUFFIX})"
+fi
+
 # ── Límites de journal systemd ────────────────────────────────────────────
 # Sin límite el journal puede consumir cientos de MB en la eMMC.
 # 100M máximo persistente + 7 días de retención.
@@ -699,16 +763,16 @@ add_fstab() {
     fi
 }
 
-# ── HDD fotos — noatime + nodiratime ─────────────────────────────────────
+# ── HDD fotos — noatime + nodiratime + commit conservador ────────────────
 # noatime: no actualizar el timestamp de acceso (atime) al leer un archivo.
 #   Sin esto, cada lectura genera una escritura de metadatos en el HDD.
 #   Con 20,000 fotos y accesos frecuentes = miles de escrituras innecesarias.
 #   Ahorro: ~15% menos operaciones de escritura en el HDD.
 # nodiratime: igual pero para directorios.
-add_fstab "UUID=$UUID_PHOTOS $MOUNT_PHOTOS ext4 defaults,noatime,nodiratime 0 2"
+add_fstab "UUID=$UUID_PHOTOS $MOUNT_PHOTOS ext4 defaults,noatime,nodiratime,commit=${STORAGE_COMMIT_INTERVAL_SEC} 0 2"
 
 # ── HDD backup — mismas optimizaciones ───────────────────────────────────
-add_fstab "UUID=$UUID_BACKUP $MOUNT_BACKUP ext4 defaults,noatime,nodiratime 0 2"
+add_fstab "UUID=$UUID_BACKUP $MOUNT_BACKUP ext4 defaults,noatime,nodiratime,commit=${STORAGE_COMMIT_INTERVAL_SEC} 0 2"
 
 # ── mergerfs — union de HDD/photos + eMMC/cache ──────────────────────────
 # mergerfs presenta dos directorios como uno solo (/mnt/merged).
@@ -840,6 +904,13 @@ ACTION=="add|change", KERNEL=="${DISK_PHOTOS_DEV}", ATTR{queue/read_ahead_kb}="4
 ACTION=="add|change", KERNEL=="${DISK_BACKUP_DEV}", ATTR{queue/read_ahead_kb}="4096"
 EOF
 
+if is_true "$HDD_APM_ENABLE"; then
+cat >> /etc/udev/rules.d/60-readahead.rules << EOF
+ACTION=="add|change", KERNEL=="${DISK_PHOTOS_DEV}", RUN+="/sbin/hdparm -B ${HDD_APM_LEVEL} /dev/${DISK_PHOTOS_DEV}"
+ACTION=="add|change", KERNEL=="${DISK_BACKUP_DEV}", RUN+="/sbin/hdparm -B ${HDD_APM_LEVEL} /dev/${DISK_BACKUP_DEV}"
+EOF
+fi
+
 # Aplicar inmediatamente a AMBOS discos sin esperar reinicio
 for _disk in "$DISK_PHOTOS" "$DISK_BACKUP"; do
     _dev=$(basename "$_disk")
@@ -847,6 +918,34 @@ for _disk in "$DISK_PHOTOS" "$DISK_BACKUP"; do
 done
 
 log_ok "Readahead HDD: 4 MB en ambos discos (vía udev, persiste entre reinicios)"
+
+# ════════════════════════════════════════════════════════════════════════════
+# 10b. APM HDD (conservador)
+# ════════════════════════════════════════════════════════════════════════════
+# APM bajo puede aumentar head-parking (Load_Cycle). En modo conservador:
+# - nivel 254 por defecto (muy compatible con bridges USB)
+# - solo aplica a discos rotacionales
+# - si el bridge no soporta APM, se deja como WARN (no bloqueo)
+if is_true "$HDD_APM_ENABLE"; then
+    log_step "Aplicando APM HDD (nivel ${HDD_APM_LEVEL})"
+    if [ -x /sbin/hdparm ] || command -v hdparm >/dev/null 2>&1; then
+        for _disk in "$DISK_PHOTOS" "$DISK_BACKUP"; do
+            _dev=$(basename "$_disk")
+            _rot_file="/sys/block/${_dev}/queue/rotational"
+            if [ -f "$_rot_file" ] && [ "$(cat "$_rot_file" 2>/dev/null || echo 1)" = "1" ]; then
+                if hdparm -B "$HDD_APM_LEVEL" "$_disk" >/dev/null 2>&1; then
+                    log_ok "APM ${HDD_APM_LEVEL} aplicado en $_disk"
+                else
+                    log_warn "Bridge de $_disk no permitió ajustar APM (se mantiene operación normal)"
+                fi
+            else
+                log_info "APM omitido en $_disk (no rotacional o sin telemetría rotational)"
+            fi
+        done
+    else
+        log_warn "hdparm no disponible; APM no aplicado"
+    fi
+fi
 
 # ════════════════════════════════════════════════════════════════════════════
 # 11. IMMICH — .env y docker-compose.yml
@@ -1541,11 +1640,14 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 # Deja traza histórica para diagnóstico (sin depurar fotos/videos).
 */5 * * * * /usr/local/bin/audit-snapshot.sh
 
-# ── Mantenimiento mensual — día 1: SMART extendido ───────────────────────
-# Test corto no destructivo (~2 min). El disco sigue operando normalmente.
-# Verifica superficie del disco y monitorea Load/Unload cycles.
-# Si los ciclos superan 300/mes, posible spin-down agresivo configurado.
+# ── Mantenimiento mensual — día 1: SMART short ────────────────────────────
+# Test corto no destructivo (~2 min). Verifica electrónica básica.
 0 3 1 * * /usr/local/bin/smart-check.sh monthly
+
+# ── Mantenimiento trimestral — SMART long (sin bloquear pipeline) ─────────
+# Día 15 de enero/abril/julio/octubre. El script solo inicia la prueba y
+# reporta ETA; el resultado se revisa en corridas posteriores.
+0 3 15 1,4,7,10 * /usr/local/bin/smart-check.sh extended
 
 # ── Mantenimiento mensual — día 2: limpieza apt ───────────────────────────
 # autoremove: elimina librerías huérfanas y kernels viejos post-upgrade.

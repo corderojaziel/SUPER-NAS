@@ -107,8 +107,20 @@ check_mount_opt() {
     fi
 }
 
+check_mount_opt_warn() {
+    local MNT="$1" OPT="$2" DESC="$3"
+    if findmnt -n -o OPTIONS "$MNT" 2>/dev/null | grep -q "$OPT"; then
+        ok "$DESC ($MNT tiene opción $OPT)"
+    else
+        warn "$DESC ($MNT sin opción $OPT)" "$OPT en opciones de montaje"
+    fi
+}
+
 check_mount_opt "/mnt/storage-main"   "noatime"  "HDD fotos montado con noatime"
 check_mount_opt "/mnt/storage-backup" "noatime"  "HDD backup montado con noatime"
+check_mount_opt_warn "/mnt/storage-main"   "commit=" "HDD fotos con commit de journal ajustado"
+check_mount_opt_warn "/mnt/storage-backup" "commit=" "HDD backup con commit de journal ajustado"
+check_mount_opt_warn "/" "noatime" "Raíz eMMC con noatime"
 
 # nginx cache en eMMC (directorio, no punto de montaje)
 for emmc_dir in \
@@ -144,6 +156,19 @@ for disk in sda sdb; do
         else
             fail "Readahead $disk: ${RA} KB" ">= 4096 KB"
         fi
+    fi
+done
+
+# APM HDD (informativo): algunos bridges USB no reportan valor.
+for disk in sda sdb; do
+    [ -b "/dev/$disk" ] || continue
+    APM_VAL=$(hdparm -B "/dev/$disk" 2>/dev/null | awk '/Advanced Power Management/{print $NF}' | tr -d '[:space:]')
+    if [ -z "$APM_VAL" ]; then
+        warn "APM /dev/$disk no legible" "bridge USB compatible o validar manualmente hdparm -B 254 /dev/$disk"
+    elif [ "$APM_VAL" -ge 254 ] 2>/dev/null; then
+        ok "APM /dev/$disk: $APM_VAL (head parking mitigado)"
+    else
+        warn "APM /dev/$disk: $APM_VAL (posible head parking agresivo)" "hdparm -B 254 /dev/$disk"
     fi
 done
 
