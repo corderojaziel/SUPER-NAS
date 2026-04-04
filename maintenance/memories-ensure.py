@@ -100,6 +100,60 @@ def db_exec(sql: str) -> str:
     return proc.stdout.strip()
 
 
+def dedupe_on_this_day(owner_id: str, dry_run: bool) -> Tuple[int, int]:
+    """Deduplicate same (year, showAt) memories keeping the one with most assets."""
+    owner_sql = owner_id.replace("'", "''")
+    dup_rows = db_query(
+        "with grp as ("
+        "  select (m.data->>'year')::int as year, m.\"showAt\" as show_at, count(*) as c "
+        "  from memory m "
+        f"  where m.type='on_this_day' and m.\"ownerId\"='{owner_sql}' "
+        "  group by 1,2 "
+        ") select coalesce(sum(c-1),0)::text from grp where c>1;"
+    )
+    dup_count = int(dup_rows[0]) if dup_rows else 0
+    if dup_count <= 0 or dry_run:
+        return dup_count, 0
+
+    result = db_query(
+        "with scored as ( "
+        "  select m.id, (m.data->>'year')::int as year, m.\"showAt\" as show_at, "
+        "         m.\"updatedAt\" as updated_at, "
+        "         (select count(*) from memory_asset ma where ma.\"memoriesId\"=m.id) as assets "
+        "  from memory m "
+        f"  where m.type='on_this_day' and m.\"ownerId\"='{owner_sql}' "
+        "), ranked as ( "
+        "  select *, row_number() over (partition by year, show_at order by assets desc, updated_at desc, id desc) as rn "
+        "  from scored "
+        "), keepers as ( "
+        "  select year, show_at, id as keep_id from ranked where rn=1 "
+        "), losers as ( "
+        "  select year, show_at, id as lose_id from ranked where rn>1 "
+        "), merged as ( "
+        "  insert into memory_asset (\"memoriesId\", \"assetId\") "
+        "  select k.keep_id, ma.\"assetId\" "
+        "  from losers l "
+        "  join keepers k on k.year=l.year and k.show_at=l.show_at "
+        "  join memory_asset ma on ma.\"memoriesId\"=l.lose_id "
+        "  left join memory_asset mk on mk.\"memoriesId\"=k.keep_id and mk.\"assetId\"=ma.\"assetId\" "
+        "  where mk.\"assetId\" is null "
+        "  returning 1 "
+        "), del_map as ( "
+        "  delete from memory_asset ma using losers l where ma.\"memoriesId\"=l.lose_id returning 1 "
+        "), del_mem as ( "
+        "  delete from memory m using losers l where m.id=l.lose_id returning 1 "
+        ") "
+        "select (select count(*) from del_mem)::text || '|' || (select count(*) from merged)::text;"
+    )
+    deleted_mem = 0
+    merged_assets = 0
+    if result and "|" in result[0]:
+        a, b = result[0].split("|", 1)
+        deleted_mem = int(a or 0)
+        merged_assets = int(b or 0)
+    return deleted_mem, merged_assets
+
+
 def parse_iso(iso_text: str):
     if not iso_text:
         return None
@@ -150,6 +204,8 @@ def main() -> int:
         print("ERROR no encontré ownerId para email admin", file=sys.stderr)
         return 2
     owner_id = owner_lines[0]
+
+    deduped, dedupe_merged_assets = dedupe_on_this_day(owner_id, args.dry_run)
 
     # Compatibilidad móvil: algunos clientes no muestran memories con hideAt NULL.
     # Backfill seguro: no borra nada, solo completa hideAt faltante.
@@ -276,6 +332,7 @@ def main() -> int:
     print(
         f"SUMMARY mmdd={mmdd} date={target_local_date.isoformat()} "
         f"backfilled_hideAt={backfill_count} normalized_showAt={normalize_count} "
+        f"deduped={deduped} dedupe_merged_assets={dedupe_merged_assets} "
         f"created={created} patched={patched} kept={kept}"
     )
     return 0
