@@ -80,6 +80,26 @@ def db_query(sql: str) -> List[str]:
     return [x.strip() for x in proc.stdout.splitlines() if x.strip()]
 
 
+def db_exec(sql: str) -> str:
+    cmd = [
+        "docker",
+        "exec",
+        "immich_postgres",
+        "psql",
+        "-U",
+        "immich",
+        "-d",
+        "immich",
+        "-At",
+        "-c",
+        sql,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "psql exec failed")
+    return proc.stdout.strip()
+
+
 def parse_iso(iso_text: str):
     if not iso_text:
         return None
@@ -130,6 +150,22 @@ def main() -> int:
         return 2
     owner_id = owner_lines[0]
 
+    # Compatibilidad móvil: algunos clientes no muestran memories con hideAt NULL.
+    # Backfill seguro: no borra nada, solo completa hideAt faltante.
+    backfill_rows = db_query(
+        "select count(*) from memory "
+        f"where \"ownerId\"='{owner_id}' and type='on_this_day' "
+        "and \"showAt\" is not null and \"hideAt\" is null;"
+    )
+    backfill_count = int(backfill_rows[0]) if backfill_rows else 0
+    if backfill_count > 0 and not args.dry_run:
+        db_exec(
+            "update memory "
+            "set \"hideAt\"=(\"showAt\" + interval '1 day' - interval '1 milliseconds') "
+            f"where \"ownerId\"='{owner_id}' and type='on_this_day' "
+            "and \"showAt\" is not null and \"hideAt\" is null;"
+        )
+
     year_rows = db_query(
         "select y::text || '|' || ids from ("
         "select extract(year from \"localDateTime\")::int as y, "
@@ -171,6 +207,7 @@ def main() -> int:
 
         memory_at = to_z(local_midnight.replace(year=year))
         show_at = to_z(local_midnight)
+        hide_at = to_z(local_midnight + dt.timedelta(days=1) - dt.timedelta(milliseconds=1))
         key = (year, target_local_date.isoformat())
         current = existing.get(key)
 
@@ -180,10 +217,11 @@ def main() -> int:
                 "data": {"year": year},
                 "memoryAt": memory_at,
                 "showAt": show_at,
+                "hideAt": hide_at,
                 "assetIds": ids,
             }
             if args.dry_run:
-                print(f"DRYRUN create year={year} assets={len(ids)} showAt={show_at}")
+                print(f"DRYRUN create year={year} assets={len(ids)} showAt={show_at} hideAt={hide_at}")
             else:
                 c, body = http_json("POST", f"{args.api_base}/memories", payload, headers=headers)
                 if c == 201:
@@ -216,7 +254,8 @@ def main() -> int:
             kept += 1
 
     print(
-        f"SUMMARY mmdd={mmdd} date={target_local_date.isoformat()} created={created} patched={patched} kept={kept}"
+        f"SUMMARY mmdd={mmdd} date={target_local_date.isoformat()} "
+        f"backfilled_hideAt={backfill_count} created={created} patched={patched} kept={kept}"
     )
     return 0
 
