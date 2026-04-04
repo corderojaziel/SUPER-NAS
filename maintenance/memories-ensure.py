@@ -131,6 +131,7 @@ def main() -> int:
     target_local_date = (now_local + dt.timedelta(days=args.days_offset)).date()
     mmdd = target_local_date.strftime("%m-%d")
     local_midnight = dt.datetime.combine(target_local_date, dt.time.min, tzinfo=zone)
+    utc_midnight = dt.datetime.combine(target_local_date, dt.time.min, tzinfo=dt.timezone.utc)
 
     c, login = http_json("POST", f"{args.api_base}/auth/login", {"email": email, "password": password})
     if c not in (200, 201) or "accessToken" not in login:
@@ -166,6 +167,25 @@ def main() -> int:
             "and \"showAt\" is not null and \"hideAt\" is null;"
         )
 
+    # Compatibilidad móvil (timeline): algunas apps filtran con día UTC estricto.
+    # Si showAt no está a 00:00:00Z, las memories pueden quedar ocultas en app móvil.
+    # Normalizamos únicamente las on_this_day del owner, sin borrar registros.
+    normalize_rows = db_query(
+        "select count(*) from memory "
+        f"where \"ownerId\"='{owner_id}' and type='on_this_day' and \"showAt\" is not null "
+        "and extract(hour from (\"showAt\" at time zone 'UTC'))::int <> 0;"
+    )
+    normalize_count = int(normalize_rows[0]) if normalize_rows else 0
+    if normalize_count > 0 and not args.dry_run:
+        db_exec(
+            "update memory "
+            "set \"showAt\" = ((date_trunc('day', (\"showAt\" at time zone 'UTC'))) at time zone 'UTC'), "
+            "\"hideAt\" = (((date_trunc('day', (\"showAt\" at time zone 'UTC'))) at time zone 'UTC') + "
+            "interval '1 day' - interval '1 milliseconds') "
+            f"where \"ownerId\"='{owner_id}' and type='on_this_day' and \"showAt\" is not null "
+            "and extract(hour from (\"showAt\" at time zone 'UTC'))::int <> 0;"
+        )
+
     year_rows = db_query(
         "select y::text || '|' || ids from ("
         "select extract(year from \"localDateTime\")::int as y, "
@@ -191,8 +211,8 @@ def main() -> int:
         show_at = parse_iso(m.get("showAt", ""))
         if not isinstance(year, int) or show_at is None:
             continue
-        show_date_local = show_at.astimezone(zone).date().isoformat()
-        existing[(year, show_date_local)] = m
+        show_date_utc = show_at.astimezone(dt.timezone.utc).date().isoformat()
+        existing[(year, show_date_utc)] = m
 
     created = 0
     patched = 0
@@ -206,8 +226,8 @@ def main() -> int:
             continue
 
         memory_at = to_z(local_midnight.replace(year=year))
-        show_at = to_z(local_midnight)
-        hide_at = to_z(local_midnight + dt.timedelta(days=1) - dt.timedelta(milliseconds=1))
+        show_at = to_z(utc_midnight)
+        hide_at = to_z(utc_midnight + dt.timedelta(days=1) - dt.timedelta(milliseconds=1))
         key = (year, target_local_date.isoformat())
         current = existing.get(key)
 
@@ -255,7 +275,8 @@ def main() -> int:
 
     print(
         f"SUMMARY mmdd={mmdd} date={target_local_date.isoformat()} "
-        f"backfilled_hideAt={backfill_count} created={created} patched={patched} kept={kept}"
+        f"backfilled_hideAt={backfill_count} normalized_showAt={normalize_count} "
+        f"created={created} patched={patched} kept={kept}"
     )
     return 0
 
