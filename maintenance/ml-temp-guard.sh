@@ -1,19 +1,25 @@
 #!/bin/bash
 # ── ml-temp-guard.sh ─────────────────────────────────────────────────────
-# Guardián térmico con 3 niveles de protección:
+# Guardián térmico y de CPU con 4 niveles de protección:
 #
 #   NIVEL 1 — Detección de falla de ventilador
-#             CPU en reposo (< 20% uso) Y temp > 55°C
+#             CPU en reposo (< 20% uso) y temp > 55°C
 #             → aviso Telegram "posible falla de ventilador"
 #
-#   NIVEL 2 — Temperatura alta (≥ 75°C)
+#   NIVEL 2 — CPU sostenida muy alta (>= ML_CPU_MAX_PCT durante ML_CPU_DURATION_MIN min)
 #             → detiene ML + aviso Telegram
 #
-#   NIVEL 3 — Temperatura crítica (≥ 85°C)
+#   NIVEL 3 — Temperatura alta (>= 75°C)
+#             → detiene ML + aviso Telegram
+#
+#   NIVEL 4 — Temperatura crítica (>= 85°C)
 #             → detiene ML + ffmpeg + aviso urgente
 #
 # El arranque del ML lo gestiona night-run.sh, no este script.
 # Corre cada 5 minutos via cron.
+
+# Carga defaults persistentes (si existen) sin romper overrides por entorno.
+[ -f /etc/default/nas-ml-guard ] && . /etc/default/nas-ml-guard
 
 # ── Overrides opcionales para pruebas/tuning ──────────────────────────────
 TEMP_FILE_GLOB="${TEMP_FILE_GLOB:-/sys/class/thermal/thermal_zone*/temp}"
@@ -27,6 +33,12 @@ FAN_IDLE_TEMP_C="${FAN_IDLE_TEMP_C:-55}"
 FAN_IDLE_CPU_MAX_PCT="${FAN_IDLE_CPU_MAX_PCT:-20}"
 ML_TEMP_HIGH_C="${ML_TEMP_HIGH_C:-75}"
 ML_TEMP_CRIT_C="${ML_TEMP_CRIT_C:-85}"
+# CPU sostenida: si el ML lleva CPU_USAGE >= ML_CPU_MAX_PCT durante
+# ML_CPU_DURATION_MIN minutos consecutivos -> se pausa.
+# Intervalo del cron = 5 min, así que el contador se incrementa en 5 cada vez.
+ML_CPU_MAX_PCT="${ML_CPU_MAX_PCT:-80}"
+ML_CPU_DURATION_MIN="${ML_CPU_DURATION_MIN:-30}"
+ML_CPU_COUNTER_FILE="${ML_CPU_COUNTER_FILE:-/run/ml-cpu-overload-min}"
 TEMP_C_OVERRIDE="${TEMP_C_OVERRIDE:-}"
 CPU_USAGE_OVERRIDE="${CPU_USAGE_OVERRIDE:-}"
 
@@ -57,13 +69,7 @@ read_cpu_counters() {
   }' "$PROC_STAT_FILE" 2>/dev/null
 }
 
-# ── NIVEL 1: Detección de falla de ventilador ─────────────────────────────
-# Señal: CPU en reposo pero temperatura anormalmente alta
-# Con ventilador 120mm funcionando el reposo es 32–38°C
-# Sin ventilador el reposo sube a 45–55°C+
-# Umbral 55°C en reposo = firma confiable de ventilador muerto
-# Leer carga real con dos muestras cortas para evitar usar un promedio
-# acumulado desde el boot, que no refleja el estado actual del equipo.
+# ── Medir CPU actual ───────────────────────────────────────────────────────
 if [ -n "$CPU_USAGE_OVERRIDE" ]; then
   CPU_USAGE="$CPU_USAGE_OVERRIDE"
 else
@@ -85,6 +91,7 @@ else
   fi
 fi
 
+# ── NIVEL 1: Detección de falla de ventilador ─────────────────────────────
 if [ "$TEMP_C" -gt "$FAN_IDLE_TEMP_C" ] && [ "${CPU_USAGE:-50}" -lt "$FAN_IDLE_CPU_MAX_PCT" ]; then
   NAS_ALERT_KEY="fan_idle_hot" NAS_ALERT_TTL="$FAN_INTERVAL" \
     "$NAS_ALERT_BIN" "⚠️ El NAS está más caliente de lo normal estando casi en reposo
@@ -96,12 +103,33 @@ Comandos sugeridos (diagnóstico):
 2) cat /sys/class/thermal/thermal_zone*/temp" || true
 fi
 
-# ── NIVEL 3: Temperatura crítica ≥ 85°C ───────────────────────────────────
-# Actúa antes que el nivel 2 para no duplicar acciones
+# ── NIVEL 2: CPU sostenida alta con ML activo ─────────────────────────────
+ML_RUNNING=0
+"$DOCKER_BIN" inspect immich_machine_learning --format '{{.State.Running}}' 2>/dev/null | grep -q "true" && ML_RUNNING=1
+
+if [ "$ML_RUNNING" -eq 1 ] && [ "${CPU_USAGE:-0}" -ge "$ML_CPU_MAX_PCT" ]; then
+  CURRENT_MIN=0
+  [ -f "$ML_CPU_COUNTER_FILE" ] && CURRENT_MIN=$(cat "$ML_CPU_COUNTER_FILE" 2>/dev/null || echo 0)
+  CURRENT_MIN=$(( CURRENT_MIN + 5 ))
+  echo "$CURRENT_MIN" > "$ML_CPU_COUNTER_FILE"
+
+  if [ "$CURRENT_MIN" -ge "$ML_CPU_DURATION_MIN" ]; then
+    "$DOCKER_BIN" stop immich_machine_learning 2>/dev/null || true
+    rm -f "$ML_CPU_COUNTER_FILE"
+    NAS_ALERT_KEY="ml_cpu_overload" NAS_ALERT_TTL="3600" \
+      "$NAS_ALERT_BIN" "⚠️ IML pausada por CPU sostenida alta
+CPU: ${CPU_USAGE}% | Temp: ${TEMP_C}°C | Sobrecarga: ${CURRENT_MIN}/${ML_CPU_DURATION_MIN} min
+Acción del NAS: pausa IML y reanuda automáticamente cuando baje la carga." || true
+  fi
+else
+  rm -f "$ML_CPU_COUNTER_FILE"
+fi
+
+# ── NIVEL 4: Temperatura crítica >= 85°C ──────────────────────────────────
 if [ "$TEMP_C" -ge "$ML_TEMP_CRIT_C" ]; then
   "$DOCKER_BIN" stop immich_machine_learning 2>/dev/null || true
-  # Detener también ffmpeg si está corriendo
   "$PKILL_BIN" -15 -x ffmpeg 2>/dev/null || true
+  rm -f "$ML_CPU_COUNTER_FILE"
   NAS_ALERT_KEY="ml_temp_critical" "$NAS_ALERT_BIN" "🔴 Temperatura crítica en el NAS
 Temperatura actual: ${TEMP_C}°C
 Acción del NAS: detuve IML y conversión de video para proteger el equipo.
@@ -111,9 +139,10 @@ Comandos sugeridos:
   exit 0
 fi
 
-# ── NIVEL 2: Temperatura alta ≥ 75°C ─────────────────────────────────────
+# ── NIVEL 3: Temperatura alta >= 75°C ─────────────────────────────────────
 if [ "$TEMP_C" -ge "$ML_TEMP_HIGH_C" ]; then
   "$DOCKER_BIN" stop immich_machine_learning 2>/dev/null || true
+  rm -f "$ML_CPU_COUNTER_FILE"
   NAS_ALERT_KEY="ml_temp_high" "$NAS_ALERT_BIN" "🌡️ El NAS se calentó más de lo normal
 Temperatura actual: ${TEMP_C}°C
 Acción del NAS: pausé IML temporalmente para enfriar el equipo.

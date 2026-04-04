@@ -276,6 +276,13 @@ HDD_APM_LEVEL="${HDD_APM_LEVEL:-254}"
 ZRAM_ALGO="${ZRAM_ALGO:-zstd}"
 ZRAM_PERCENT="${ZRAM_PERCENT:-30}"
 ZRAM_USE_NAS_SERVICE="${ZRAM_USE_NAS_SERVICE:-1}"
+ML_CPU_MAX_PCT="${ML_CPU_MAX_PCT:-80}"
+ML_CPU_DURATION_MIN="${ML_CPU_DURATION_MIN:-30}"
+FAN_IDLE_TEMP_C="${FAN_IDLE_TEMP_C:-55}"
+FAN_IDLE_CPU_MAX_PCT="${FAN_IDLE_CPU_MAX_PCT:-20}"
+ML_TEMP_HIGH_C="${ML_TEMP_HIGH_C:-75}"
+ML_TEMP_CRIT_C="${ML_TEMP_CRIT_C:-85}"
+ML_GUARD_FAN_INTERVAL_SEC="${ML_GUARD_FAN_INTERVAL_SEC:-1800}"
 
 # Verificar que los discos existen como block devices
 for disk in "$DISK_PHOTOS" "$DISK_BACKUP"; do
@@ -1269,7 +1276,7 @@ log_step "Instalando scripts de mantenimiento"
 
 SCRIPTS=(
     "nas-alert.sh"       # Alertas Telegram — prerequisito de todos los demás
-    "ml-temp-guard.sh"   # Guardia térmica 3 niveles (ventilador, throttle, crítico)
+    "ml-temp-guard.sh"   # Guardia térmica+CPU 4 niveles (ventilador, CPU sostenida, throttle, crítico)
     "zram-nas-apply.sh"  # Reconfigura zram0 con secuencia robusta (reset + zstd)
     "smart-check.sh"     # Monitoreo SMART diario + test mensual de superficie
     "cache-clean.sh"     # Auditoría de huérfanos de cache (no borra)
@@ -1489,6 +1496,19 @@ EOF
 chmod 0644 /etc/default/nas-video-policy
 log_ok "Politica de video instalada (/etc/default/nas-video-policy)"
 
+cat > /etc/default/nas-ml-guard << EOF
+# Umbrales del guardián ML (ajustables sin editar scripts)
+ML_CPU_MAX_PCT=${ML_CPU_MAX_PCT}
+ML_CPU_DURATION_MIN=${ML_CPU_DURATION_MIN}
+FAN_IDLE_TEMP_C=${FAN_IDLE_TEMP_C}
+FAN_IDLE_CPU_MAX_PCT=${FAN_IDLE_CPU_MAX_PCT}
+ML_TEMP_HIGH_C=${ML_TEMP_HIGH_C}
+ML_TEMP_CRIT_C=${ML_TEMP_CRIT_C}
+FAN_INTERVAL_SEC=${ML_GUARD_FAN_INTERVAL_SEC}
+EOF
+chmod 0644 /etc/default/nas-ml-guard
+log_ok "Politica ML instalada (/etc/default/nas-ml-guard)"
+
 log_ok "Snapshots/restic de fotos/videos desactivados por diseño (BACKUP_PHOTOS_MODE=${BACKUP_PHOTOS_MODE:-disabled})"
 
 cat > /etc/logrotate.d/supernas << 'EOF'
@@ -1661,7 +1681,7 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 # ── Guardia térmica reactiva ──────────────────────────────────────────────
 # Independiente de night-run.sh: detecta sobrecalentamiento en cualquier
 # momento del día, no solo durante la secuencia nocturna.
-# 3 niveles: falla ventilador (55°C en reposo), ML stop (75°C), crítico (85°C).
+# 4 niveles: falla ventilador, CPU sostenida alta, ML stop térmico, crítico.
 */5 * * * * /usr/local/bin/ml-temp-guard.sh
 
 # ── Guardia de montajes ────────────────────────────────────────────────────
