@@ -144,13 +144,13 @@ BEGIN
     END IF;
 
     IF NOT (cfg ? 'nightlyTasks') THEN
-        cfg := jsonb_set(cfg, '{nightlyTasks}', '{"clusterNewFaces":false}'::jsonb, true);
+        cfg := jsonb_set(cfg, '{nightlyTasks}', '{"clusterNewFaces":false,"generateMemories":true}'::jsonb, true);
     END IF;
     IF cfg #> '{nightlyTasks,clusterNewFaces}' IS NULL THEN
         cfg := jsonb_set(cfg, '{nightlyTasks,clusterNewFaces}', 'false'::jsonb, true);
     END IF;
     IF cfg #> '{nightlyTasks,generateMemories}' IS NULL THEN
-        cfg := jsonb_set(cfg, '{nightlyTasks,generateMemories}', 'false'::jsonb, true);
+        cfg := jsonb_set(cfg, '{nightlyTasks,generateMemories}', 'true'::jsonb, true);
     END IF;
 
     IF NOT (cfg ? 'backup') THEN
@@ -1449,11 +1449,18 @@ TEMP_CLEAN_AGE_DAYS=${TEMP_CLEAN_AGE_DAYS:-7}
 PLAYBACK_AUDIT_ENABLED=${PLAYBACK_AUDIT_ENABLED:-1}
 PLAYBACK_AUDIT_MAX_MIN=${PLAYBACK_AUDIT_MAX_MIN:-45}
 PLAYBACK_AUDIT_IMMICH_API=${PLAYBACK_AUDIT_IMMICH_API:-http://127.0.0.1:2283}
+PLAYBACK_AUDIT_RESOLVER_BASE=${PLAYBACK_AUDIT_RESOLVER_BASE:-http://127.0.0.1:2284}
 PLAYBACK_AUDIT_BASE=${PLAYBACK_AUDIT_BASE:-http://127.0.0.1}
 PLAYBACK_AUDIT_OUTPUT_DIR=${PLAYBACK_AUDIT_OUTPUT_DIR:-/var/lib/nas-health}
 PLAYBACK_AUDIT_WORKERS=${PLAYBACK_AUDIT_WORKERS:-24}
 PLAYBACK_AUDIT_TIMEOUT_SEC=${PLAYBACK_AUDIT_TIMEOUT_SEC:-20}
 PLAYBACK_AUDIT_SAMPLE_BYTES=${PLAYBACK_AUDIT_SAMPLE_BYTES:-256}
+PLAYBACK_AUDIT_APPEND_TS=${PLAYBACK_AUDIT_APPEND_TS:-1}
+PLAYBACK_AUDIT_FFPROBE_WORKERS=${PLAYBACK_AUDIT_FFPROBE_WORKERS:-4}
+PLAYBACK_AUDIT_FFPROBE_TIMEOUT_SEC=${PLAYBACK_AUDIT_FFPROBE_TIMEOUT_SEC:-20}
+PLAYBACK_AUDIT_FFPROBE_SAMPLE_SEC=${PLAYBACK_AUDIT_FFPROBE_SAMPLE_SEC:-2}
+PLAYBACK_AUDIT_FFPROBE_RETRIES=${PLAYBACK_AUDIT_FFPROBE_RETRIES:-2}
+PLAYBACK_AUDIT_FFPROBE_RETRY_SLEEP_SEC=${PLAYBACK_AUDIT_FFPROBE_RETRY_SLEEP_SEC:-1.5}
 PLAYBACK_AUDIT_SCOPE=${PLAYBACK_AUDIT_SCOPE:-new_only}
 PLAYBACK_AUDIT_SINCE_FILE=${PLAYBACK_AUDIT_SINCE_FILE:-/var/lib/nas-health/playback-audit.since}
 PLAYBACK_AUDIT_FIRST_RUN_HOURS=${PLAYBACK_AUDIT_FIRST_RUN_HOURS:-24}
@@ -1469,6 +1476,7 @@ PLAYBACK_WATCHDOG_MAX_CYCLES=${PLAYBACK_WATCHDOG_MAX_CYCLES:-4}
 PLAYBACK_WATCHDOG_INTERVAL_SEC=${PLAYBACK_WATCHDOG_INTERVAL_SEC:-180}
 PLAYBACK_WATCHDOG_STUCK_ROUNDS=${PLAYBACK_WATCHDOG_STUCK_ROUNDS:-2}
 PLAYBACK_WATCHDOG_REPROCESS_TIMEOUT_MIN=${PLAYBACK_WATCHDOG_REPROCESS_TIMEOUT_MIN:-240}
+PLAYBACK_AUDIT_TRIGGER_WATCHDOG_ON_PROCESSING=${PLAYBACK_AUDIT_TRIGGER_WATCHDOG_ON_PROCESSING:-1}
 VIDEO_OPTIMIZE_MAX_MIN=${VIDEO_OPTIMIZE_MAX_MIN:-180}
 VIDEO_NOTIFY_BACKLOG_THRESHOLD=${VIDEO_NOTIFY_BACKLOG_THRESHOLD:-10}
 VIDEO_NOTIFY_STOP_MIN=${VIDEO_NOTIFY_STOP_MIN:-1440}
@@ -1658,7 +1666,7 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 
 # ── IML continuo por carga (activo por default) ───────────────────────────
 # Drena colas de IML cuando la caja está libre y se pausa en picos de uso.
-*/10 * * * * /usr/local/bin/iml-autopilot.sh
+*/5 * * * * /usr/local/bin/iml-autopilot.sh
 
 # ── Reproceso continuo por carga (activo por default) ─────────────────────
 # Convierte videos pendientes sin esperar a la noche y se pausa/reanuda

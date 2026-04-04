@@ -86,7 +86,7 @@ cfg = json.loads(sys.argv[1])
 checks = [
     ("backup.database.enabled", cfg.get("backup", {}).get("database", {}).get("enabled") is False),
     ("ffmpeg.transcode=disabled", cfg.get("ffmpeg", {}).get("transcode") == "disabled"),
-    ("nightlyTasks.generateMemories=false", cfg.get("nightlyTasks", {}).get("generateMemories") is False),
+    ("nightlyTasks.generateMemories=true", cfg.get("nightlyTasks", {}).get("generateMemories") is True),
     ("library.scan.enabled=false", cfg.get("library", {}).get("scan", {}).get("enabled") is False),
 ]
 for label, ok in checks:
