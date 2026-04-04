@@ -1299,6 +1299,7 @@ SCRIPTS=(
     "mount-guard.sh"     # Detecta desmontajes/remontajes y notifica Telegram
     "post-upload-check.sh" # Verificacion puntual del flujo tras subir un asset
     "audit-snapshot.sh"  # Bitacora operativa periodica (CPU/RAM/colas/montajes)
+    "memories-ensure.py" # Garantiza recuerdos "On this day" con assets en fecha local
 )
 
 for script in "${SCRIPTS[@]}"; do
@@ -1483,6 +1484,7 @@ VIDEO_NOTIFY_STOP_MIN=${VIDEO_NOTIFY_STOP_MIN:-1440}
 VIDEO_NOTIFY_STUCK_MIN=${VIDEO_NOTIFY_STUCK_MIN:-$VIDEO_NOTIFY_STOP_MIN}
 VIDEO_NOTIFY_STATE_FILE=${VIDEO_NOTIFY_STATE_FILE:-/var/lib/nas-health/video-notify-state.env}
 VIDEO_NOTIFY_VERBOSE=${VIDEO_NOTIFY_VERBOSE:-0}
+MEMORIES_TIMEZONE=${MEMORIES_TIMEZONE:-America/Mexico_City}
 EOF
 chmod 0644 /etc/default/nas-video-policy
 log_ok "Politica de video instalada (/etc/default/nas-video-policy)"
@@ -1651,6 +1653,10 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 # Razón del horario 2 AM: CPU frío (35°C), sin usuarios activos,
 # 4 horas de margen antes de las 6 AM para completar todo.
 0 2 * * * /usr/local/bin/night-run.sh
+
+# ── Recuerdos ("On this day") diarios ─────────────────────────────────────
+# Asegura que exista memoria del día con assets (idempotente, sin borrar nada).
+10 0 * * * /usr/local/bin/memories-ensure.py --timezone America/Mexico_City
 
 # ── Guardia térmica reactiva ──────────────────────────────────────────────
 # Independiente de night-run.sh: detecta sobrecalentamiento en cualquier

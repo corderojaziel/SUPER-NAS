@@ -74,10 +74,10 @@ BEGIN
     cfg := jsonb_set(cfg, '{reverseGeocoding,enabled}', 'true'::jsonb, true);
 
     IF NOT (cfg ? 'nightlyTasks') THEN
-        cfg := jsonb_set(cfg, '{nightlyTasks}', '{"clusterNewFaces":false}'::jsonb, true);
+        cfg := jsonb_set(cfg, '{nightlyTasks}', '{"clusterNewFaces":false,"generateMemories":true}'::jsonb, true);
     END IF;
     cfg := jsonb_set(cfg, '{nightlyTasks,clusterNewFaces}', '${cluster}'::jsonb, true);
-    cfg := jsonb_set(cfg, '{nightlyTasks,generateMemories}', 'false'::jsonb, true);
+    cfg := jsonb_set(cfg, '{nightlyTasks,generateMemories}', 'true'::jsonb, true);
 
     IF NOT (cfg ? 'backup') THEN
         cfg := jsonb_set(cfg, '{backup}', '{"database":{"enabled":false}}'::jsonb, true);

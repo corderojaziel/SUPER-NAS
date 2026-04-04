@@ -109,8 +109,19 @@ else
 fi
 
 section "SCRIPTS DE MANTENIMIENTO"
-for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/video-autopilot.sh /usr/local/bin/iml-autopilot.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/manual-retention.sh /usr/local/bin/failover-sync.sh /usr/local/bin/storage-failover.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/playback-watchdog.sh /usr/local/bin/temp-clean.sh /usr/local/bin/state-backup.sh /usr/local/bin/state-restore.sh /usr/local/bin/disaster-restore.sh /usr/local/bin/bootstrap-restore.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh /usr/local/bin/zram-nas-apply.sh; do
-  if [ -x "$f" ]; then bash -n "$f" >/dev/null 2>&1 && ok "$f instalado y sintaxis válida" || fail "$f con errores de sintaxis"; else fail "$f ausente"; fi
+for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/video-autopilot.sh /usr/local/bin/iml-autopilot.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/manual-retention.sh /usr/local/bin/failover-sync.sh /usr/local/bin/storage-failover.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/playback-watchdog.sh /usr/local/bin/temp-clean.sh /usr/local/bin/state-backup.sh /usr/local/bin/state-restore.sh /usr/local/bin/disaster-restore.sh /usr/local/bin/bootstrap-restore.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh /usr/local/bin/zram-nas-apply.sh /usr/local/bin/memories-ensure.py; do
+  if [ ! -x "$f" ]; then
+    fail "$f ausente"
+    continue
+  fi
+  case "$f" in
+    *.py)
+      python3 -m py_compile "$f" >/dev/null 2>&1 && ok "$f instalado y sintaxis válida" || fail "$f con errores de sintaxis"
+      ;;
+    *)
+      bash -n "$f" >/dev/null 2>&1 && ok "$f instalado y sintaxis válida" || fail "$f con errores de sintaxis"
+      ;;
+  esac
 done
 if grep -q 'api.telegram.org' /usr/local/bin/nas-alert.sh 2>/dev/null; then
   ok "nas-alert.sh apunta a Telegram API real"
@@ -319,7 +330,7 @@ fi
 
 section "CRONTAB"
 crontab -l 2>/dev/null | grep -q 'night-run.sh' && ok "Cron night-run presente" || fail "Cron night-run ausente"
-crontab -l 2>/dev/null | grep -q 'immich-ml-window.sh day-off' && ok "Cron day-off IA visual presente" || warn "Cron day-off IA visual ausente"
+crontab -l 2>/dev/null | grep -q 'memories-ensure.py' && ok "Cron recuerdos diarios presente" || warn "Cron recuerdos diarios ausente"
 crontab -l 2>/dev/null | grep -q 'iml-autopilot.sh' && ok "Cron iml-autopilot presente" || warn "Cron iml-autopilot ausente"
 crontab -l 2>/dev/null | grep -q 'video-autopilot.sh' && ok "Cron video-autopilot presente" || warn "Cron video-autopilot ausente"
 crontab -l 2>/dev/null | grep -q 'ml-temp-guard' && ok "Cron ml-temp-guard presente" || warn "Cron ml-temp-guard ausente"
