@@ -27,7 +27,7 @@ Uso:
 from __future__ import annotations
 
 import argparse, base64, datetime as dt, hashlib, json, math
-import os, subprocess, sys, urllib.error, urllib.request
+import os, subprocess, sys, unicodedata, urllib.error, urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -57,6 +57,7 @@ GEMINI_MODELS = [
 MAX_PHOTOS   = max(1, int(os.environ.get("COLLAGE_MAX_PHOTOS", "10")))
 PREVIEW_SIZE = max(128, int(os.environ.get("COLLAGE_PREVIEW_SIZE", "512")))
 GEMINI_ALERT_TTL = max(60, int(os.environ.get("COLLAGE_GEMINI_ALERT_TTL", "21600")))
+RECENT_DECISION_DAYS = max(1, int(os.environ.get("COLLAGE_RECENT_DECISION_DAYS", "2")))
 PREVIEW_FACE_CACHE: Dict[str, int] = {}
 FACE_CASCADES = None
 DNN_FACE_NET = None
@@ -385,13 +386,70 @@ LAYOUTS = {
 }
 
 FALLBACK_TITLES = [
-    "Instantes de {month}",
-    "Postales de {month}",
-    "Abril en familia",
-    "Tarde de {month}",
-    "Momentos de {month}",
-    "Recuerdo de {month}",
+    "Risas de {month}",
+    "Casa y familia",
+    "Entre abrazos",
+    "Luz de {month}",
+    "Tarde querida",
+    "Cerca de casa",
 ]
+
+GENERIC_TITLE_PREFIXES = (
+    "momento de",
+    "momentos de",
+    "recuerdo de",
+    "recuerdos de",
+    "instante de",
+    "instantes de",
+    "postal de",
+    "postales de",
+    "tarde de",
+    "dia de",
+    "dias de",
+    "dia en",
+    "dias en",
+)
+
+GENERIC_TITLE_EXACT = {
+    "alegria compartida",
+    "felicidad compartida",
+    "amor compartido",
+    "familia unida",
+    "momento especial",
+    "recuerdo especial",
+    "buenos momentos",
+    "gran alegria",
+    "gran recuerdo",
+}
+
+GENERIC_TITLE_WORDS = {
+    "abril",
+    "alegria",
+    "amor",
+    "casa",
+    "compartida",
+    "compartido",
+    "dia",
+    "dias",
+    "especial",
+    "familia",
+    "felicidad",
+    "instante",
+    "instantes",
+    "juntos",
+    "juntas",
+    "luz",
+    "momento",
+    "momentos",
+    "postal",
+    "postales",
+    "querida",
+    "recuerdo",
+    "recuerdos",
+    "risa",
+    "risas",
+    "tarde",
+}
 
 # ── Gemini ─────────────────────────────────────────────────────────────────
 def img_to_b64(path:str, max_px:int=PREVIEW_SIZE) -> str:
@@ -454,7 +512,8 @@ def photo_shape_counts(photo_paths: List[str]) -> Tuple[int, int, int]:
             square += 1
     return portrait, landscape, square
 
-def fallback_decision(n_photos:int, month:int, memory_key:str="", photo_paths:Optional[List[str]]=None) -> dict:
+def fallback_decision(n_photos:int, month:int, memory_key:str="", photo_paths:Optional[List[str]]=None,
+                      avoid_layouts:Optional[List[str]]=None) -> dict:
     season = {12:"invierno",1:"invierno",2:"invierno",
               3:"primavera",4:"primavera",5:"primavera",
               6:"verano",7:"verano",8:"verano",
@@ -473,6 +532,11 @@ def fallback_decision(n_photos:int, month:int, memory_key:str="", photo_paths:Op
         candidates = ["featured", "grid", "polaroid", "circle_hero"]
     else:
         candidates = ["grid", "polaroid", "featured", "story"]
+
+    blocked = {layout for layout in (avoid_layouts or []) if layout in candidates}
+    filtered = [layout for layout in candidates if layout not in blocked]
+    if filtered:
+        candidates = filtered
 
     layout = choice_from_seed(candidates, seed)
     title_template = choice_from_seed(FALLBACK_TITLES, seed + "|title")
@@ -516,17 +580,155 @@ def write_decision_sidecar(path: Path, payload: dict) -> None:
     except OSError:
         pass
 
+def daily_sidecar_path(target_date: dt.date) -> Path:
+    return Path(COLLAGE_DIR) / f"collage-daily-{target_date.isoformat()}.json"
+
+def load_recent_daily_decisions(target_date: dt.date, days: int=RECENT_DECISION_DAYS) -> List[dict]:
+    decisions: List[dict] = []
+    for offset in range(1, max(1, days) + 1):
+        sidecar = daily_sidecar_path(target_date - dt.timedelta(days=offset))
+        if not sidecar.exists():
+            continue
+        try:
+            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, dict) and payload.get("mode") == "daily":
+            decisions.append(payload)
+    return decisions
+
+def strip_accents(value: str) -> str:
+    return "".join(
+        char for char in unicodedata.normalize("NFD", value)
+        if unicodedata.category(char) != "Mn"
+    )
+
+def normalize_text_key(value: str) -> str:
+    raw = strip_accents(str(value or "")).lower()
+    return " ".join(raw.replace("\n", " ").replace("\r", " ").split())
+
+def clean_title_candidate(value: object, max_len: int=60) -> str:
+    if not isinstance(value, str):
+        return ""
+    cleaned = " ".join(value.replace("\n", " ").replace("\r", " ").split()).strip()
+    cleaned = cleaned.strip("`'\".,;:- ")
+    if not cleaned:
+        return ""
+    if cleaned == cleaned.lower():
+        cleaned = cleaned[:1].upper() + cleaned[1:]
+    return cleaned[:max_len]
+
+def coerce_string_list(value: object, max_items: int=4) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    items: List[str] = []
+    for raw in value:
+        cleaned = clean_title_candidate(raw)
+        if cleaned and cleaned not in items:
+            items.append(cleaned)
+        if len(items) >= max_items:
+            break
+    return items
+
+def is_generic_title(title: str) -> bool:
+    normalized = normalize_text_key(title)
+    if not normalized:
+        return True
+    if normalized in GENERIC_TITLE_EXACT:
+        return True
+    if any(normalized.startswith(prefix) for prefix in GENERIC_TITLE_PREFIXES):
+        return True
+    words = [word for word in normalized.split() if len(word) > 1]
+    if len(words) < 2:
+        return True
+    if set(words).issubset(GENERIC_TITLE_WORDS):
+        return True
+    return False
+
+def title_candidates_from_decision(decision: dict) -> List[str]:
+    candidates: List[str] = []
+    for candidate in [decision.get("title")] + coerce_string_list(decision.get("title_options")) + [decision.get("theme")]:
+        cleaned = clean_title_candidate(candidate)
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+    return candidates
+
+def layout_candidates_from_decision(decision: dict) -> List[str]:
+    candidates: List[str] = []
+    for candidate in coerce_string_list(decision.get("layout_candidates"), max_items=len(LAYOUTS)):
+        layout = candidate.strip().lower()
+        if layout in LAYOUTS and layout not in candidates:
+            candidates.append(layout)
+    return candidates
+
+def first_valid_layout(candidates: List[str], n_photos: int, blocked: Optional[List[str]]=None) -> str:
+    blocked_set = {layout for layout in (blocked or []) if layout}
+    for layout in candidates:
+        if layout in blocked_set:
+            continue
+        if layout in LAYOUTS and n_photos >= LAYOUT_MIN_PHOTOS.get(layout, 1):
+            return layout
+    return ""
+
+def recent_collage_context(recent_daily_decisions: Optional[List[dict]]) -> str:
+    recent_daily_decisions = recent_daily_decisions or []
+    if not recent_daily_decisions:
+        return "Sin collages recientes guardados."
+    lines = []
+    for item in recent_daily_decisions[:2]:
+        lines.append(
+            f"- {item.get('target_date', '?')}: layout={item.get('layout', '?')}, "
+            f"paleta={item.get('palette', '?')}, título=\"{item.get('title', '')}\""
+        )
+    return "\n".join(lines)
+
+def choose_title(decision: dict, fallback_title: str) -> Tuple[str, bool]:
+    for candidate in title_candidates_from_decision(decision):
+        if not is_generic_title(candidate):
+            return candidate, False
+    cleaned_fallback = clean_title_candidate(fallback_title)
+    return cleaned_fallback or fallback_title, True
+
+def choose_layout(layout_name: object, photo_count: int, fallback: dict,
+                  decision: dict, recent_layouts: Optional[List[str]]=None) -> Tuple[str, str]:
+    recent_layouts = [layout for layout in (recent_layouts or []) if layout in LAYOUTS]
+    chosen = str(layout_name or "").strip().lower()
+    alternatives = layout_candidates_from_decision(decision)
+    if chosen not in alternatives and chosen:
+        alternatives = [chosen] + alternatives
+
+    note = ""
+    if chosen not in LAYOUTS:
+        chosen = fallback["layout"]
+        note = f"layout inválido de Gemini, usando fallback={chosen}"
+    elif photo_count < LAYOUT_MIN_PHOTOS.get(chosen, 1):
+        alt = first_valid_layout(alternatives[1:], photo_count)
+        chosen = alt or fallback["layout"]
+        note = f"{layout_name} necesita {LAYOUT_MIN_PHOTOS.get(str(layout_name), 1)} fotos, usando {chosen}"
+
+    if recent_layouts and chosen == recent_layouts[0]:
+        alt = first_valid_layout(alternatives, photo_count, blocked=[chosen])
+        if not alt:
+            alt = first_valid_layout([fallback["layout"]], photo_count, blocked=[chosen])
+        if alt and alt != chosen:
+            note = (note + "; " if note else "") + f"evitando repetir layout de ayer ({chosen})"
+            chosen = alt
+
+    return chosen or fallback["layout"], note
+
 def ask_gemini(api_key:str, photo_paths:List[str], month:int, memory_key:str="",
-               allow_fallback:bool=False, alert_context:str="") -> dict:
+               allow_fallback:bool=False, alert_context:str="",
+               recent_daily_decisions:Optional[List[dict]]=None) -> dict:
     """Manda las fotos a Gemini y él decide todo. Devuelve dict con decisiones."""
     layouts_desc = (
-        "columns: 2 fotos lado a lado, ideal para retratos pareados. "
-        "story: 3 fotos apiladas, ideal para narrativa cronológica. "
-        "featured: 1 foto destacada + 2 pequeñas, ideal cuando hay una foto principal clara. "
-        "polaroid: fotos con rotación tipo polaroid, ideal para momentos casuales/espontáneos. "
-        "circle_hero: foto principal circular + 2 laterales, ideal para retrato principal + contexto. "
-        "grid: cuadrícula uniforme, ideal cuando hay 4+ fotos similares en importancia."
+        "columns: usa las 2 mejores fotos lado a lado; funciona cuando hay un par fuerte. "
+        "story: usa las 3 mejores fotos apiladas; funciona cuando hay secuencia o progresión. "
+        "featured: usa 1 foto hero + 2 de apoyo; funciona cuando una imagen manda visualmente. "
+        "polaroid: usa 3-4 fotos con gesto espontáneo o familiar. "
+        "circle_hero: usa 3 fotos; un retrato principal con dos apoyos. "
+        "grid: usa 4-6 fotos solo cuando varias merecen casi el mismo peso."
     )
+    recent_context = recent_collage_context(recent_daily_decisions)
 
     parts = []
     for i, path in enumerate(photo_paths):
@@ -543,23 +745,38 @@ def ask_gemini(api_key:str, photo_paths:List[str], month:int, memory_key:str="",
 Layouts disponibles:
 {layouts_desc}
 
+Contexto reciente para no reciclar el mismo look si no hace falta:
+{recent_context}
+
 Responde SOLO con JSON válido (sin markdown, sin texto fuera del JSON):
 {{
   "layout": "<nombre exacto del layout>",
   "palette": "primavera|verano|otoño|otono|invierno|default",
-  "title": "<título emotivo en español, máx 4 palabras>",
+  "title": "<título corto en español, 2-4 palabras, específico>",
   "photo_order": [0,1,2,...],
-  "reason": "<una línea>"
+  "reason": "<una línea>",
+  "layout_candidates": ["<layout fuerte>", "<layout alterno>"],
+  "title_options": ["<título mejor>", "<título alterno>"],
+  "theme": "<tema visual corto>"
 }}
 
 Reglas estrictas:
 - Decide TODO solo por el contenido visual de las fotos
 - Prioriza fotos de personas, familia, retratos, momentos humanos y escenas emotivas
 - Evita elegir screenshots, carreteras vacías, documentos, logos, objetos sueltos o fotos de pantallas si hay fotos humanas disponibles
+- Piensa primero en la historia: vínculo visible, actividad, emoción, edad, celebración o gesto
+- La paleta debe responder al ambiente visual; usa la temporada solo como desempate, no como regla ciega
+- NO elijas grid solo por cantidad; si una o dos fotos dominan, usa un layout editorial y deja esas fotos al inicio de photo_order
+- Si hay más fotos de las que el layout necesita, photo_order debe poner primero las que sí se usarán
+- Si varias opciones funcionan parecido, evita repetir el mismo layout del collage de ayer
+- El título debe sonar humano y concreto: por ejemplo relación, actividad o escena; evita frases comodín como "Momentos de...", "Recuerdo de..." o "Alegría compartida"
+- Si ves una relación clara como padre e hijo, familia, amigas, fiesta o comida, nómbrala sin inventar nombres propios
 - photo_order: lista de enteros 0..{n_photos-1}, sin repetir, sin strings
 - palette: usa EXACTAMENTE una de estas palabras, no colores hex ni arrays
-- columns necesita exactamente 2 fotos
-- story necesita exactamente 3 fotos
+- layout_candidates: lista corta de layouts válidos, del más fuerte al más seguro
+- title_options: 2 alternativas cortas y específicas
+- columns necesita al menos 2 fotos
+- story necesita al menos 3 fotos
 - featured necesita al menos 1 foto
 - polaroid necesita al menos 2 fotos
 - circle_hero necesita al menos 3 fotos
@@ -1113,27 +1330,20 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
 
     layout_name  = decision.get("layout", "")
     palette_name = decision.get("palette", "default")
-    title        = decision.get("title",  f"{MESES[target_date.month].capitalize()} {year}")
     order_raw    = decision.get("photo_order", [])
     reason       = decision.get("reason", "")
-
-    # Validar layout: debe existir y tener suficientes fotos
-    if layout_name not in LAYOUTS:
-        layout_name = fallback_decision(len(paths), target_date.month, memory_key=f"{mid}:{year}", photo_paths=paths)["layout"]
-        print(f"  WARN: layout inválido de Gemini, usando fallback={layout_name}")
-    elif len(paths) < LAYOUT_MIN_PHOTOS.get(layout_name, 1):
-        fallback = fallback_decision(len(paths), target_date.month, memory_key=f"{mid}:{year}", photo_paths=paths)["layout"]
-        print(f"  WARN: {layout_name} necesita {LAYOUT_MIN_PHOTOS[layout_name]} fotos "
-              f"pero solo hay {len(paths)}, usando fallback={fallback}")
-        layout_name = fallback
+    fallback = fallback_decision(len(paths), target_date.month, memory_key=f"{mid}:{year}", photo_paths=paths)
+    layout_name, layout_note = choose_layout(layout_name, len(paths), fallback, decision)
+    if layout_note:
+        print(f"  WARN: {layout_note}")
 
     # Validar palette
     palette_name = normalize_palette_name(palette_name)
 
     # Validar title
-    if not isinstance(title, str) or not title.strip():
-        title = f"{MESES[target_date.month].capitalize()} {year}"
-    title = title.strip()[:60]  # máximo 60 chars
+    title, used_title_fallback = choose_title(decision, fallback.get("title", f"{MESES[target_date.month].capitalize()} {year}"))
+    if used_title_fallback:
+        print(f"  WARN: título genérico o vacío de Gemini, usando fallback='{title}'")
 
     # Validar photo_order: enteros, en rango, sin repetir
     if not isinstance(order_raw, list):
@@ -1180,6 +1390,9 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
         "layout": layout_name,
         "palette": palette_name,
         "title": title,
+        "theme": clean_title_candidate(decision.get("theme")),
+        "layout_candidates": layout_candidates_from_decision(decision),
+        "title_options": coerce_string_list(decision.get("title_options")),
         "photo_order": valid_order,
         "reason": reason,
         "allow_fallback": allow_fallback,
@@ -1249,6 +1462,15 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         f"selección={'solo_personas' if people_only else 'mixta'}"
     )
 
+    recent_daily_decisions = load_recent_daily_decisions(target_date)
+    recent_layouts = [
+        item.get("layout")
+        for item in recent_daily_decisions
+        if isinstance(item, dict) and item.get("layout") in LAYOUTS
+    ]
+    if recent_daily_decisions:
+        print(f"  Historial reciente: {recent_collage_context(recent_daily_decisions)}")
+
     decision = ask_gemini(
         gemini_key,
         daily_paths,
@@ -1256,25 +1478,27 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         memory_key=f"daily:{target_date.isoformat()}",
         allow_fallback=allow_fallback,
         alert_context=f"collage diario {target_date.isoformat()}",
+        recent_daily_decisions=recent_daily_decisions,
     )
     layout_name  = decision.get("layout", "")
     palette_name = decision.get("palette", "default")
-    title        = decision.get("title", f"Recuerdo del {target_date.isoformat()}")
     order_raw    = decision.get("photo_order", [])
     reason       = decision.get("reason", "")
-
-    if layout_name not in LAYOUTS:
-        layout_name = fallback_decision(len(daily_paths), target_date.month, memory_key=f"daily:{target_date.isoformat()}", photo_paths=daily_paths)["layout"]
-        print(f"  WARN: layout inválido de Gemini, usando fallback={layout_name}")
-    elif len(daily_paths) < LAYOUT_MIN_PHOTOS.get(layout_name, 1):
-        fallback = fallback_decision(len(daily_paths), target_date.month, memory_key=f"daily:{target_date.isoformat()}", photo_paths=daily_paths)["layout"]
-        print(f"  WARN: {layout_name} necesita {LAYOUT_MIN_PHOTOS[layout_name]} fotos pero solo hay {len(daily_paths)}, usando fallback={fallback}")
-        layout_name = fallback
+    fallback = fallback_decision(
+        len(daily_paths),
+        target_date.month,
+        memory_key=f"daily:{target_date.isoformat()}",
+        photo_paths=daily_paths,
+        avoid_layouts=recent_layouts[:1],
+    )
+    layout_name, layout_note = choose_layout(layout_name, len(daily_paths), fallback, decision, recent_layouts=recent_layouts)
+    if layout_note:
+        print(f"  WARN: {layout_note}")
 
     palette_name = normalize_palette_name(palette_name)
-    if not isinstance(title, str) or not title.strip():
-        title = f"Recuerdo del {target_date.isoformat()}"
-    title = title.strip()[:60]
+    title, used_title_fallback = choose_title(decision, fallback.get("title", f"Recuerdo del {target_date.isoformat()}"))
+    if used_title_fallback:
+        print(f"  WARN: título genérico o vacío de Gemini, usando fallback='{title}'")
 
     if not isinstance(order_raw, list):
         order_raw = []
@@ -1321,6 +1545,10 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         "layout": layout_name,
         "palette": palette_name,
         "title": title,
+        "theme": clean_title_candidate(decision.get("theme")),
+        "layout_candidates": layout_candidates_from_decision(decision),
+        "title_options": coerce_string_list(decision.get("title_options")),
+        "recent_layouts": recent_layouts[:2],
         "photo_order": valid_order,
         "reason": reason,
         "allow_fallback": allow_fallback,
