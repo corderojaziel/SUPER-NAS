@@ -226,6 +226,62 @@ def get_fonts(size_title=54, size_sub=28):
         fs = ImageFont.load_default(size=size_sub)
     return ft, fs
 
+def draw_template_header(canvas, draw, title:str, subtitle:str, pal:dict,
+                         W:int, variant:str="classic", fonts:Optional[tuple]=None):
+    fonts = fonts or get_fonts()
+    ft, fs = fonts
+    variant = (variant or "classic").strip().lower()
+    if variant == "centered":
+        draw.rounded_rectangle([W//2-210, 42, W//2+210, 54], radius=6, fill=pal["c3"])
+        title_box = draw.textbbox((0, 0), title, font=ft)
+        subtitle_box = draw.textbbox((0, 0), subtitle, font=fs)
+        tx = (W - (title_box[2] - title_box[0])) // 2
+        sx = (W - (subtitle_box[2] - subtitle_box[0])) // 2
+        draw.text((tx, 66), title, font=ft, fill=(40,30,20))
+        draw.text((sx, 126), subtitle, font=fs, fill=pal["c1"])
+        flower(draw, 98, 82, n=6, rp=14, rc=10, pc=pal["c5"], cc=pal["c4"])
+        flower(draw, W-98, 82, n=6, rp=16, rc=11, pc=pal["c3"], cc=pal["c4"])
+        return
+    if variant == "sidebar":
+        draw.rounded_rectangle([28, 40, 46, 150], radius=8, fill=pal["c2"])
+        draw.rounded_rectangle([66, 44, 310, 58], radius=6, fill=pal["c1"])
+        draw.text((72, 64), title, font=ft, fill=(40,30,20))
+        draw.rounded_rectangle([72, 122, 270, 156], radius=16, fill=pal["c5"] + (255,))
+        draw.text((88, 126), subtitle, font=fs, fill=(60,40,24))
+        flower(draw, W-130, 74, n=6, rp=17, rc=12, pc=pal["c3"], cc=pal["c4"])
+        flower(draw, W-72, 110, n=5, rp=11, rc=8, pc=pal["c2"], cc=pal["c4"])
+        return
+    if variant == "ribbon":
+        draw.rounded_rectangle([32, 44, 260, 58], radius=6, fill=pal["c1"])
+        draw.rounded_rectangle([276, 44, 430, 58], radius=6, fill=pal["c3"])
+        draw.text((36, 68), title, font=ft, fill=(40,30,20))
+        draw.rounded_rectangle([36, 126, 236, 158], radius=16, fill=pal["c4"] + (255,))
+        draw.text((52, 129), subtitle, font=fs, fill=(60,40,24))
+        flower(draw, W-92, 72, n=6, rp=16, rc=11, pc=pal["c5"], cc=pal["c4"])
+        flower(draw, W-148, 110, n=5, rp=10, rc=7, pc=pal["c2"], cc=pal["c1"])
+        return
+    draw_header(canvas, draw, title, subtitle, pal, W, fonts)
+
+def draw_template_footer(canvas, draw, W:int, H:int, pal:dict, bot:int, variant:str="classic"):
+    variant = (variant or "classic").strip().lower()
+    fy = bot + 12
+    if variant == "minimal":
+        draw.rounded_rectangle([34, fy, W-34, fy+4], radius=2, fill=pal["c2"])
+        flower(draw, 88, fy+22, n=5, rp=8, rc=6, pc=pal["c1"], cc=pal["c4"])
+        flower(draw, W-88, fy+22, n=5, rp=8, rc=6, pc=pal["c3"], cc=pal["c4"])
+        return
+    if variant == "dots_wave":
+        wavy_line(draw, 26, fy+6, W-26, amp=6, freq=42, color=pal["c2"], w=4)
+        dots(draw, W//2-78, fy+12, cols=7, rows=1, gap=26, color=pal["c3"] + (110,))
+        flower_row(draw, W//2-66, fy+30, n=4, gap=44, colors=[pal["c1"], pal["c5"], pal["c3"], pal["c1"]], cc=pal["c4"])
+        return
+    if variant == "stems":
+        draw.rounded_rectangle([28, fy, W-28, fy+5], radius=3, fill=pal["c2"])
+        stem_flower(draw, 90, fy+34, h=54, sc=pal["c2"], pc=pal["c1"], cc=pal["c4"])
+        stem_flower(draw, W-90, fy+34, h=54, sc=pal["c2"], pc=pal["c3"], cc=pal["c4"])
+        return
+    draw_footer(canvas, draw, W, H, pal, bot)
+
 def hex_to_rgb(hex_color: str, fallback: Tuple[int, int, int]=(128, 128, 128)) -> Tuple[int, int, int]:
     if not isinstance(hex_color, str):
         return fallback
@@ -305,9 +361,12 @@ def usable_template_cell_count(template: object, photo_count: int) -> int:
 def render_from_template(template: dict, photos: List[str], title: str, subtitle: str, pal: dict) -> Tuple[Image.Image, int, int]:
     """Ejecuta una plantilla JSON segura sobre las fotos ya ordenadas."""
     W, H = 1080, 1350
+    header_variant = template_header_variant(template, len(photos))
+    footer_variant = template_footer_variant(template, len(photos))
     bg = hex_to_rgb(template.get("background_color", ""), pal.get("bg", (250, 246, 240)))
     canvas = Image.new("RGBA", (W, H), bg + (255,))
     draw = ImageDraw.Draw(canvas)
+    fonts = get_fonts()
 
     for deco in template.get("decorations", []):
         if not isinstance(deco, dict) or deco.get("type") != "circle_deco":
@@ -322,7 +381,7 @@ def render_from_template(template: dict, photos: List[str], title: str, subtitle
         col = hex_to_rgb(deco.get("color", ""), pal["c2"])
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col + (alpha,))
 
-    draw_header(canvas, draw, title, subtitle, pal, W, get_fonts())
+    draw_template_header(canvas, draw, title, subtitle, pal, W, header_variant, fonts)
 
     cells = template.get("cells", [])
     if not isinstance(cells, list) or not cells:
@@ -403,7 +462,7 @@ def render_from_template(template: dict, photos: List[str], title: str, subtitle
         except (KeyError, TypeError, ValueError):
             continue
 
-    draw_footer(canvas, draw, W, H, pal, min(bottom + 10, H - 70))
+    draw_template_footer(canvas, draw, W, H, pal, min(bottom + 10, H - 70), footer_variant)
     return canvas.convert("RGB"), W, H
 
 # ── Layouts ────────────────────────────────────────────────────────────────
@@ -1016,6 +1075,8 @@ Responde SOLO con JSON válido (sin markdown, sin texto fuera del JSON):
   "cells": [
     {{"photo_index": 0, "x": 20, "y": 175, "w": 1040, "h": 420, "radius": 28, "shape": "rect"}}
   ],
+  "header_style": "classic|centered|sidebar|ribbon",
+  "footer_style": "classic|minimal|dots_wave|stems",
   "decorations": [
     {{"type": "flower", "x": 900, "y": 60, "size": 40, "color": "#E6641E"}}
   ],
@@ -1033,6 +1094,7 @@ Reglas estrictas:
 - Piensa primero en la historia: vínculo visible, actividad, emoción, edad, celebración o gesto
 - La paleta debe responder al ambiente visual; usa la temporada solo como desempate, no como regla ciega
 - NO elijas grid solo por cantidad; si una o dos fotos dominan, usa un layout editorial y deja esas fotos al inicio de photo_order
+- Evita una grilla uniforme 2x3 salvo que sea claramente la unica composicion que funciona
 - Si hay más fotos de las que el layout necesita, photo_order debe poner primero las que sí se usarán
 - ANTI-REPETICIÓN: si el layout que ibas a elegir aparece en el contexto reciente, debes elegir otro salvo que sea claramente el único que funciona
 - featured es el layout con más riesgo de repetirse; si aparece en el historial reciente, busca activamente otra opción válida
@@ -1043,6 +1105,7 @@ Reglas estrictas:
 - layout_candidates: lista corta de layouts válidos, del más fuerte al más seguro
 - title_options: 2 alternativas cortas y específicas
 - Si puedes diseñar una composición específica, devuelve también cells/decorations/background_color
+- Si defines plantilla custom, también puedes elegir header_style/footer_style para que el look cambie de verdad
 - Si no estás seguro del diseño custom, devuelve "cells": [] y usa solo layout como fallback
 - Cada celda debe estar dentro del canvas 1080x1350, con y>=165, y+h<=1280, w>=80, h>=80
 - Las celdas NO deben solaparse y deja al menos 16 px entre ellas
@@ -1141,6 +1204,120 @@ def template_layout_candidates(template: object) -> List[str]:
         candidates.insert(0, layout)
     return candidates
 
+def template_primary_layout(template: object) -> str:
+    candidates = template_layout_candidates(template)
+    return candidates[0] if candidates else ""
+
+def template_valid_cells(template: object, photo_count: int) -> List[dict]:
+    if not isinstance(template, dict):
+        return []
+    valid: List[dict] = []
+    used_rects: List[Tuple[int, int, int, int]] = []
+    used_photos = set()
+    for raw_cell in template.get("cells", []):
+        cell = parse_template_cell(raw_cell, photo_count)
+        if not cell:
+            continue
+        if cell["photo_index"] in used_photos:
+            continue
+        if any(template_rects_overlap(cell["rect"], existing) for existing in used_rects):
+            continue
+        used_rects.append(cell["rect"])
+        used_photos.add(cell["photo_index"])
+        valid.append(cell)
+    return valid
+
+def template_visual_score(template: object, photo_count: int) -> int:
+    cells = template_valid_cells(template, photo_count)
+    if not cells:
+        return -100
+    widths = {round(cell["w"] / 40) for cell in cells}
+    heights = {round(cell["h"] / 40) for cell in cells}
+    shapes = {cell["shape"] for cell in cells}
+    score = 0
+    if len(widths) > 1:
+        score += 3
+    if len(heights) > 1:
+        score += 3
+    if any(cell["w"] >= 620 or cell["h"] >= 420 for cell in cells):
+        score += 2
+    if "circle" in shapes:
+        score += 2
+    if len(cells) <= 4:
+        score += 1
+    if len(template.get("decorations", [])) >= 2:
+        score += 1
+    if template_primary_layout(template) and template_primary_layout(template) != "grid":
+        score += 2
+    return score
+
+def template_is_bland(template: object, photo_count: int) -> bool:
+    cells = template_valid_cells(template, photo_count)
+    if len(cells) < 4:
+        return False
+    widths = {round(cell["w"] / 40) for cell in cells}
+    heights = {round(cell["h"] / 40) for cell in cells}
+    all_rect = all(cell["shape"] == "rect" for cell in cells)
+    return all_rect and len(widths) <= 1 and len(heights) <= 2 and template_primary_layout(template) == "grid"
+
+def template_header_variant(template: object, photo_count: int) -> str:
+    if isinstance(template, dict):
+        raw = str(template.get("header_style") or "").strip().lower()
+        if raw in {"classic", "centered", "sidebar", "ribbon"}:
+            return raw
+    primary = template_primary_layout(template)
+    cells = template_valid_cells(template, photo_count)
+    if any(cell["shape"] == "circle" for cell in cells) or primary == "circle_hero":
+        return "centered"
+    if primary == "story":
+        return "ribbon"
+    if primary == "polaroid":
+        return "sidebar"
+    if primary == "grid":
+        return "centered" if template_visual_score(template, photo_count) >= 6 else "sidebar"
+    return "classic"
+
+def template_footer_variant(template: object, photo_count: int) -> str:
+    if isinstance(template, dict):
+        raw = str(template.get("footer_style") or "").strip().lower()
+        if raw in {"classic", "minimal", "dots_wave", "stems"}:
+            return raw
+    primary = template_primary_layout(template)
+    if primary == "story":
+        return "dots_wave"
+    if primary == "polaroid":
+        return "stems"
+    if primary == "grid":
+        return "minimal"
+    if any(cell["shape"] == "circle" for cell in template_valid_cells(template, photo_count)):
+        return "stems"
+    return "classic"
+
+def score_render_template(template: dict, photo_count: int, preferred_palette: str,
+                          preferred_layouts: Optional[List[str]]=None) -> int:
+    score = template_visual_score(template, photo_count)
+    if score < 0:
+        return score
+    target_palette = normalize_palette_name(preferred_palette)
+    template_palette = normalize_palette_name(
+        template.get("palette_name") or template.get("palette") or "default"
+    )
+    if template_palette == target_palette:
+        score += 6
+    layouts = template_layout_candidates(template)
+    wanted_layouts = [layout for layout in (preferred_layouts or []) if layout in LAYOUTS]
+    if wanted_layouts and layouts:
+        if layouts[0] == wanted_layouts[0]:
+            score += 4
+        elif any(layout in layouts for layout in wanted_layouts):
+            score += 2
+    source = str(template.get("_template_source") or "")
+    if source.startswith("bank:"):
+        score += 2
+    if source == "gemini_inline" and template_is_bland(template, photo_count):
+        score -= 8
+    return score
+
 def build_render_template(template: dict, title: str, palette_name: str, photo_order: List[int],
                           template_id: str="", template_source: str="", layout_name: str="") -> dict:
     payload = dict(template)
@@ -1159,11 +1336,6 @@ def load_template_fallback(n_photos: int, template_seed: str, avoid_ids: Optiona
     if not root.exists():
         return None
     blocked = {str(tid).strip() for tid in (avoid_ids or []) if str(tid).strip()}
-    target_palette = normalize_palette_name(preferred_palette)
-    wanted_layouts = [
-        layout for layout in (preferred_layouts or [])
-        if isinstance(layout, str) and layout in LAYOUTS
-    ]
     candidates: List[Tuple[int, str, dict]] = []
     for path in sorted(root.rglob("*.json")):
         try:
@@ -1177,23 +1349,12 @@ def load_template_fallback(n_photos: int, template_seed: str, avoid_ids: Optiona
         usable = usable_template_cell_count(template, n_photos)
         if template_id in blocked or n_photos < min_photos or usable < min(min_photos, n_photos):
             continue
-        template_palette = normalize_palette_name(
-            template.get("palette_name") or template.get("palette") or "default"
-        )
-        template_layouts = template_layout_candidates(template)
-        score = usable
-        if target_palette and template_palette == target_palette:
-            score += 6
-        if wanted_layouts and template_layouts:
-            if template_layouts[0] == wanted_layouts[0]:
-                score += 4
-            elif any(layout in template_layouts for layout in wanted_layouts):
-                score += 2
         chosen = dict(template)
         chosen["_template_id"] = template_id
         chosen["_template_source"] = f"bank:{path.parent.name or 'root'}"
         chosen["_template_path"] = str(path)
         chosen["_usable_cells"] = usable
+        score = score_render_template(chosen, n_photos, preferred_palette, preferred_layouts)
         candidates.append((score, template_id, chosen))
     if not candidates:
         return None
@@ -1208,8 +1369,9 @@ def load_template_fallback(n_photos: int, template_seed: str, avoid_ids: Optiona
 def choose_render_template(decision: dict, title: str, palette_name: str, photo_order: List[int],
                            layout_name: str, photo_count: int, template_seed: str,
                            avoid_template_ids: Optional[List[str]]=None) -> Optional[dict]:
+    candidates: List[dict] = []
     if usable_template_cell_count(decision, photo_count) > 0:
-        return build_render_template(
+        candidates.append(build_render_template(
             decision,
             title,
             decision_palette_name(decision) or palette_name,
@@ -1217,7 +1379,7 @@ def choose_render_template(decision: dict, title: str, palette_name: str, photo_
             template_id=str(decision.get("template_id") or f"gemini-inline:{template_seed}"),
             template_source="gemini_inline",
             layout_name=str(layout_name or decision.get("layout") or ""),
-        )
+        ))
     preferred_layouts = [layout_name] + layout_candidates_from_decision(decision)
     bank_template = load_template_fallback(
         photo_count,
@@ -1226,17 +1388,32 @@ def choose_render_template(decision: dict, title: str, palette_name: str, photo_
         preferred_palette=palette_name,
         preferred_layouts=preferred_layouts,
     )
-    if not bank_template:
+    if bank_template:
+        candidates.append(build_render_template(
+            bank_template,
+            title,
+            bank_template.get("palette_name") or palette_name,
+            photo_order,
+            template_id=str(bank_template.get("_template_id") or bank_template.get("id") or ""),
+            template_source=str(bank_template.get("_template_source") or "bank"),
+            layout_name=str(decision.get("layout") or bank_template.get("layout") or ""),
+        ))
+    if not candidates:
         return None
-    return build_render_template(
-        bank_template,
-        title,
-        bank_template.get("palette_name") or palette_name,
-        photo_order,
-        template_id=str(bank_template.get("_template_id") or bank_template.get("id") or ""),
-        template_source=str(bank_template.get("_template_source") or "bank"),
-        layout_name=str(decision.get("layout") or bank_template.get("layout") or ""),
-    )
+    ranked: List[Tuple[int, str, dict]] = []
+    for candidate in candidates:
+        ranked.append((
+            score_render_template(candidate, photo_count, palette_name, preferred_layouts),
+            str(candidate.get("_template_id") or ""),
+            candidate,
+        ))
+    best_score = max(score for score, _, _ in ranked)
+    finalists = [(template_id, candidate) for score, template_id, candidate in ranked if score == best_score]
+    chosen_id = choice_from_seed([template_id for template_id, _ in finalists], template_seed)
+    for template_id, candidate in finalists:
+        if template_id == chosen_id:
+            return candidate
+    return finalists[0][1]
 
 def memory_asset_ids(memory: dict) -> List[str]:
     assets = memory.get("assets", []) if isinstance(memory, dict) else []
@@ -1898,6 +2075,8 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
         "template_error": template_error,
         "template_cells": int((render_template or {}).get("_usable_cells", 0) or 0),
         "background_color": (render_template or {}).get("background_color"),
+        "header_style": template_header_variant(render_template or {}, len(ordered_paths)) if render_template else "",
+        "footer_style": template_footer_variant(render_template or {}, len(ordered_paths)) if render_template else "",
     })
     print(f"  Decisión guardada: {sidecar_path}")
 
@@ -2112,6 +2291,8 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         "template_error": template_error,
         "template_cells": int((render_template or {}).get("_usable_cells", 0) or 0),
         "background_color": (render_template or {}).get("background_color"),
+        "header_style": template_header_variant(render_template or {}, len(ordered_paths)) if render_template else "",
+        "footer_style": template_footer_variant(render_template or {}, len(ordered_paths)) if render_template else "",
     })
     print(f"  Decisión guardada: {sidecar_path}")
 

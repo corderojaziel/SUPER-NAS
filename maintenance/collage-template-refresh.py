@@ -61,6 +61,8 @@ PALETTE_ALIASES = {
 }
 HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 ID_RE = re.compile(r"[^a-z0-9_-]+")
+HEADER_STYLES = {"classic", "centered", "sidebar", "ribbon"}
+FOOTER_STYLES = {"classic", "minimal", "dots_wave", "stems"}
 
 
 def read_secrets(path: str) -> dict:
@@ -193,6 +195,11 @@ def normalize_decorations(value: object) -> List[dict]:
     return out
 
 
+def normalize_style(value: object, allowed: set[str], fallback: str) -> str:
+    raw = str(value or "").strip().lower()
+    return raw if raw in allowed else fallback
+
+
 def validate_template(template: object, index: int, today: str, season: str) -> Tuple[Optional[dict], str]:
     if not isinstance(template, dict):
         return None, "no es dict"
@@ -243,6 +250,8 @@ def validate_template(template: object, index: int, today: str, season: str) -> 
         "min_photos": min_photos,
         "background_color": background_color,
         "palette_name": normalize_palette_name(template.get("palette_name") or template.get("palette") or season),
+        "header_style": normalize_style(template.get("header_style"), HEADER_STYLES, "classic"),
+        "footer_style": normalize_style(template.get("footer_style"), FOOTER_STYLES, "classic"),
         "cells": [
             {
                 "photo_index": cell["photo_index"],
@@ -288,6 +297,8 @@ Devuelve SOLO un JSON array, sin markdown:
     "min_photos": 2,
     "background_color": "#F8F2EA",
     "palette_name": "primavera|verano|otono|invierno|default",
+    "header_style": "classic|centered|sidebar|ribbon",
+    "footer_style": "classic|minimal|dots_wave|stems",
     "cells": [
       {{"photo_index":0,"x":20,"y":175,"w":700,"h":460,"radius":28,"shape":"rect"}},
       {{"photo_index":1,"x":748,"y":210,"w":312,"h":380,"radius":24,"shape":"rect"}}
@@ -310,6 +321,7 @@ Reglas:
 - Varia el peso visual: algunas plantillas con una hero, otras mas balanceadas.
 - Mezcla estilos: featured, columns, polaroid, circle_hero, grid, story, pero tambien
   composiciones originales dentro de esas familias.
+- Cambia header_style y footer_style entre plantillas para que no se vea siempre la misma portada.
 - layout_candidates debe listar 1-3 layouts hardcodeados que mas se parecen.
 - No devuelvas explicacion fuera del JSON."""
 
