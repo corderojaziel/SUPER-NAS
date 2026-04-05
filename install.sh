@@ -1311,6 +1311,7 @@ SCRIPTS=(
     "audit-snapshot.sh"  # Bitacora operativa periodica (CPU/RAM/colas/montajes)
     "memories-ensure.py" # Garantiza recuerdos "On this day" con assets en fecha local
     "collage-daily.py" # Genera collage diario y lo coloca como portada de la memory
+    "collage-template-refresh.py" # Refresca semanalmente el banco de plantillas JSON
 )
 
 for script in "${SCRIPTS[@]}"; do
@@ -1324,6 +1325,9 @@ for script in "${SCRIPTS[@]}"; do
         log_warn "No encontrado: $script"
     fi
 done
+
+mkdir -p /var/lib/immich/collages /var/lib/immich/collage-templates/gemini
+log_ok "Directorios de collage preparados (/var/lib/immich/collages y /var/lib/immich/collage-templates/gemini)"
 
 install -m 0755 "$SCRIPT_DIR/precheck.sh" /usr/local/bin/precheck.sh
 log_ok "Instalado: /usr/local/bin/precheck.sh"
@@ -1684,6 +1688,9 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 
 # A las 00:15 genera el collage visual después de asegurar la memory.
 15 0 * * * /usr/local/bin/collage-daily.py --timezone America/Mexico_City
+
+# Los domingos a las 03:00 refresca plantillas para variar el diseño.
+0 3 * * 0 /usr/local/bin/collage-template-refresh.py --timezone America/Mexico_City
 
 # ── Guardia térmica reactiva ──────────────────────────────────────────────
 # Independiente de night-run.sh: detecta sobrecalentamiento en cualquier

@@ -27,7 +27,7 @@ Uso:
 from __future__ import annotations
 
 import argparse, base64, datetime as dt, hashlib, json, math
-import os, subprocess, sys, unicodedata, urllib.error, urllib.request
+import os, shutil, subprocess, sys, time, unicodedata, urllib.error, urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -42,6 +42,7 @@ SECRETS_FILE = "/etc/nas-secrets"
 API_BASE     = "http://127.0.0.1:2283/api"
 THUMBS_BASE  = "/var/lib/immich/thumbs"
 COLLAGE_DIR  = "/var/lib/immich/collages"
+TEMPLATE_DIR = "/var/lib/immich/collage-templates"
 TIMEZONE     = "America/Mexico_City"
 DNN_PROTO_URL = "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt"
 DNN_MODEL_URL = "https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20180205_fp16/res10_300x300_ssd_iter_140000_fp16.caffemodel"
@@ -58,9 +59,17 @@ MAX_PHOTOS   = max(1, int(os.environ.get("COLLAGE_MAX_PHOTOS", "10")))
 PREVIEW_SIZE = max(128, int(os.environ.get("COLLAGE_PREVIEW_SIZE", "512")))
 GEMINI_ALERT_TTL = max(60, int(os.environ.get("COLLAGE_GEMINI_ALERT_TTL", "21600")))
 RECENT_DECISION_DAYS = max(1, int(os.environ.get("COLLAGE_RECENT_DECISION_DAYS", "2")))
+COLLAGE_RETENTION_DAYS = max(3, int(os.environ.get("COLLAGE_RETENTION_DAYS", "45")))
+COLLAGE_MIN_FREE_MB = max(64, int(os.environ.get("COLLAGE_MIN_FREE_MB", "256")))
+MAX_RUNTIME_SEC = max(60, int(os.environ.get("COLLAGE_MAX_RUNTIME_SEC", "360")))
+TEMPLATE_SAFE_TOP = 165
+TEMPLATE_SAFE_BOTTOM = 1280
+TEMPLATE_MIN_SIZE = 80
+TEMPLATE_CELL_GAP = 16
 PREVIEW_FACE_CACHE: Dict[str, int] = {}
 FACE_CASCADES = None
 DNN_FACE_NET = None
+RUN_DEADLINE: Optional[float] = None
 
 MESES = {
     1:"enero",2:"febrero",3:"marzo",4:"abril",5:"mayo",6:"junio",
@@ -216,6 +225,186 @@ def get_fonts(size_title=54, size_sub=28):
         ft = ImageFont.load_default(size=size_title)
         fs = ImageFont.load_default(size=size_sub)
     return ft, fs
+
+def hex_to_rgb(hex_color: str, fallback: Tuple[int, int, int]=(128, 128, 128)) -> Tuple[int, int, int]:
+    if not isinstance(hex_color, str):
+        return fallback
+    raw = hex_color.strip()
+    if len(raw) != 7 or not raw.startswith("#"):
+        return fallback
+    try:
+        return (int(raw[1:3], 16), int(raw[3:5], 16), int(raw[5:7], 16))
+    except ValueError:
+        return fallback
+
+def template_rects_overlap(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int], gap: int=TEMPLATE_CELL_GAP) -> bool:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    return not (
+        ax2 + gap <= bx1
+        or bx2 + gap <= ax1
+        or ay2 + gap <= by1
+        or by2 + gap <= ay1
+    )
+
+def parse_template_cell(cell: object, photo_count: int) -> Optional[dict]:
+    if not isinstance(cell, dict):
+        return None
+    try:
+        pidx = int(cell.get("photo_index", 0))
+        x = int(cell["x"])
+        y = int(cell["y"])
+        w = int(cell["w"])
+        h = int(cell["h"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if pidx < 0 or pidx >= photo_count:
+        return None
+    shape = str(cell.get("shape", "rect")).strip().lower()
+    if shape not in {"rect", "circle"}:
+        shape = "rect"
+    if shape == "circle":
+        size = min(w, h)
+        w = h = size
+    x = max(0, x)
+    y = max(TEMPLATE_SAFE_TOP, y)
+    if w < TEMPLATE_MIN_SIZE or h < TEMPLATE_MIN_SIZE:
+        return None
+    if x + w > 1080 or y + h > TEMPLATE_SAFE_BOTTOM:
+        return None
+    return {
+        "photo_index": pidx,
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": h,
+        "shape": shape,
+        "radius": max(0, min(int(cell.get("radius", 20) or 20), min(w, h) // 2)),
+        "rect": (x, y, x + w, y + h),
+    }
+
+def usable_template_cell_count(template: object, photo_count: int) -> int:
+    if not isinstance(template, dict):
+        return 0
+    used_rects: List[Tuple[int, int, int, int]] = []
+    used_photos = set()
+    count = 0
+    for raw_cell in template.get("cells", []):
+        cell = parse_template_cell(raw_cell, photo_count)
+        if not cell:
+            continue
+        if cell["photo_index"] in used_photos:
+            continue
+        if any(template_rects_overlap(cell["rect"], existing) for existing in used_rects):
+            continue
+        used_rects.append(cell["rect"])
+        used_photos.add(cell["photo_index"])
+        count += 1
+    return count
+
+def render_from_template(template: dict, photos: List[str], title: str, subtitle: str, pal: dict) -> Tuple[Image.Image, int, int]:
+    """Ejecuta una plantilla JSON segura sobre las fotos ya ordenadas."""
+    W, H = 1080, 1350
+    bg = hex_to_rgb(template.get("background_color", ""), pal.get("bg", (250, 246, 240)))
+    canvas = Image.new("RGBA", (W, H), bg + (255,))
+    draw = ImageDraw.Draw(canvas)
+
+    for deco in template.get("decorations", []):
+        if not isinstance(deco, dict) or deco.get("type") != "circle_deco":
+            continue
+        try:
+            cx = int(deco["cx"])
+            cy = int(deco["cy"])
+            r = int(deco["r"])
+            alpha = max(0, min(255, int(deco.get("alpha", 40))))
+        except (KeyError, TypeError, ValueError):
+            continue
+        col = hex_to_rgb(deco.get("color", ""), pal["c2"])
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col + (alpha,))
+
+    draw_header(canvas, draw, title, subtitle, pal, W, get_fonts())
+
+    cells = template.get("cells", [])
+    if not isinstance(cells, list) or not cells:
+        raise ValueError("plantilla sin celdas")
+
+    placed = 0
+    used_rects: List[Tuple[int, int, int, int]] = []
+    used_photos = set()
+    bottom = TEMPLATE_SAFE_TOP
+    for raw_cell in cells:
+        cell = parse_template_cell(raw_cell, len(photos))
+        if not cell:
+            continue
+        if cell["photo_index"] in used_photos:
+            continue
+        if any(template_rects_overlap(cell["rect"], existing) for existing in used_rects):
+            continue
+        if cell["shape"] == "circle":
+            radius = min(cell["w"], cell["h"]) // 2
+            place_circle(canvas, photos[cell["photo_index"]], cell["x"] + radius, cell["y"] + radius, radius)
+        else:
+            place_rect(canvas, photos[cell["photo_index"]], cell["x"], cell["y"], cell["w"], cell["h"], cell["radius"])
+        used_rects.append(cell["rect"])
+        used_photos.add(cell["photo_index"])
+        placed += 1
+        bottom = max(bottom, cell["rect"][3])
+
+    required = min(2, len(photos), usable_template_cell_count(template, len(photos)))
+    if placed < max(1, required):
+        raise ValueError(f"plantilla colocó muy pocas fotos ({placed})")
+
+    for deco in template.get("decorations", []):
+        if not isinstance(deco, dict):
+            continue
+        dtype = str(deco.get("type", "")).strip().lower()
+        if dtype == "circle_deco":
+            continue
+        try:
+            if dtype == "flower":
+                flower(
+                    draw,
+                    int(deco["x"]),
+                    int(deco["y"]),
+                    n=6,
+                    rp=max(6, int(deco.get("size", 30)) // 3),
+                    rc=max(4, int(deco.get("size", 30)) // 4),
+                    pc=hex_to_rgb(deco.get("color", ""), pal["c1"]),
+                    cc=hex_to_rgb(deco.get("center_color", ""), pal["c4"]),
+                )
+            elif dtype == "stem_flower":
+                stem_flower(
+                    draw,
+                    int(deco["x"]),
+                    int(deco["y"]),
+                    h=max(20, int(deco.get("height", 70))),
+                    sc=hex_to_rgb(deco.get("color", ""), pal["c2"]),
+                    pc=hex_to_rgb(deco.get("petal_color", ""), pal["c1"]),
+                    cc=hex_to_rgb(deco.get("center_color", ""), pal["c4"]),
+                )
+            elif dtype == "wavy_line":
+                wavy_line(
+                    draw,
+                    int(deco["x1"]),
+                    int(deco["y"]),
+                    int(deco["x2"]),
+                    color=hex_to_rgb(deco.get("color", ""), pal["c2"]),
+                )
+            elif dtype == "dots":
+                dots(
+                    draw,
+                    int(deco["x"]),
+                    int(deco["y"]),
+                    cols=max(1, int(deco.get("cols", 5))),
+                    rows=max(1, int(deco.get("rows", 2))),
+                    gap=max(10, int(deco.get("gap", 20))),
+                    color=hex_to_rgb(deco.get("color", ""), pal["c3"]) + (120,),
+                )
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    draw_footer(canvas, draw, W, H, pal, min(bottom + 10, H - 70))
+    return canvas.convert("RGB"), W, H
 
 # ── Layouts ────────────────────────────────────────────────────────────────
 def layout_columns(photos, title, subtitle, pal):
@@ -453,11 +642,17 @@ GENERIC_TITLE_WORDS = {
 
 # ── Gemini ─────────────────────────────────────────────────────────────────
 def img_to_b64(path:str, max_px:int=PREVIEW_SIZE) -> str:
-    img = ImageOps.exif_transpose(Image.open(path).convert("RGB"))
-    iw, ih = img.size
-    scale = min(max_px/iw, max_px/ih, 1.0)
-    if scale < 1.0:
-        img = img.resize((int(iw*scale), int(ih*scale)), Image.LANCZOS)
+    ensure_runtime("preparando preview para Gemini")
+    with Image.open(path) as src:
+        try:
+            src.draft("RGB", (max_px, max_px))
+        except Exception:
+            pass
+        img = ImageOps.exif_transpose(src)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        if max(img.size) > max_px:
+            img.thumbnail((max_px, max_px), Image.LANCZOS)
     import io
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=75)
@@ -473,6 +668,27 @@ def env_is_true(value: Optional[str], default: bool=False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+def set_run_deadline(max_runtime_sec: int) -> None:
+    global RUN_DEADLINE
+    RUN_DEADLINE = time.monotonic() + max_runtime_sec if max_runtime_sec > 0 else None
+
+def ensure_runtime(stage: str="") -> None:
+    if RUN_DEADLINE is None:
+        return
+    remaining = RUN_DEADLINE - time.monotonic()
+    if remaining <= 0:
+        where = f" en {stage}" if stage else ""
+        raise TimeoutError(f"tiempo máximo agotado{where}")
+
+def bounded_timeout(default_timeout: int, minimum_timeout: int=5) -> int:
+    ensure_runtime()
+    if RUN_DEADLINE is None:
+        return default_timeout
+    remaining = int(RUN_DEADLINE - time.monotonic())
+    if remaining <= minimum_timeout:
+        raise TimeoutError("tiempo máximo agotado")
+    return max(minimum_timeout, min(default_timeout, remaining))
 
 def extract_json_text(text: str) -> str:
     text = (text or "").replace("```json", "").replace("```", "").strip()
@@ -561,7 +777,7 @@ def send_nas_alert(message: str, key: str="", ttl: int=GEMINI_ALERT_TTL) -> None
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=20,
+            timeout=bounded_timeout(20, minimum_timeout=1),
             check=False,
         )
     except Exception:
@@ -579,6 +795,43 @@ def write_decision_sidecar(path: Path, payload: dict) -> None:
         )
     except OSError:
         pass
+
+def cleanup_old_collage_files(dry_run: bool=False) -> int:
+    root = Path(COLLAGE_DIR)
+    if not root.exists():
+        return 0
+    cutoff = time.time() - (COLLAGE_RETENTION_DAYS * 86400)
+    deleted = 0
+    for path in root.iterdir():
+        if not path.is_file():
+            continue
+        if not path.name.startswith("collage"):
+            continue
+        if path.suffix.lower() not in {".jpg", ".json"}:
+            continue
+        try:
+            if path.stat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        if dry_run:
+            deleted += 1
+            continue
+        try:
+            path.unlink()
+            deleted += 1
+        except OSError:
+            continue
+    return deleted
+
+def collage_dir_free_mb() -> int:
+    root = Path(COLLAGE_DIR)
+    probe = root if root.exists() else root.parent
+    try:
+        usage = shutil.disk_usage(probe)
+    except OSError:
+        return -1
+    return int(usage.free // (1024 * 1024))
 
 def daily_sidecar_path(target_date: dt.date) -> Path:
     return Path(COLLAGE_DIR) / f"collage-daily-{target_date.isoformat()}.json"
@@ -676,9 +929,13 @@ def recent_collage_context(recent_daily_decisions: Optional[List[dict]]) -> str:
         return "Sin collages recientes guardados."
     lines = []
     for item in recent_daily_decisions[:2]:
+        render_mode = item.get("render_mode", "layout")
+        template_id = str(item.get("template_id") or "").strip()
+        template_suffix = f", plantilla={template_id}" if template_id else ""
         lines.append(
             f"- {item.get('target_date', '?')}: layout={item.get('layout', '?')}, "
-            f"paleta={item.get('palette', '?')}, título=\"{item.get('title', '')}\""
+            f"paleta={item.get('palette', '?')}, render={render_mode}{template_suffix}, "
+            f"título=\"{item.get('title', '')}\""
         )
     return "\n".join(lines)
 
@@ -720,18 +977,20 @@ def ask_gemini(api_key:str, photo_paths:List[str], month:int, memory_key:str="",
                allow_fallback:bool=False, alert_context:str="",
                recent_daily_decisions:Optional[List[dict]]=None) -> dict:
     """Manda las fotos a Gemini y él decide todo. Devuelve dict con decisiones."""
+    ensure_runtime(f"consultando Gemini para {alert_context or memory_key or 'collage'}")
     layouts_desc = (
-        "columns: usa las 2 mejores fotos lado a lado; funciona cuando hay un par fuerte. "
-        "story: usa las 3 mejores fotos apiladas; funciona cuando hay secuencia o progresión. "
-        "featured: usa 1 foto hero + 2 de apoyo; funciona cuando una imagen manda visualmente. "
-        "polaroid: usa 3-4 fotos con gesto espontáneo o familiar. "
-        "circle_hero: usa 3 fotos; un retrato principal con dos apoyos. "
-        "grid: usa 4-6 fotos solo cuando varias merecen casi el mismo peso."
+        "columns: 2 fotos lado a lado de igual peso; úsalo cuando hay exactamente 2 fotos fuertes sin una dominante clara. "
+        "story: 3 fotos apiladas en vertical; úsalo cuando hay secuencia de tiempo, lugar o progresión narrativa. "
+        "featured: 1 foto hero grande + 2 pequeñas; SOLO cuando hay UNA foto claramente superior a todas las demás y las otras complementan, no cuando todo tiene peso similar. "
+        "polaroid: 3-4 fotos con leve rotación tipo polaroid; úsalo para momentos espontáneos, casuales o grupo informal. "
+        "circle_hero: retrato principal circular + 2 fotos rectangulares; úsalo cuando hay un retrato claro de una persona. "
+        "grid: cuadrícula uniforme de 4-6 fotos; úsalo cuando varias fotos merecen casi el mismo peso."
     )
     recent_context = recent_collage_context(recent_daily_decisions)
 
     parts = []
     for i, path in enumerate(photo_paths):
+        ensure_runtime("codificando previews para Gemini")
         parts.append({
             "inline_data": {
                 "mime_type": "image/jpeg",
@@ -740,12 +999,12 @@ def ask_gemini(api_key:str, photo_paths:List[str], month:int, memory_key:str="",
         })
 
     n_photos = len(photo_paths)
-    parts.append({"text": f"""Analiza estas {n_photos} fotos.
+    parts.append({"text": f"""Eres un diseñador editorial de collages fotográficos. Analiza estas {n_photos} fotos y diseña el collage más adecuado para ESTE set.
 
 Layouts disponibles:
 {layouts_desc}
 
-Contexto reciente para no reciclar el mismo look si no hace falta:
+Contexto reciente para no repetir el mismo look:
 {recent_context}
 
 Responde SOLO con JSON válido (sin markdown, sin texto fuera del JSON):
@@ -754,6 +1013,13 @@ Responde SOLO con JSON válido (sin markdown, sin texto fuera del JSON):
   "palette": "primavera|verano|otoño|otono|invierno|default",
   "title": "<título corto en español, 2-4 palabras, específico>",
   "photo_order": [0,1,2,...],
+  "cells": [
+    {{"photo_index": 0, "x": 20, "y": 175, "w": 1040, "h": 420, "radius": 28, "shape": "rect"}}
+  ],
+  "decorations": [
+    {{"type": "flower", "x": 900, "y": 60, "size": 40, "color": "#E6641E"}}
+  ],
+  "background_color": "#RRGGBB",
   "reason": "<una línea>",
   "layout_candidates": ["<layout fuerte>", "<layout alterno>"],
   "title_options": ["<título mejor>", "<título alterno>"],
@@ -768,13 +1034,20 @@ Reglas estrictas:
 - La paleta debe responder al ambiente visual; usa la temporada solo como desempate, no como regla ciega
 - NO elijas grid solo por cantidad; si una o dos fotos dominan, usa un layout editorial y deja esas fotos al inicio de photo_order
 - Si hay más fotos de las que el layout necesita, photo_order debe poner primero las que sí se usarán
-- Si varias opciones funcionan parecido, evita repetir el mismo layout del collage de ayer
+- ANTI-REPETICIÓN: si el layout que ibas a elegir aparece en el contexto reciente, debes elegir otro salvo que sea claramente el único que funciona
+- featured es el layout con más riesgo de repetirse; si aparece en el historial reciente, busca activamente otra opción válida
 - El título debe sonar humano y concreto: por ejemplo relación, actividad o escena; evita frases comodín como "Momentos de...", "Recuerdo de..." o "Alegría compartida"
 - Si ves una relación clara como padre e hijo, familia, amigas, fiesta o comida, nómbrala sin inventar nombres propios
 - photo_order: lista de enteros 0..{n_photos-1}, sin repetir, sin strings
 - palette: usa EXACTAMENTE una de estas palabras, no colores hex ni arrays
 - layout_candidates: lista corta de layouts válidos, del más fuerte al más seguro
 - title_options: 2 alternativas cortas y específicas
+- Si puedes diseñar una composición específica, devuelve también cells/decorations/background_color
+- Si no estás seguro del diseño custom, devuelve "cells": [] y usa solo layout como fallback
+- Cada celda debe estar dentro del canvas 1080x1350, con y>=165, y+h<=1280, w>=80, h>=80
+- Las celdas NO deben solaparse y deja al menos 16 px entre ellas
+- Usa "circle" solo para retratos claros; lo demás debe ser "rect"
+- layout sigue siendo obligatorio y debe ser el fallback hardcodeado más cercano a tu diseño
 - columns necesita al menos 2 fotos
 - story necesita al menos 3 fotos
 - featured necesita al menos 1 foto
@@ -787,10 +1060,11 @@ Reglas estrictas:
 
     last_error = "sin modelos configurados"
     for model in GEMINI_MODELS:
+        ensure_runtime(f"esperando respuesta de {model}")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         generation_config = {
-            "temperature": 0.2,
-            "maxOutputTokens": 400,
+            "temperature": 0.45,
+            "maxOutputTokens": 1400,
         }
         if model.startswith("gemini-2.5"):
             generation_config["thinkingConfig"] = {"thinkingBudget": 0}
@@ -803,7 +1077,7 @@ Reglas estrictas:
                 url, data=json.dumps(body).encode(),
                 headers={"Content-Type": "application/json"}, method="POST"
             )
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=bounded_timeout(60)) as resp:
                 data = json.loads(resp.read().decode())
                 part = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [{}])[0]
                 text = extract_json_text(part.get("text") or "")
@@ -838,6 +1112,131 @@ def normalize_palette_name(name: str) -> str:
     if not isinstance(name, str):
         return "default"
     return PALETTE_ALIASES.get(name.strip().lower(), "default")
+
+def decision_palette_name(decision: dict) -> str:
+    return normalize_palette_name(
+        decision.get("palette")
+        or decision.get("palette_name")
+        or "default"
+    )
+
+def recent_template_ids(recent_daily_decisions: Optional[List[dict]]) -> List[str]:
+    ids: List[str] = []
+    for item in recent_daily_decisions or []:
+        template_id = str(item.get("template_id") or "").strip()
+        if template_id and template_id not in ids:
+            ids.append(template_id)
+    return ids
+
+def template_layout_candidates(template: object) -> List[str]:
+    if not isinstance(template, dict):
+        return []
+    candidates: List[str] = []
+    for candidate in coerce_string_list(template.get("layout_candidates"), max_items=len(LAYOUTS)):
+        layout = candidate.strip().lower()
+        if layout in LAYOUTS and layout not in candidates:
+            candidates.append(layout)
+    layout = str(template.get("layout") or "").strip().lower()
+    if layout in LAYOUTS and layout not in candidates:
+        candidates.insert(0, layout)
+    return candidates
+
+def build_render_template(template: dict, title: str, palette_name: str, photo_order: List[int],
+                          template_id: str="", template_source: str="", layout_name: str="") -> dict:
+    payload = dict(template)
+    payload["title"] = title
+    payload["palette_name"] = normalize_palette_name(payload.get("palette_name") or palette_name)
+    payload["photo_order"] = list(photo_order)
+    payload["layout"] = str(layout_name or payload.get("layout") or "").strip().lower()
+    payload["_template_id"] = str(template_id or payload.get("id") or "").strip()
+    payload["_template_source"] = str(template_source or payload.get("source") or "template").strip()
+    payload["_usable_cells"] = usable_template_cell_count(payload, len(photo_order))
+    return payload
+
+def load_template_fallback(n_photos: int, template_seed: str, avoid_ids: Optional[List[str]]=None,
+                           preferred_palette: str="", preferred_layouts: Optional[List[str]]=None) -> Optional[dict]:
+    root = Path(TEMPLATE_DIR)
+    if not root.exists():
+        return None
+    blocked = {str(tid).strip() for tid in (avoid_ids or []) if str(tid).strip()}
+    target_palette = normalize_palette_name(preferred_palette)
+    wanted_layouts = [
+        layout for layout in (preferred_layouts or [])
+        if isinstance(layout, str) and layout in LAYOUTS
+    ]
+    candidates: List[Tuple[int, str, dict]] = []
+    for path in sorted(root.rglob("*.json")):
+        try:
+            template = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(template, dict):
+            continue
+        template_id = str(template.get("id") or path.stem).strip()
+        min_photos = max(1, int(template.get("min_photos", len(template.get("cells", [])) or 1)))
+        usable = usable_template_cell_count(template, n_photos)
+        if template_id in blocked or n_photos < min_photos or usable < min(min_photos, n_photos):
+            continue
+        template_palette = normalize_palette_name(
+            template.get("palette_name") or template.get("palette") or "default"
+        )
+        template_layouts = template_layout_candidates(template)
+        score = usable
+        if target_palette and template_palette == target_palette:
+            score += 6
+        if wanted_layouts and template_layouts:
+            if template_layouts[0] == wanted_layouts[0]:
+                score += 4
+            elif any(layout in template_layouts for layout in wanted_layouts):
+                score += 2
+        chosen = dict(template)
+        chosen["_template_id"] = template_id
+        chosen["_template_source"] = f"bank:{path.parent.name or 'root'}"
+        chosen["_template_path"] = str(path)
+        chosen["_usable_cells"] = usable
+        candidates.append((score, template_id, chosen))
+    if not candidates:
+        return None
+    best_score = max(score for score, _, _ in candidates)
+    ranked = [(template_id, template) for score, template_id, template in candidates if score == best_score]
+    chosen_id = choice_from_seed([item[0] for item in ranked], template_seed)
+    for template_id, template in ranked:
+        if template_id == chosen_id:
+            return template
+    return ranked[0][1]
+
+def choose_render_template(decision: dict, title: str, palette_name: str, photo_order: List[int],
+                           layout_name: str, photo_count: int, template_seed: str,
+                           avoid_template_ids: Optional[List[str]]=None) -> Optional[dict]:
+    if usable_template_cell_count(decision, photo_count) > 0:
+        return build_render_template(
+            decision,
+            title,
+            decision_palette_name(decision) or palette_name,
+            photo_order,
+            template_id=str(decision.get("template_id") or f"gemini-inline:{template_seed}"),
+            template_source="gemini_inline",
+            layout_name=str(layout_name or decision.get("layout") or ""),
+        )
+    preferred_layouts = [layout_name] + layout_candidates_from_decision(decision)
+    bank_template = load_template_fallback(
+        photo_count,
+        template_seed,
+        avoid_ids=avoid_template_ids,
+        preferred_palette=palette_name,
+        preferred_layouts=preferred_layouts,
+    )
+    if not bank_template:
+        return None
+    return build_render_template(
+        bank_template,
+        title,
+        bank_template.get("palette_name") or palette_name,
+        photo_order,
+        template_id=str(bank_template.get("_template_id") or bank_template.get("id") or ""),
+        template_source=str(bank_template.get("_template_source") or "bank"),
+        layout_name=str(decision.get("layout") or bank_template.get("layout") or ""),
+    )
 
 def memory_asset_ids(memory: dict) -> List[str]:
     assets = memory.get("assets", []) if isinstance(memory, dict) else []
@@ -1026,24 +1425,53 @@ def remove_collage_assets(api_base:str, headers:dict, memories:List[dict], dry_r
         print(f"  Limpieza: {len(collage_ids)} collage(s) previo(s) eliminados")
     return len(collage_ids)
 
+def normalize_asset_ids(asset_ids: List[str]) -> List[str]:
+    return list(dict.fromkeys([aid for aid in asset_ids if aid]))
+
+def has_exact_asset_set(actual_ids: List[str], expected_ids: List[str]) -> bool:
+    actual = normalize_asset_ids(actual_ids)
+    expected = normalize_asset_ids(expected_ids)
+    return len(actual) == len(expected) and set(actual) == set(expected)
+
 def rebuild_memory_assets_order(api_base:str, headers:dict, memory_id:str,
                                 ordered_ids:List[str], original_ids:List[str]) -> bool:
+    ensure_runtime(f"reordenando memory {memory_id}")
+    expected_ids = normalize_asset_ids(ordered_ids)
+    snapshot_ids = normalize_asset_ids(original_ids)
+    if not expected_ids or not snapshot_ids:
+        print(f"  WARN: memory {memory_id} no tiene ids suficientes para reordenar", file=sys.stderr)
+        return False
+
     cd, body = http_json("DELETE", f"{api_base}/memories/{memory_id}/assets",
-                         {"ids": original_ids}, headers=headers)
+                         {"ids": snapshot_ids}, headers=headers)
     if cd != 200:
         print(f"  WARN: no se pudo vaciar la memory {memory_id} para reordenar: {cd} {body}", file=sys.stderr)
         return False
 
     ca, body = http_json("PUT", f"{api_base}/memories/{memory_id}/assets",
-                         {"ids": ordered_ids}, headers=headers)
-    if ca in (200, 201):
+                         {"ids": expected_ids}, headers=headers)
+    rebuilt = fetch_memory(api_base, headers, memory_id)
+    rebuilt_ids = memory_asset_ids(rebuilt or {})
+    if ca in (200, 201) and has_exact_asset_set(rebuilt_ids, expected_ids):
         return True
 
-    print(f"  WARN: no se pudo reconstruir el orden de memory {memory_id}: {ca} {body}", file=sys.stderr)
+    print(
+        f"  WARN: no se pudo reconstruir la memory {memory_id}: {ca} {body} "
+        f"(actual={len(normalize_asset_ids(rebuilt_ids))} esperado={len(expected_ids)})",
+        file=sys.stderr,
+    )
     rr, restore_body = http_json("PUT", f"{api_base}/memories/{memory_id}/assets",
-                                 {"ids": original_ids}, headers=headers)
-    if rr not in (200, 201):
-        print(f"  WARN: tampoco se pudo restaurar la memory {memory_id}: {rr} {restore_body}", file=sys.stderr)
+                                 {"ids": snapshot_ids}, headers=headers)
+    restored = fetch_memory(api_base, headers, memory_id)
+    restored_ids = memory_asset_ids(restored or {})
+    if rr in (200, 201) and has_exact_asset_set(restored_ids, snapshot_ids):
+        print(f"  WARN: memory {memory_id} restaurada al set original tras fallo de reorder", file=sys.stderr)
+        return False
+    print(
+        f"  WARN: tampoco se pudo restaurar completa la memory {memory_id}: {rr} {restore_body} "
+        f"(actual={len(normalize_asset_ids(restored_ids))} esperado={len(snapshot_ids)})",
+        file=sys.stderr,
+    )
     return False
 
 def ensure_collage_first(api_base:str, headers:dict, memory_id:str, asset_id:str) -> bool:
@@ -1081,12 +1509,13 @@ def ensure_collage_first(api_base:str, headers:dict, memory_id:str, asset_id:str
 
 # ── HTTP / DB helpers ──────────────────────────────────────────────────────
 def http_json(method, url, body=None, headers=None):
+    ensure_runtime(f"HTTP {method} {url}")
     payload = None if body is None else json.dumps(body).encode()
     h = {"Content-Type":"application/json"}
     if headers: h.update(headers)
     req = urllib.request.Request(url, data=payload, headers=h, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=bounded_timeout(60)) as resp:
             raw = resp.read().decode("utf-8","ignore")
             return resp.getcode(), json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
@@ -1097,7 +1526,7 @@ def http_json(method, url, body=None, headers=None):
 
 def db_query(sql:str) -> List[str]:
     cmd = ["docker","exec","immich_postgres","psql","-U","immich","-d","immich","-At","-c",sql]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=bounded_timeout(30))
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "psql failed")
     return [x.strip() for x in proc.stdout.splitlines() if x.strip()]
@@ -1121,11 +1550,19 @@ def thumb_path(user_id:str, asset_id:str) -> Optional[str]:
     if path.exists(): return str(path)
     try:
         r = subprocess.run(["find",f"{THUMBS_BASE}/{user_id}","-name",f"{asset_id}_preview.jpeg"],
-                           capture_output=True,text=True,timeout=10)
+                           capture_output=True,text=True,timeout=bounded_timeout(10))
         lines = [l.strip() for l in r.stdout.splitlines() if l.strip()]
         if lines: return lines[0]
-    except: pass
+    except TimeoutError:
+        raise
+    except Exception:
+        pass
     return None
+
+def download_file(url: str, destination: Path) -> None:
+    ensure_runtime(f"descargando {destination.name}")
+    with urllib.request.urlopen(url, timeout=bounded_timeout(60)) as resp, open(destination, "wb") as fh:
+        shutil.copyfileobj(resp, fh)
 
 def ensure_dnn_face_model() -> Optional[Tuple[Path, Path]]:
     model_dir = Path(COLLAGE_DIR) / "models"
@@ -1136,9 +1573,9 @@ def ensure_dnn_face_model() -> Optional[Tuple[Path, Path]]:
     try:
         model_dir.mkdir(parents=True, exist_ok=True)
         if not proto_path.exists():
-            urllib.request.urlretrieve(DNN_PROTO_URL, proto_path)
+            download_file(DNN_PROTO_URL, proto_path)
         if not model_path.exists():
-            urllib.request.urlretrieve(DNN_MODEL_URL, model_path)
+            download_file(DNN_MODEL_URL, model_path)
         if proto_path.exists() and model_path.exists():
             return proto_path, model_path
     except Exception as exc:
@@ -1246,6 +1683,7 @@ def asset_face_score(asset:dict) -> int:
 def annotate_preview_faces(memories:List[dict], user_id:str) -> None:
     for memory in memories:
         for asset in memory.get("_original_assets", []):
+            ensure_runtime("analizando rostros en previews")
             aid = asset.get("id")
             if not aid:
                 continue
@@ -1258,6 +1696,7 @@ def annotate_preview_faces(memories:List[dict], user_id:str) -> None:
 
 def upload_collage(api_base:str, headers:dict, file_path:Path,
                    created_at:str) -> Optional[str]:
+    ensure_runtime("subiendo collage a Immich")
     with open(file_path,"rb") as f: data = f.read()
     boundary = "ImmichCollageBoundary"
     def field(name, value):
@@ -1278,7 +1717,7 @@ def upload_collage(api_base:str, headers:dict, file_path:Path,
     h["Content-Type"] = f"multipart/form-data; boundary={boundary}"
     req = urllib.request.Request(f"{api_base}/assets", data=payload, headers=h, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=bounded_timeout(60)) as resp:
             return json.loads(resp.read().decode()).get("id")
     except urllib.error.HTTPError as exc:
         print(f"  ERROR upload: {exc.code} {exc.read().decode()[:200]}", file=sys.stderr)
@@ -1289,6 +1728,7 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
                    gemini_key:str, api_base:str, headers:dict,
                    dry_run:bool, force:bool, allow_fallback:bool,
                    zone:dt.tzinfo) -> bool:
+    ensure_runtime(f"procesando memory {memory.get('id')}")
     mid   = memory["id"]
     year  = (memory.get("data") or {}).get("year", target_date.year)
     assets = memory_collage_assets(memory, people_only=True)
@@ -1329,7 +1769,7 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
     )
 
     layout_name  = decision.get("layout", "")
-    palette_name = decision.get("palette", "default")
+    palette_name = decision_palette_name(decision)
     order_raw    = decision.get("photo_order", [])
     reason       = decision.get("reason", "")
     fallback = fallback_decision(len(paths), target_date.month, memory_key=f"{mid}:{year}", photo_paths=paths)
@@ -1371,15 +1811,71 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
     pal      = PALETTES.get(palette_name, PALETTES["default"])
     subtitle = f"{MESES[target_date.month].capitalize()} {year}"
     layout_fn = LAYOUTS[layout_name]
+    render_template = choose_render_template(
+        decision,
+        title,
+        palette_name,
+        valid_order,
+        layout_name,
+        len(paths),
+        template_seed=f"{mid}:{year}:{target_date.isoformat()}:{model_used}",
+    )
 
     if dry_run:
-        print(f"  DRYRUN: generaría collage con layout={layout_name}")
+        if render_template:
+            print(
+                f"  DRYRUN: generaría collage con plantilla "
+                f"{render_template.get('_template_source')}:{render_template.get('_template_id')}"
+            )
+        else:
+            print(f"  DRYRUN: generaría collage con layout={layout_name}")
         return True
 
     # Generar collage
     Path(COLLAGE_DIR).mkdir(parents=True, exist_ok=True)
     out_path = Path(COLLAGE_DIR) / f"collage-{mid}-{year}.jpg"
     sidecar_path = out_path.with_suffix(".json")
+    render_mode = "layout"
+    template_error = ""
+    final_palette_name = palette_name
+    try:
+        ensure_runtime("renderizando collage individual")
+        if render_template:
+            template_palette = normalize_palette_name(render_template.get("palette_name") or palette_name)
+            img, W, H = render_from_template(
+                render_template,
+                ordered_paths,
+                title,
+                subtitle,
+                PALETTES.get(template_palette, PALETTES["default"]),
+            )
+            final_palette_name = template_palette
+            render_mode = "template"
+            print(
+                f"  Usando plantilla {render_template.get('_template_source')}:{render_template.get('_template_id')} "
+                f"({render_template.get('_usable_cells', 0)} celdas útiles)"
+            )
+        else:
+            img, W, H = layout_fn(ordered_paths, title, subtitle, pal)
+        img.save(str(out_path), "JPEG", quality=94)
+        print(f"  Collage: {out_path} ({out_path.stat().st_size//1024} KB) {W}x{H}")
+    except Exception as e:
+        template_error = str(e)
+        if render_template:
+            print(f"  WARN plantilla inválida: {e} — usando layout hardcodeado", file=sys.stderr)
+            try:
+                img, W, H = layout_fn(ordered_paths, title, subtitle, pal)
+                img.save(str(out_path), "JPEG", quality=94)
+                render_mode = "layout_fallback"
+                final_palette_name = palette_name
+                print(f"  Collage fallback: {out_path} ({out_path.stat().st_size//1024} KB) {W}x{H}")
+            except Exception as fallback_exc:
+                print(f"  ERROR generando collage: {fallback_exc}", file=sys.stderr)
+                return False
+        else:
+            print(f"  ERROR generando collage: {e}", file=sys.stderr)
+            return False
+
     write_decision_sidecar(sidecar_path, {
         "mode": "single_memory",
         "memory_id": mid,
@@ -1388,7 +1884,7 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
         "gemini_model": model_used,
         "gemini_error": decision.get("_gemini_error"),
         "layout": layout_name,
-        "palette": palette_name,
+        "palette": final_palette_name,
         "title": title,
         "theme": clean_title_candidate(decision.get("theme")),
         "layout_candidates": layout_candidates_from_decision(decision),
@@ -1396,16 +1892,14 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
         "photo_order": valid_order,
         "reason": reason,
         "allow_fallback": allow_fallback,
+        "render_mode": render_mode,
+        "template_id": (render_template or {}).get("_template_id", ""),
+        "template_source": (render_template or {}).get("_template_source", ""),
+        "template_error": template_error,
+        "template_cells": int((render_template or {}).get("_usable_cells", 0) or 0),
+        "background_color": (render_template or {}).get("background_color"),
     })
     print(f"  Decisión guardada: {sidecar_path}")
-
-    try:
-        img, W, H = layout_fn(ordered_paths, title, subtitle, pal)
-        img.save(str(out_path), "JPEG", quality=94)
-        print(f"  Collage: {out_path} ({out_path.stat().st_size//1024} KB) {W}x{H}")
-    except Exception as e:
-        print(f"  ERROR generando collage: {e}", file=sys.stderr)
-        return False
 
     # Subir a Immich
     created_at = local_asset_created_at(target_date, zone)
@@ -1430,6 +1924,7 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
                 gemini_key:str, api_base:str, headers:dict,
                 dry_run:bool, force:bool, allow_fallback:bool,
                 zone:dt.tzinfo) -> bool:
+    ensure_runtime(f"procesando collage diario {target_date.isoformat()}")
     people_only = should_prefer_people(memories)
     target_memory = pick_target_memory(memories)
     if not target_memory:
@@ -1468,6 +1963,7 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         for item in recent_daily_decisions
         if isinstance(item, dict) and item.get("layout") in LAYOUTS
     ]
+    recent_template_bank_ids = recent_template_ids(recent_daily_decisions)
     if recent_daily_decisions:
         print(f"  Historial reciente: {recent_collage_context(recent_daily_decisions)}")
 
@@ -1481,7 +1977,7 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         recent_daily_decisions=recent_daily_decisions,
     )
     layout_name  = decision.get("layout", "")
-    palette_name = decision.get("palette", "default")
+    palette_name = decision_palette_name(decision)
     order_raw    = decision.get("photo_order", [])
     reason       = decision.get("reason", "")
     fallback = fallback_decision(
@@ -1524,17 +2020,74 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
     ordered_paths = [daily_paths[i] for i in valid_order]
     pal = PALETTES.get(palette_name, PALETTES["default"])
     layout_fn = LAYOUTS[layout_name]
+    render_template = choose_render_template(
+        decision,
+        title,
+        palette_name,
+        valid_order,
+        layout_name,
+        len(daily_paths),
+        template_seed=f"daily:{target_date.isoformat()}:{model_used}:{layout_name}",
+        avoid_template_ids=recent_template_bank_ids,
+    )
 
     if force:
         remove_collage_assets(api_base, headers, memories, dry_run)
 
     if dry_run:
-        print(f"  DRYRUN: generaría collage diario único para {target_date} en memory {target_mid}")
+        if render_template:
+            print(
+                f"  DRYRUN: generaría collage diario con plantilla "
+                f"{render_template.get('_template_source')}:{render_template.get('_template_id')}"
+            )
+        else:
+            print(f"  DRYRUN: generaría collage diario único para {target_date} en memory {target_mid}")
         return True
 
     Path(COLLAGE_DIR).mkdir(parents=True, exist_ok=True)
     out_path = Path(COLLAGE_DIR) / f"collage-daily-{target_date.isoformat()}.jpg"
     sidecar_path = out_path.with_suffix(".json")
+    render_mode = "layout"
+    template_error = ""
+    final_palette_name = palette_name
+    try:
+        ensure_runtime("renderizando collage diario")
+        if render_template:
+            template_palette = normalize_palette_name(render_template.get("palette_name") or palette_name)
+            img, W, H = render_from_template(
+                render_template,
+                ordered_paths,
+                title,
+                subtitle,
+                PALETTES.get(template_palette, PALETTES["default"]),
+            )
+            final_palette_name = template_palette
+            render_mode = "template"
+            print(
+                f"  Usando plantilla {render_template.get('_template_source')}:{render_template.get('_template_id')} "
+                f"({render_template.get('_usable_cells', 0)} celdas útiles)"
+            )
+        else:
+            img, W, H = layout_fn(ordered_paths, title, subtitle, pal)
+        img.save(str(out_path), "JPEG", quality=94)
+        print(f"  Collage diario: {out_path} ({out_path.stat().st_size//1024} KB) {W}x{H}")
+    except Exception as e:
+        template_error = str(e)
+        if render_template:
+            print(f"  WARN plantilla inválida: {e} — usando layout hardcodeado", file=sys.stderr)
+            try:
+                img, W, H = layout_fn(ordered_paths, title, subtitle, pal)
+                img.save(str(out_path), "JPEG", quality=94)
+                render_mode = "layout_fallback"
+                final_palette_name = palette_name
+                print(f"  Collage diario fallback: {out_path} ({out_path.stat().st_size//1024} KB) {W}x{H}")
+            except Exception as fallback_exc:
+                print(f"  ERROR generando collage diario: {fallback_exc}", file=sys.stderr)
+                return False
+        else:
+            print(f"  ERROR generando collage diario: {e}", file=sys.stderr)
+            return False
+
     write_decision_sidecar(sidecar_path, {
         "mode": "daily",
         "target_date": target_date.isoformat(),
@@ -1543,7 +2096,7 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         "gemini_model": model_used,
         "gemini_error": decision.get("_gemini_error"),
         "layout": layout_name,
-        "palette": palette_name,
+        "palette": final_palette_name,
         "title": title,
         "theme": clean_title_candidate(decision.get("theme")),
         "layout_candidates": layout_candidates_from_decision(decision),
@@ -1553,15 +2106,14 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         "reason": reason,
         "allow_fallback": allow_fallback,
         "selected_paths": [Path(p).name for p in ordered_paths],
+        "render_mode": render_mode,
+        "template_id": (render_template or {}).get("_template_id", ""),
+        "template_source": (render_template or {}).get("_template_source", ""),
+        "template_error": template_error,
+        "template_cells": int((render_template or {}).get("_usable_cells", 0) or 0),
+        "background_color": (render_template or {}).get("background_color"),
     })
     print(f"  Decisión guardada: {sidecar_path}")
-    try:
-        img, W, H = layout_fn(ordered_paths, title, subtitle, pal)
-        img.save(str(out_path), "JPEG", quality=94)
-        print(f"  Collage diario: {out_path} ({out_path.stat().st_size//1024} KB) {W}x{H}")
-    except Exception as e:
-        print(f"  ERROR generando collage diario: {e}", file=sys.stderr)
-        return False
 
     created_at = local_asset_created_at(target_date, zone)
 
@@ -1588,12 +2140,14 @@ def parse_args():
     p.add_argument("--force",        action="store_true")
     p.add_argument("--allow-fallback", action="store_true",
                    default=env_is_true(os.environ.get("COLLAGE_ALLOW_FALLBACK"), False))
+    p.add_argument("--max-runtime-sec", type=int, default=MAX_RUNTIME_SEC)
     return p.parse_args()
 
 def main() -> int:
     args = parse_args()
     try: zone = ZoneInfo(args.timezone)
     except: zone = dt.timezone.utc
+    set_run_deadline(args.max_runtime_sec)
 
     secrets    = read_secrets(args.secrets_file)
     email      = secrets.get("IMMICH_ADMIN_EMAIL","")
@@ -1604,6 +2158,30 @@ def main() -> int:
     target_date = (now_local + dt.timedelta(days=args.days_offset)).date()
     print(f"INFO fecha={target_date} mes={MESES[target_date.month]}")
     print(f"INFO Gemini requerido={'no' if args.allow_fallback else 'sí'} modelos={','.join(GEMINI_MODELS)}")
+    print(f"INFO runtime límite={args.max_runtime_sec}s retención={COLLAGE_RETENTION_DAYS}d")
+
+    try:
+        Path(COLLAGE_DIR).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"ERROR: no se pudo preparar {COLLAGE_DIR}: {exc}", file=sys.stderr)
+        return 2
+    try:
+        Path(TEMPLATE_DIR).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"  WARN: no se pudo preparar {TEMPLATE_DIR}: {exc}", file=sys.stderr)
+    cleaned = cleanup_old_collage_files(dry_run=args.dry_run)
+    if cleaned:
+        action = "limpiaría" if args.dry_run else "limpió"
+        print(f"INFO limpieza collages: {action} {cleaned} archivo(s) viejo(s)")
+    free_mb = collage_dir_free_mb()
+    if free_mb >= 0:
+        print(f"INFO espacio collage_dir libre={free_mb} MB")
+        if free_mb < COLLAGE_MIN_FREE_MB:
+            print(
+                f"  WARN: espacio libre bajo en {COLLAGE_DIR}: {free_mb} MB "
+                f"(umbral={COLLAGE_MIN_FREE_MB} MB)",
+                file=sys.stderr,
+            )
 
     if not email or not password:
         print("ERROR: faltan credenciales Immich", file=sys.stderr); return 2
@@ -1638,6 +2216,13 @@ def main() -> int:
             ok = process_memory(m, user_id, target_date, gemini_key,
                                 args.api_base, headers, args.dry_run, args.force,
                                 args.allow_fallback, zone)
+        except TimeoutError as e:
+            send_nas_alert(
+                f"[collage-daily] Timeout para memory {args.memory_id} ({target_date.isoformat()}): {e}",
+                key=f"collage-timeout:{args.memory_id}:{target_date.isoformat()}",
+            )
+            print(f"  ERROR timeout {m.get('id')}: {e}", file=sys.stderr)
+            ok = False
         except Exception as e:
             print(f"  ERROR {m.get('id')}: {e}", file=sys.stderr)
             ok = False
@@ -1666,6 +2251,13 @@ def main() -> int:
         ok = process_day(memories, user_id, target_date, gemini_key,
                          args.api_base, headers, args.dry_run, args.force,
                          args.allow_fallback, zone)
+    except TimeoutError as e:
+        send_nas_alert(
+            f"[collage-daily] Timeout para collage diario {target_date.isoformat()}: {e}",
+            key=f"collage-timeout:daily:{target_date.isoformat()}",
+        )
+        print(f"ERROR timeout collage diario: {e}", file=sys.stderr)
+        ok = False
     except Exception as e:
         print(f"ERROR collage diario: {e}", file=sys.stderr)
         ok = False
