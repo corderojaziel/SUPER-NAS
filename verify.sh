@@ -344,8 +344,8 @@ fi
 
 section "CRONTAB"
 crontab -l 2>/dev/null | grep -q 'night-run.sh' && ok "Cron night-run presente" || fail "Cron night-run ausente"
-crontab -l 2>/dev/null | grep -q '^30 12 \* \* \* /usr/local/bin/memories-ensure.py --timezone America/Mexico_City$' && ok "Cron recuerdos diarios 12:30 PM presente" || warn "Cron recuerdos diarios 12:30 PM ausente"
-crontab -l 2>/dev/null | grep -q '^35 12 \* \* \* /usr/local/bin/collage-daily.py --timezone America/Mexico_City$' && ok "Cron collage diario 12:35 PM presente" || warn "Cron collage diario 12:35 PM ausente"
+crontab -l 2>/dev/null | grep -q '^10 0 \* \* \* /usr/local/bin/memories-ensure.py --timezone America/Mexico_City$' && ok "Cron recuerdos diarios 00:10 presente" || warn "Cron recuerdos diarios 00:10 ausente"
+crontab -l 2>/dev/null | grep -q '^15 0 \* \* \* /usr/local/bin/collage-daily.py --timezone America/Mexico_City$' && ok "Cron collage diario 00:15 presente" || warn "Cron collage diario 00:15 ausente"
 crontab -l 2>/dev/null | grep -q 'iml-autopilot.sh' && ok "Cron iml-autopilot presente" || warn "Cron iml-autopilot ausente"
 crontab -l 2>/dev/null | grep -q 'video-autopilot.sh' && ok "Cron video-autopilot presente" || warn "Cron video-autopilot ausente"
 crontab -l 2>/dev/null | grep -q 'ml-temp-guard' && ok "Cron ml-temp-guard presente" || warn "Cron ml-temp-guard ausente"
