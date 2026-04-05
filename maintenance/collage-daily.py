@@ -61,7 +61,7 @@ GEMINI_ALERT_TTL = max(60, int(os.environ.get("COLLAGE_GEMINI_ALERT_TTL", "21600
 RECENT_DECISION_DAYS = max(1, int(os.environ.get("COLLAGE_RECENT_DECISION_DAYS", "2")))
 COLLAGE_RETENTION_DAYS = max(3, int(os.environ.get("COLLAGE_RETENTION_DAYS", "45")))
 COLLAGE_MIN_FREE_MB = max(64, int(os.environ.get("COLLAGE_MIN_FREE_MB", "256")))
-MAX_RUNTIME_SEC = max(60, int(os.environ.get("COLLAGE_MAX_RUNTIME_SEC", "360")))
+MAX_RUNTIME_SEC = max(60, int(os.environ.get("COLLAGE_MAX_RUNTIME_SEC", "600")))
 TEMPLATE_SAFE_TOP = 165
 TEMPLATE_SAFE_BOTTOM = 1280
 TEMPLATE_MIN_SIZE = 80
@@ -239,8 +239,10 @@ def draw_template_header(canvas, draw, title:str, subtitle:str, pal:dict,
         sx = (W - (subtitle_box[2] - subtitle_box[0])) // 2
         draw.text((tx, 66), title, font=ft, fill=(40,30,20))
         draw.text((sx, 126), subtitle, font=fs, fill=pal["c1"])
-        flower(draw, 98, 82, n=6, rp=14, rc=10, pc=pal["c5"], cc=pal["c4"])
-        flower(draw, W-98, 82, n=6, rp=16, rc=11, pc=pal["c3"], cc=pal["c4"])
+        draw.ellipse([54, 44, 138, 128], fill=pal["c5"] + (70,))
+        draw.ellipse([W-142, 46, W-54, 134], fill=pal["c2"] + (80,))
+        dots(draw, 84, 82, cols=3, rows=2, gap=18, color=pal["c3"] + (120,))
+        dots(draw, W-126, 74, cols=3, rows=2, gap=18, color=pal["c1"] + (120,))
         return
     if variant == "sidebar":
         draw.rounded_rectangle([28, 40, 46, 150], radius=8, fill=pal["c2"])
@@ -248,8 +250,9 @@ def draw_template_header(canvas, draw, title:str, subtitle:str, pal:dict,
         draw.text((72, 64), title, font=ft, fill=(40,30,20))
         draw.rounded_rectangle([72, 122, 270, 156], radius=16, fill=pal["c5"] + (255,))
         draw.text((88, 126), subtitle, font=fs, fill=(60,40,24))
-        flower(draw, W-130, 74, n=6, rp=17, rc=12, pc=pal["c3"], cc=pal["c4"])
-        flower(draw, W-72, 110, n=5, rp=11, rc=8, pc=pal["c2"], cc=pal["c4"])
+        draw.ellipse([W-164, 44, W-58, 132], fill=pal["c3"] + (68,))
+        draw.rounded_rectangle([W-178, 102, W-54, 114], radius=6, fill=pal["c4"])
+        dots(draw, W-150, 72, cols=4, rows=2, gap=18, color=pal["c2"] + (125,))
         return
     if variant == "ribbon":
         draw.rounded_rectangle([32, 44, 260, 58], radius=6, fill=pal["c1"])
@@ -257,8 +260,9 @@ def draw_template_header(canvas, draw, title:str, subtitle:str, pal:dict,
         draw.text((36, 68), title, font=ft, fill=(40,30,20))
         draw.rounded_rectangle([36, 126, 236, 158], radius=16, fill=pal["c4"] + (255,))
         draw.text((52, 129), subtitle, font=fs, fill=(60,40,24))
-        flower(draw, W-92, 72, n=6, rp=16, rc=11, pc=pal["c5"], cc=pal["c4"])
-        flower(draw, W-148, 110, n=5, rp=10, rc=7, pc=pal["c2"], cc=pal["c1"])
+        wavy_line(draw, W-280, 74, W-48, amp=5, freq=40, color=pal["c2"], w=4)
+        dots(draw, W-180, 96, cols=5, rows=1, gap=20, color=pal["c5"] + (130,))
+        draw.ellipse([W-92, 54, W-46, 100], fill=pal["c3"] + (120,))
         return
     draw_header(canvas, draw, title, subtitle, pal, W, fonts)
 
@@ -895,6 +899,9 @@ def collage_dir_free_mb() -> int:
 def daily_sidecar_path(target_date: dt.date) -> Path:
     return Path(COLLAGE_DIR) / f"collage-daily-{target_date.isoformat()}.json"
 
+def monthly_sidecar_path(target_date: dt.date) -> Path:
+    return Path(COLLAGE_DIR) / f"collage-monthly-{target_date.year}-{target_date.month:02d}.json"
+
 def load_recent_daily_decisions(target_date: dt.date, days: int=RECENT_DECISION_DAYS) -> List[dict]:
     decisions: List[dict] = []
     for offset in range(1, max(1, days) + 1):
@@ -906,6 +913,26 @@ def load_recent_daily_decisions(target_date: dt.date, days: int=RECENT_DECISION_
         except Exception:
             continue
         if isinstance(payload, dict) and payload.get("mode") == "daily":
+            decisions.append(payload)
+    return decisions
+
+def load_recent_monthly_decisions(target_date: dt.date, months: int=3) -> List[dict]:
+    decisions: List[dict] = []
+    year = target_date.year
+    month = target_date.month
+    for _ in range(max(1, months)):
+        month -= 1
+        if month <= 0:
+            month = 12
+            year -= 1
+        sidecar = Path(COLLAGE_DIR) / f"collage-monthly-{year}-{month:02d}.json"
+        if not sidecar.exists():
+            continue
+        try:
+            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, dict) and payload.get("mode") == "monthly":
             decisions.append(payload)
     return decisions
 
@@ -991,8 +1018,9 @@ def recent_collage_context(recent_daily_decisions: Optional[List[dict]]) -> str:
         render_mode = item.get("render_mode", "layout")
         template_id = str(item.get("template_id") or "").strip()
         template_suffix = f", plantilla={template_id}" if template_id else ""
+        when = item.get("target_date") or item.get("target_month") or "?"
         lines.append(
-            f"- {item.get('target_date', '?')}: layout={item.get('layout', '?')}, "
+            f"- {when}: layout={item.get('layout', '?')}, "
             f"paleta={item.get('palette', '?')}, render={render_mode}{template_suffix}, "
             f"título=\"{item.get('title', '')}\""
         )
@@ -1034,7 +1062,8 @@ def choose_layout(layout_name: object, photo_count: int, fallback: dict,
 
 def ask_gemini(api_key:str, photo_paths:List[str], month:int, memory_key:str="",
                allow_fallback:bool=False, alert_context:str="",
-               recent_daily_decisions:Optional[List[dict]]=None) -> dict:
+               recent_daily_decisions:Optional[List[dict]]=None,
+               scope_note:str="") -> dict:
     """Manda las fotos a Gemini y él decide todo. Devuelve dict con decisiones."""
     ensure_runtime(f"consultando Gemini para {alert_context or memory_key or 'collage'}")
     layouts_desc = (
@@ -1066,6 +1095,9 @@ Layouts disponibles:
 Contexto reciente para no repetir el mismo look:
 {recent_context}
 
+Contexto del collage:
+{scope_note or "Es un collage editorial general; si las fotos pertenecen a un solo evento busca coherencia, y si mezclan tiempos distintos busca un mood común sin fingir que es una sola escena."}
+
 Responde SOLO con JSON válido (sin markdown, sin texto fuera del JSON):
 {{
   "layout": "<nombre exacto del layout>",
@@ -1092,6 +1124,7 @@ Reglas estrictas:
 - Prioriza fotos de personas, familia, retratos, momentos humanos y escenas emotivas
 - Evita elegir screenshots, carreteras vacías, documentos, logos, objetos sueltos o fotos de pantallas si hay fotos humanas disponibles
 - Piensa primero en la historia: vínculo visible, actividad, emoción, edad, celebración o gesto
+- Si el set mezcla tiempos, años o contextos distintos, no lo fuerces a parecer un solo evento; diseña un resumen visual coherente
 - La paleta debe responder al ambiente visual; usa la temporada solo como desempate, no como regla ciega
 - NO elijas grid solo por cantidad; si una o dos fotos dominan, usa un layout editorial y deja esas fotos al inicio de photo_order
 - Evita una grilla uniforme 2x3 salvo que sea claramente la unica composicion que funciona
@@ -1533,6 +1566,22 @@ def pick_target_memory(memories: List[dict]) -> Optional[dict]:
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return candidates[0][2]
 
+def pick_monthly_memories_by_year(memories: List[dict]) -> List[dict]:
+    people_only = should_prefer_people(memories)
+    by_year: Dict[int, Tuple[int, int, dict]] = {}
+    for memory in memories:
+        year = int((memory.get("data") or {}).get("year", 0) or 0)
+        originals = memory_collage_assets(memory, people_only=people_only)
+        if not originals:
+            continue
+        top_face = max((asset_face_score(asset) for asset in originals), default=0)
+        candidate = (len(originals), top_face, memory)
+        current = by_year.get(year)
+        if current is None or candidate[:2] > current[:2]:
+            by_year[year] = candidate
+    picked = [item[2] for _, item in sorted(by_year.items(), key=lambda pair: pair[0], reverse=True)]
+    return picked
+
 def collect_daily_preview_paths(memories: List[dict], user_id: str, limit: int) -> Tuple[List[str], int]:
     people_only = should_prefer_people(memories)
     buckets: List[List[Tuple[str, str]]] = []
@@ -1601,6 +1650,14 @@ def remove_collage_assets(api_base:str, headers:dict, memories:List[dict], dry_r
     else:
         print(f"  Limpieza: {len(collage_ids)} collage(s) previo(s) eliminados")
     return len(collage_ids)
+
+def count_existing_collages(memories: List[dict]) -> int:
+    return sum(
+        1
+        for memory in memories
+        for asset in (memory.get("assets") or [])
+        if is_collage_asset(asset)
+    )
 
 def normalize_asset_ids(asset_ids: List[str]) -> List[str]:
     return list(dict.fromkeys([aid for aid in asset_ids if aid]))
@@ -1943,6 +2000,10 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
         memory_key=f"{mid}:{year}",
         allow_fallback=allow_fallback,
         alert_context=f"memory {mid} ({target_date.isoformat()})",
+        scope_note=(
+            f"Estas fotos pertenecen a un solo recuerdo del día {target_date.day} de {MESES[target_date.month]} "
+            f"de {year}. Busca una historia coherente de una sola ocasión, evento o vínculo."
+        ),
     )
 
     layout_name  = decision.get("layout", "")
@@ -1986,7 +2047,7 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
 
     ordered_paths = [paths[i] for i in valid_order]
     pal      = PALETTES.get(palette_name, PALETTES["default"])
-    subtitle = f"{MESES[target_date.month].capitalize()} {year}"
+    subtitle = f"{target_date.day} {MESES[target_date.month]} {year}"
     layout_fn = LAYOUTS[layout_name]
     render_template = choose_render_template(
         decision,
@@ -2099,36 +2160,74 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
 
     return ensure_collage_first(api_base, headers, mid, asset_id)
 
-def process_day(memories:List[dict], user_id:str, target_date:dt.date,
-                gemini_key:str, api_base:str, headers:dict,
-                dry_run:bool, force:bool, allow_fallback:bool,
-                zone:dt.tzinfo) -> bool:
+def process_daily_memory(memories:List[dict], user_id:str, target_date:dt.date,
+                         gemini_key:str, api_base:str, headers:dict,
+                         dry_run:bool, force:bool, allow_fallback:bool,
+                         zone:dt.tzinfo) -> bool:
     ensure_runtime(f"procesando collage diario {target_date.isoformat()}")
-    people_only = should_prefer_people(memories)
     target_memory = pick_target_memory(memories)
     if not target_memory:
         print(f"INFO: sin memories con fotos originales para {target_date}")
+        return False
+    total_existing = count_existing_collages(memories)
+    if total_existing and not force:
+        print(f"  [skip] fecha={target_date}: ya existe collage diario ({total_existing} asset(s) collage)")
+        return False
+    if force:
+        remove_collage_assets(api_base, headers, memories, dry_run)
+    year = (target_memory.get("data") or {}).get("year", target_date.year)
+    print(
+        f"INFO collage diario fecha={target_date} "
+        f"memory={target_memory.get('id')} year={year} "
+        f"scope=recuerdo_especifico"
+    )
+    return process_memory(
+        target_memory,
+        user_id,
+        target_date,
+        gemini_key,
+        api_base,
+        headers,
+        dry_run,
+        True,
+        allow_fallback,
+        zone,
+    )
+
+def process_month(memories:List[dict], user_id:str, target_date:dt.date,
+                  gemini_key:str, api_base:str, headers:dict,
+                  dry_run:bool, force:bool, allow_fallback:bool,
+                  zone:dt.tzinfo) -> bool:
+    ensure_runtime(f"procesando collage mensual {target_date.year}-{target_date.month:02d}")
+    people_only = should_prefer_people(memories)
+    target_memory = pick_target_memory(memories)
+    if not target_memory:
+        print(f"INFO: sin memories con fotos originales para el mes {target_date.month:02d}")
         return False
 
     target_mid = target_memory["id"]
     target_year = (target_memory.get("data") or {}).get("year", target_date.year)
     target_originals = len(memory_collage_assets(target_memory, people_only=people_only))
+    monthly_prefix = f"collage-monthly-{target_date.year}-{target_date.month:02d}"
 
     if not force:
-        total_existing = sum(1 for m in memories for a in (m.get("assets") or []) if is_collage_asset(a))
-        if total_existing:
-            print(f"  [skip] fecha={target_date}: ya existe collage diario ({total_existing} asset(s) collage)")
+        rows = db_query(
+            "SELECT id FROM asset WHERE \"deviceId\"='supernas-collage' "
+            f"AND \"originalFileName\" LIKE '{monthly_prefix}%' LIMIT 1;"
+        )
+        if rows:
+            print(f"  [skip] mes={target_date.month:02d}: ya existe collage mensual")
             return False
 
-    daily_paths, missing = collect_daily_preview_paths(memories, user_id, MAX_PHOTOS)
-    if not daily_paths:
-        print(f"  [skip] fecha={target_date}: sin previews utilizables para collage diario")
+    monthly_paths, missing = collect_daily_preview_paths(memories, user_id, MAX_PHOTOS)
+    if not monthly_paths:
+        print(f"  [skip] mes={target_date.month:02d}: sin previews utilizables para collage mensual")
         return False
 
     total_originals = sum(len(memory_collage_assets(m, people_only=people_only)) for m in memories)
     print(
-        f"INFO collage diario fecha={target_date} memories={len(memories)} "
-        f"fotos_originales={total_originals} previews={len(daily_paths)} missing_previews={missing}"
+        f"INFO collage mensual mes={MESES[target_date.month]} memories={len(memories)} "
+        f"fotos_originales={total_originals} previews={len(monthly_paths)} missing_previews={missing}"
     )
     print(
         f"  target_memory={target_mid} year={target_year} "
@@ -2136,44 +2235,47 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         f"selección={'solo_personas' if people_only else 'mixta'}"
     )
 
-    recent_daily_decisions = load_recent_daily_decisions(target_date)
+    recent_monthly_decisions = load_recent_monthly_decisions(target_date)
     recent_layouts = [
         item.get("layout")
-        for item in recent_daily_decisions
+        for item in recent_monthly_decisions
         if isinstance(item, dict) and item.get("layout") in LAYOUTS
     ]
-    recent_template_bank_ids = recent_template_ids(recent_daily_decisions)
-    if recent_daily_decisions:
-        print(f"  Historial reciente: {recent_collage_context(recent_daily_decisions)}")
+    recent_template_bank_ids = recent_template_ids(recent_monthly_decisions)
+    if recent_monthly_decisions:
+        print(f"  Historial mensual: {recent_collage_context(recent_monthly_decisions)}")
 
     decision = ask_gemini(
         gemini_key,
-        daily_paths,
+        monthly_paths,
         target_date.month,
-        memory_key=f"daily:{target_date.isoformat()}",
+        memory_key=f"monthly:{target_date.year}-{target_date.month:02d}",
         allow_fallback=allow_fallback,
-        alert_context=f"collage diario {target_date.isoformat()}",
-        recent_daily_decisions=recent_daily_decisions,
+        alert_context=f"collage mensual {target_date.year}-{target_date.month:02d}",
+        recent_daily_decisions=recent_monthly_decisions,
+        scope_note=(
+            f"Estas fotos pertenecen a distintos recuerdos del mes de {MESES[target_date.month]} "
+            f"en diferentes años. No asumas que es un solo evento: diseña un resumen del mes con mood común."
+        ),
     )
     layout_name  = decision.get("layout", "")
     palette_name = decision_palette_name(decision)
     order_raw    = decision.get("photo_order", [])
     reason       = decision.get("reason", "")
     fallback = fallback_decision(
-        len(daily_paths),
+        len(monthly_paths),
         target_date.month,
-        memory_key=f"daily:{target_date.isoformat()}",
-        photo_paths=daily_paths,
+        memory_key=f"monthly:{target_date.year}-{target_date.month:02d}",
+        photo_paths=monthly_paths,
         avoid_layouts=recent_layouts[:1],
     )
-    layout_name, layout_note = choose_layout(layout_name, len(daily_paths), fallback, decision, recent_layouts=recent_layouts)
+    layout_name, layout_note = choose_layout(layout_name, len(monthly_paths), fallback, decision, recent_layouts=recent_layouts)
     if layout_note:
         print(f"  WARN: {layout_note}")
 
     palette_name = normalize_palette_name(palette_name)
-    title, used_title_fallback = choose_title(decision, fallback.get("title", f"Recuerdo del {target_date.isoformat()}"))
-    if used_title_fallback:
-        print(f"  WARN: título genérico o vacío de Gemini, usando fallback='{title}'")
+    title = MESES[target_date.month].capitalize()
+    subtitle = "Diferentes años"
 
     if not isinstance(order_raw, list):
         order_raw = []
@@ -2184,19 +2286,18 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
             idx = int(idx)
         except (TypeError, ValueError):
             continue
-        if 0 <= idx < len(daily_paths) and idx not in seen:
+        if 0 <= idx < len(monthly_paths) and idx not in seen:
             valid_order.append(idx)
             seen.add(idx)
-    for i in range(len(daily_paths)):
+    for i in range(len(monthly_paths)):
         if i not in seen:
             valid_order.append(i)
 
     model_used = decision.get("_gemini_model", "fallback")
-    subtitle = f"{target_date.day} {MESES[target_date.month]} {target_date.year}"
     print(f"  Gemini[{model_used}] → layout={layout_name} paleta={palette_name} título='{title}'")
     print(f"  Razón: {reason}")
 
-    ordered_paths = [daily_paths[i] for i in valid_order]
+    ordered_paths = [monthly_paths[i] for i in valid_order]
     pal = PALETTES.get(palette_name, PALETTES["default"])
     layout_fn = LAYOUTS[layout_name]
     render_template = choose_render_template(
@@ -2205,32 +2306,29 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         palette_name,
         valid_order,
         layout_name,
-        len(daily_paths),
-        template_seed=f"daily:{target_date.isoformat()}:{model_used}:{layout_name}",
+        len(monthly_paths),
+        template_seed=f"monthly:{target_date.year}-{target_date.month:02d}:{model_used}:{layout_name}",
         avoid_template_ids=recent_template_bank_ids,
     )
-
-    if force:
-        remove_collage_assets(api_base, headers, memories, dry_run)
 
     if dry_run:
         if render_template:
             print(
-                f"  DRYRUN: generaría collage diario con plantilla "
+                f"  DRYRUN: generaría collage mensual con plantilla "
                 f"{render_template.get('_template_source')}:{render_template.get('_template_id')}"
             )
         else:
-            print(f"  DRYRUN: generaría collage diario único para {target_date} en memory {target_mid}")
+            print(f"  DRYRUN: generaría collage mensual para {MESES[target_date.month]} en memory {target_mid}")
         return True
 
     Path(COLLAGE_DIR).mkdir(parents=True, exist_ok=True)
-    out_path = Path(COLLAGE_DIR) / f"collage-daily-{target_date.isoformat()}.jpg"
-    sidecar_path = out_path.with_suffix(".json")
+    out_path = Path(COLLAGE_DIR) / f"{monthly_prefix}.jpg"
+    sidecar_path = monthly_sidecar_path(target_date)
     render_mode = "layout"
     template_error = ""
     final_palette_name = palette_name
     try:
-        ensure_runtime("renderizando collage diario")
+        ensure_runtime("renderizando collage mensual")
         if render_template:
             template_palette = normalize_palette_name(render_template.get("palette_name") or palette_name)
             img, W, H = render_from_template(
@@ -2249,7 +2347,7 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         else:
             img, W, H = layout_fn(ordered_paths, title, subtitle, pal)
         img.save(str(out_path), "JPEG", quality=94)
-        print(f"  Collage diario: {out_path} ({out_path.stat().st_size//1024} KB) {W}x{H}")
+        print(f"  Collage mensual: {out_path} ({out_path.stat().st_size//1024} KB) {W}x{H}")
     except Exception as e:
         template_error = str(e)
         if render_template:
@@ -2259,17 +2357,17 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
                 img.save(str(out_path), "JPEG", quality=94)
                 render_mode = "layout_fallback"
                 final_palette_name = palette_name
-                print(f"  Collage diario fallback: {out_path} ({out_path.stat().st_size//1024} KB) {W}x{H}")
+                print(f"  Collage mensual fallback: {out_path} ({out_path.stat().st_size//1024} KB) {W}x{H}")
             except Exception as fallback_exc:
-                print(f"  ERROR generando collage diario: {fallback_exc}", file=sys.stderr)
+                print(f"  ERROR generando collage mensual: {fallback_exc}", file=sys.stderr)
                 return False
         else:
-            print(f"  ERROR generando collage diario: {e}", file=sys.stderr)
+            print(f"  ERROR generando collage mensual: {e}", file=sys.stderr)
             return False
 
     write_decision_sidecar(sidecar_path, {
-        "mode": "daily",
-        "target_date": target_date.isoformat(),
+        "mode": "monthly",
+        "target_month": f"{target_date.year}-{target_date.month:02d}",
         "target_memory": target_mid,
         "target_memory_year": target_year,
         "gemini_model": model_used,
@@ -2277,6 +2375,7 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         "layout": layout_name,
         "palette": final_palette_name,
         "title": title,
+        "subtitle": subtitle,
         "theme": clean_title_candidate(decision.get("theme")),
         "layout_candidates": layout_candidates_from_decision(decision),
         "title_options": coerce_string_list(decision.get("title_options")),
@@ -2297,13 +2396,12 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
     print(f"  Decisión guardada: {sidecar_path}")
 
     created_at = local_asset_created_at(target_date, zone)
-
     asset_id = upload_collage(api_base, headers, out_path, created_at)
     if not asset_id:
-        print(f"  ERROR: falló la subida del collage diario", file=sys.stderr)
+        print(f"  ERROR: falló la subida del collage mensual", file=sys.stderr)
         return False
 
-    print(f"  Subido collage diario: asset_id={asset_id}")
+    print(f"  Subido collage mensual: asset_id={asset_id}")
     c, body = http_json("PUT", f"{api_base}/memories/{target_mid}/assets", {"ids": [asset_id]}, headers=headers)
     if c not in (200, 201):
         print(f"  WARN: subido pero no insertado en memory destino {target_mid}: {c} {body}", file=sys.stderr)
@@ -2317,6 +2415,7 @@ def parse_args():
     p.add_argument("--timezone",     default=os.environ.get("MEMORIES_TIMEZONE", TIMEZONE))
     p.add_argument("--days-offset",  type=int, default=0)
     p.add_argument("--memory-id",    default=None)
+    p.add_argument("--scope",        choices=["auto", "daily", "monthly"], default="auto")
     p.add_argument("--dry-run",      action="store_true")
     p.add_argument("--force",        action="store_true")
     p.add_argument("--allow-fallback", action="store_true",
@@ -2413,37 +2512,63 @@ def main() -> int:
     c, all_mem = http_json("GET", f"{args.api_base}/memories", headers=headers)
     if c != 200 or not isinstance(all_mem, list):
         print(f"ERROR GET /memories: {c}", file=sys.stderr); return 2
-    utc_today = dt.datetime.combine(target_date, dt.time.min, tzinfo=dt.timezone.utc)
-    memories = [
+    scope = args.scope
+    if scope == "auto":
+        scope = "monthly" if target_date.day == 1 else "daily"
+    print(f"INFO scope={scope}")
+
+    utc_today = dt.datetime.combine(target_date, dt.time.min, tzinfo=dt.timezone.utc).date()
+    day_memories = [
         m for m in all_mem
         if isinstance(m,dict)
         and m.get("showAt","")
-        and dt.datetime.fromisoformat(m["showAt"].replace("Z","+00:00")).date() == utc_today.date()
+        and dt.datetime.fromisoformat(m["showAt"].replace("Z","+00:00")).date() == utc_today
         and len(m.get("assets",[])) > 0
     ]
-    annotate_usable_assets(memories)
-    annotate_preview_faces(memories, user_id)
 
-    if not memories:
-        print(f"INFO: sin memories con assets para {target_date}"); return 0
+    monthly_memories = [
+        m for m in all_mem
+        if isinstance(m, dict)
+        and m.get("showAt", "")
+        and (show_at := dt.datetime.fromisoformat(m["showAt"].replace("Z", "+00:00")).date()).month == target_date.month
+        and len(m.get("assets", [])) > 0
+    ]
 
-    print(f"INFO: {len(memories)} memories")
+    if scope == "monthly":
+        annotate_usable_assets(monthly_memories)
+        selected_memories = pick_monthly_memories_by_year(monthly_memories)
+    else:
+        selected_memories = day_memories
+        annotate_usable_assets(selected_memories)
+        annotate_preview_faces(selected_memories, user_id)
+
+    if not selected_memories:
+        label = f"mes {MESES[target_date.month]}" if scope == "monthly" else str(target_date)
+        print(f"INFO: sin memories con assets para {label}")
+        return 0
+
+    print(f"INFO: {len(selected_memories)} memories")
     try:
-        ok = process_day(memories, user_id, target_date, gemini_key,
-                         args.api_base, headers, args.dry_run, args.force,
-                         args.allow_fallback, zone)
+        if scope == "monthly":
+            ok = process_month(selected_memories, user_id, target_date, gemini_key,
+                               args.api_base, headers, args.dry_run, args.force,
+                               args.allow_fallback, zone)
+        else:
+            ok = process_daily_memory(selected_memories, user_id, target_date, gemini_key,
+                                      args.api_base, headers, args.dry_run, args.force,
+                                      args.allow_fallback, zone)
     except TimeoutError as e:
         send_nas_alert(
-            f"[collage-daily] Timeout para collage diario {target_date.isoformat()}: {e}",
-            key=f"collage-timeout:daily:{target_date.isoformat()}",
+            f"[collage-daily] Timeout para collage {scope} {target_date.isoformat()}: {e}",
+            key=f"collage-timeout:{scope}:{target_date.isoformat()}",
         )
-        print(f"ERROR timeout collage diario: {e}", file=sys.stderr)
+        print(f"ERROR timeout collage {scope}: {e}", file=sys.stderr)
         ok = False
     except Exception as e:
-        print(f"ERROR collage diario: {e}", file=sys.stderr)
+        print(f"ERROR collage {scope}: {e}", file=sys.stderr)
         ok = False
 
-    print(f"\nSUMMARY fecha={target_date} ok={1 if ok else 0}/1")
+    print(f"\nSUMMARY fecha={target_date} scope={scope} ok={1 if ok else 0}/1")
     return 0 if ok else 1
 
 if __name__ == "__main__":
