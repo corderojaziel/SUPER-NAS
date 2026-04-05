@@ -45,6 +45,7 @@ COLLAGE_DIR  = "/var/lib/immich/collages"
 TIMEZONE     = "America/Mexico_City"
 DNN_PROTO_URL = "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt"
 DNN_MODEL_URL = "https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20180205_fp16/res10_300x300_ssd_iter_140000_fp16.caffemodel"
+NAS_ALERT_BIN = "/usr/local/bin/nas-alert.sh"
 GEMINI_MODELS = [
     m.strip()
     for m in os.environ.get(
@@ -55,6 +56,7 @@ GEMINI_MODELS = [
 ]
 MAX_PHOTOS   = max(1, int(os.environ.get("COLLAGE_MAX_PHOTOS", "10")))
 PREVIEW_SIZE = max(128, int(os.environ.get("COLLAGE_PREVIEW_SIZE", "512")))
+GEMINI_ALERT_TTL = max(60, int(os.environ.get("COLLAGE_GEMINI_ALERT_TTL", "21600")))
 PREVIEW_FACE_CACHE: Dict[str, int] = {}
 FACE_CASCADES = None
 DNN_FACE_NET = None
@@ -409,6 +411,11 @@ def choice_from_seed(options: List[str], seed: str) -> str:
     digest = hashlib.sha1(seed.encode("utf-8", "ignore")).digest()
     return options[digest[0] % len(options)]
 
+def env_is_true(value: Optional[str], default: bool=False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 def extract_json_text(text: str) -> str:
     text = (text or "").replace("```json", "").replace("```", "").strip()
     start = text.find("{")
@@ -419,7 +426,14 @@ def extract_json_text(text: str) -> str:
 
 def is_screenshot_name(name: str) -> bool:
     low = (name or "").strip().lower()
-    return low.startswith("screenshot") or "screen_shot" in low or "screen-shot" in low
+    return (
+        low.startswith("screenshot")
+        or low.startswith("screen recording")
+        or "screen_shot" in low
+        or "screen-shot" in low
+        or "captura de pantalla" in low
+        or "screencap" in low
+    )
 
 def is_whatsapp_name(name: str) -> bool:
     low = (name or "").strip().lower()
@@ -470,7 +484,40 @@ def fallback_decision(n_photos:int, month:int, memory_key:str="", photo_paths:Op
         "reason": "fallback automático por cuota o respuesta inválida"
     }
 
-def ask_gemini(api_key:str, photo_paths:List[str], month:int, memory_key:str="") -> dict:
+def send_nas_alert(message: str, key: str="", ttl: int=GEMINI_ALERT_TTL) -> None:
+    if not message or not Path(NAS_ALERT_BIN).exists():
+        return
+    env = os.environ.copy()
+    if key:
+        env["NAS_ALERT_KEY"] = key
+    env["NAS_ALERT_TTL"] = str(ttl)
+    try:
+        subprocess.run(
+            [NAS_ALERT_BIN, message],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+            check=False,
+        )
+    except Exception:
+        pass
+
+def local_asset_created_at(target_date: dt.date, zone: dt.tzinfo) -> str:
+    local_dt = dt.datetime.combine(target_date, dt.time(12, 0, 1), tzinfo=zone)
+    return local_dt.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+def write_decision_sidecar(path: Path, payload: dict) -> None:
+    try:
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+def ask_gemini(api_key:str, photo_paths:List[str], month:int, memory_key:str="",
+               allow_fallback:bool=False, alert_context:str="") -> dict:
     """Manda las fotos a Gemini y él decide todo. Devuelve dict con decisiones."""
     layouts_desc = (
         "columns: 2 fotos lado a lado, ideal para retratos pareados. "
@@ -557,8 +604,18 @@ Reglas estrictas:
             print(f"  WARN Gemini {model}: {exc} — probando siguiente modelo", file=sys.stderr)
             continue
 
-    print(f"  WARN Gemini: {last_error} — usando fallback", file=sys.stderr)
-    return fallback_decision(len(photo_paths), month, memory_key=memory_key, photo_paths=photo_paths)
+    alert_message = (
+        f"[collage-daily] Gemini no respondió para {alert_context or memory_key}. "
+        f"Error: {last_error}"
+    )
+    send_nas_alert(alert_message, key=f"collage-gemini:{memory_key or alert_context}")
+    if allow_fallback:
+        print(f"  WARN Gemini: {last_error} — usando fallback", file=sys.stderr)
+        fallback = fallback_decision(len(photo_paths), month, memory_key=memory_key, photo_paths=photo_paths)
+        fallback["_gemini_model"] = "fallback"
+        fallback["_gemini_error"] = last_error
+        return fallback
+    raise RuntimeError(last_error)
 
 def normalize_palette_name(name: str) -> str:
     if not isinstance(name, str):
@@ -647,8 +704,16 @@ def asset_selection_priority(asset: dict) -> Tuple[int, int, int, int, str]:
     # Menor es mejor: caras primero, luego fotos tipo chat/album, y al final HDR/videos/screenshots.
     return (-face_count, is_wa, is_hdr + is_video + is_screen, is_screen + is_video, name.lower())
 
+def is_collage_rejected_asset(asset: dict) -> bool:
+    if not isinstance(asset, dict):
+        return True
+    return is_screenshot_name(asset.get("originalFileName", ""))
+
 def memory_collage_assets(memory: dict, people_only: bool=False) -> List[dict]:
-    ranked = sorted(original_assets(memory), key=asset_selection_priority)
+    ranked = [
+        asset for asset in sorted(original_assets(memory), key=asset_selection_priority)
+        if not is_collage_rejected_asset(asset)
+    ]
     if people_only:
         people = [a for a in ranked if asset_face_score(a) > 0]
         if people:
@@ -744,6 +809,26 @@ def remove_collage_assets(api_base:str, headers:dict, memories:List[dict], dry_r
         print(f"  Limpieza: {len(collage_ids)} collage(s) previo(s) eliminados")
     return len(collage_ids)
 
+def rebuild_memory_assets_order(api_base:str, headers:dict, memory_id:str,
+                                ordered_ids:List[str], original_ids:List[str]) -> bool:
+    cd, body = http_json("DELETE", f"{api_base}/memories/{memory_id}/assets",
+                         {"ids": original_ids}, headers=headers)
+    if cd != 200:
+        print(f"  WARN: no se pudo vaciar la memory {memory_id} para reordenar: {cd} {body}", file=sys.stderr)
+        return False
+
+    ca, body = http_json("PUT", f"{api_base}/memories/{memory_id}/assets",
+                         {"ids": ordered_ids}, headers=headers)
+    if ca in (200, 201):
+        return True
+
+    print(f"  WARN: no se pudo reconstruir el orden de memory {memory_id}: {ca} {body}", file=sys.stderr)
+    rr, restore_body = http_json("PUT", f"{api_base}/memories/{memory_id}/assets",
+                                 {"ids": original_ids}, headers=headers)
+    if rr not in (200, 201):
+        print(f"  WARN: tampoco se pudo restaurar la memory {memory_id}: {rr} {restore_body}", file=sys.stderr)
+    return False
+
 def ensure_collage_first(api_base:str, headers:dict, memory_id:str, asset_id:str) -> bool:
     current = fetch_memory(api_base, headers, memory_id)
     if not current:
@@ -758,15 +843,21 @@ def ensure_collage_first(api_base:str, headers:dict, memory_id:str, asset_id:str
     reordered_ids = [asset_id] + [aid for aid in current_ids if aid != asset_id]
     cp, _ = http_json("PATCH", f"{api_base}/memories/{memory_id}",
                       {"assetIds": reordered_ids}, headers=headers)
-    if cp not in (200, 201, 204):
-        print(f"  WARN: collage agregado pero el servidor no aceptó reorden (status={cp})", file=sys.stderr)
-        return False
+    if cp in (200, 201, 204):
+        updated = fetch_memory(api_base, headers, memory_id)
+        updated_ids = memory_asset_ids(updated or {})
+        if updated_ids and updated_ids[0] == asset_id:
+            print(f"  OK: collage insertado como primera foto en memory {memory_id}")
+            return True
+    else:
+        print(f"  WARN: el servidor no aceptó PATCH reorden (status={cp}); probando reconstrucción", file=sys.stderr)
 
-    updated = fetch_memory(api_base, headers, memory_id)
-    updated_ids = memory_asset_ids(updated or {})
-    if updated_ids and updated_ids[0] == asset_id:
-        print(f"  OK: collage insertado como primera foto en memory {memory_id}")
-        return True
+    if rebuild_memory_assets_order(api_base, headers, memory_id, reordered_ids, current_ids):
+        rebuilt = fetch_memory(api_base, headers, memory_id)
+        rebuilt_ids = memory_asset_ids(rebuilt or {})
+        if rebuilt_ids and rebuilt_ids[0] == asset_id:
+            print(f"  OK: collage insertado como primera foto en memory {memory_id}")
+            return True
 
     print(f"  WARN: collage agregado a memory {memory_id}, pero no quedó como primera foto", file=sys.stderr)
     return False
@@ -979,7 +1070,8 @@ def upload_collage(api_base:str, headers:dict, file_path:Path,
 # ── Core ───────────────────────────────────────────────────────────────────
 def process_memory(memory:dict, user_id:str, target_date:dt.date,
                    gemini_key:str, api_base:str, headers:dict,
-                   dry_run:bool, force:bool) -> bool:
+                   dry_run:bool, force:bool, allow_fallback:bool,
+                   zone:dt.tzinfo) -> bool:
     mid   = memory["id"]
     year  = (memory.get("data") or {}).get("year", target_date.year)
     assets = memory_collage_assets(memory, people_only=True)
@@ -1010,7 +1102,14 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
     print(f"  memory={mid} year={year} fotos={len(paths)}")
 
     # Gemini decide todo
-    decision = ask_gemini(gemini_key, paths, target_date.month, memory_key=f"{mid}:{year}")
+    decision = ask_gemini(
+        gemini_key,
+        paths,
+        target_date.month,
+        memory_key=f"{mid}:{year}",
+        allow_fallback=allow_fallback,
+        alert_context=f"memory {mid} ({target_date.isoformat()})",
+    )
 
     layout_name  = decision.get("layout", "")
     palette_name = decision.get("palette", "default")
@@ -1070,6 +1169,22 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
     # Generar collage
     Path(COLLAGE_DIR).mkdir(parents=True, exist_ok=True)
     out_path = Path(COLLAGE_DIR) / f"collage-{mid}-{year}.jpg"
+    sidecar_path = out_path.with_suffix(".json")
+    write_decision_sidecar(sidecar_path, {
+        "mode": "single_memory",
+        "memory_id": mid,
+        "memory_year": year,
+        "target_date": target_date.isoformat(),
+        "gemini_model": model_used,
+        "gemini_error": decision.get("_gemini_error"),
+        "layout": layout_name,
+        "palette": palette_name,
+        "title": title,
+        "photo_order": valid_order,
+        "reason": reason,
+        "allow_fallback": allow_fallback,
+    })
+    print(f"  Decisión guardada: {sidecar_path}")
 
     try:
         img, W, H = layout_fn(ordered_paths, title, subtitle, pal)
@@ -1080,10 +1195,7 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
         return False
 
     # Subir a Immich
-    created_at = dt.datetime.combine(
-        dt.date(year, target_date.month, target_date.day),
-        dt.time(0,0,1), tzinfo=dt.timezone.utc
-    ).isoformat().replace("+00:00","Z")
+    created_at = local_asset_created_at(target_date, zone)
 
     asset_id = upload_collage(api_base, headers, out_path, created_at)
     if not asset_id:
@@ -1103,7 +1215,8 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
 
 def process_day(memories:List[dict], user_id:str, target_date:dt.date,
                 gemini_key:str, api_base:str, headers:dict,
-                dry_run:bool, force:bool) -> bool:
+                dry_run:bool, force:bool, allow_fallback:bool,
+                zone:dt.tzinfo) -> bool:
     people_only = should_prefer_people(memories)
     target_memory = pick_target_memory(memories)
     if not target_memory:
@@ -1136,10 +1249,14 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         f"selección={'solo_personas' if people_only else 'mixta'}"
     )
 
-    if force:
-        remove_collage_assets(api_base, headers, memories, dry_run)
-
-    decision = ask_gemini(gemini_key, daily_paths, target_date.month, memory_key=f"daily:{target_date.isoformat()}")
+    decision = ask_gemini(
+        gemini_key,
+        daily_paths,
+        target_date.month,
+        memory_key=f"daily:{target_date.isoformat()}",
+        allow_fallback=allow_fallback,
+        alert_context=f"collage diario {target_date.isoformat()}",
+    )
     layout_name  = decision.get("layout", "")
     palette_name = decision.get("palette", "default")
     title        = decision.get("title", f"Recuerdo del {target_date.isoformat()}")
@@ -1184,12 +1301,32 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
     pal = PALETTES.get(palette_name, PALETTES["default"])
     layout_fn = LAYOUTS[layout_name]
 
+    if force:
+        remove_collage_assets(api_base, headers, memories, dry_run)
+
     if dry_run:
         print(f"  DRYRUN: generaría collage diario único para {target_date} en memory {target_mid}")
         return True
 
     Path(COLLAGE_DIR).mkdir(parents=True, exist_ok=True)
     out_path = Path(COLLAGE_DIR) / f"collage-daily-{target_date.isoformat()}.jpg"
+    sidecar_path = out_path.with_suffix(".json")
+    write_decision_sidecar(sidecar_path, {
+        "mode": "daily",
+        "target_date": target_date.isoformat(),
+        "target_memory": target_mid,
+        "target_memory_year": target_year,
+        "gemini_model": model_used,
+        "gemini_error": decision.get("_gemini_error"),
+        "layout": layout_name,
+        "palette": palette_name,
+        "title": title,
+        "photo_order": valid_order,
+        "reason": reason,
+        "allow_fallback": allow_fallback,
+        "selected_paths": [Path(p).name for p in ordered_paths],
+    })
+    print(f"  Decisión guardada: {sidecar_path}")
     try:
         img, W, H = layout_fn(ordered_paths, title, subtitle, pal)
         img.save(str(out_path), "JPEG", quality=94)
@@ -1198,10 +1335,7 @@ def process_day(memories:List[dict], user_id:str, target_date:dt.date,
         print(f"  ERROR generando collage diario: {e}", file=sys.stderr)
         return False
 
-    created_at = dt.datetime.combine(
-        dt.date(target_year, target_date.month, target_date.day),
-        dt.time(0,0,1), tzinfo=dt.timezone.utc
-    ).isoformat().replace("+00:00","Z")
+    created_at = local_asset_created_at(target_date, zone)
 
     asset_id = upload_collage(api_base, headers, out_path, created_at)
     if not asset_id:
@@ -1224,6 +1358,8 @@ def parse_args():
     p.add_argument("--memory-id",    default=None)
     p.add_argument("--dry-run",      action="store_true")
     p.add_argument("--force",        action="store_true")
+    p.add_argument("--allow-fallback", action="store_true",
+                   default=env_is_true(os.environ.get("COLLAGE_ALLOW_FALLBACK"), False))
     return p.parse_args()
 
 def main() -> int:
@@ -1236,14 +1372,23 @@ def main() -> int:
     password   = secrets.get("IMMICH_ADMIN_PASSWORD","")
     gemini_key = secrets.get("GEMINI_API_KEY","")
 
-    if not email or not password:
-        print("ERROR: faltan credenciales Immich", file=sys.stderr); return 2
-    if not gemini_key:
-        print("WARN: sin GEMINI_API_KEY — usando fallback local", file=sys.stderr)
-
     now_local   = dt.datetime.now(zone)
     target_date = (now_local + dt.timedelta(days=args.days_offset)).date()
     print(f"INFO fecha={target_date} mes={MESES[target_date.month]}")
+    print(f"INFO Gemini requerido={'no' if args.allow_fallback else 'sí'} modelos={','.join(GEMINI_MODELS)}")
+
+    if not email or not password:
+        print("ERROR: faltan credenciales Immich", file=sys.stderr); return 2
+    if not gemini_key:
+        if args.allow_fallback:
+            print("WARN: sin GEMINI_API_KEY — usando fallback local", file=sys.stderr)
+        else:
+            send_nas_alert(
+                f"[collage-daily] GEMINI_API_KEY ausente para {target_date.isoformat()}",
+                key=f"collage-gemini-missing:{target_date.isoformat()}",
+            )
+            print("ERROR: falta GEMINI_API_KEY y el fallback está desactivado", file=sys.stderr)
+            return 2
 
     c, login = http_json("POST", f"{args.api_base}/auth/login",
                          {"email":email,"password":password})
@@ -1263,12 +1408,13 @@ def main() -> int:
         annotate_preview_faces([m], user_id)
         try:
             ok = process_memory(m, user_id, target_date, gemini_key,
-                                args.api_base, headers, args.dry_run, args.force)
+                                args.api_base, headers, args.dry_run, args.force,
+                                args.allow_fallback, zone)
         except Exception as e:
             print(f"  ERROR {m.get('id')}: {e}", file=sys.stderr)
             ok = False
         print(f"\nSUMMARY fecha={target_date} memory={args.memory_id} ok={1 if ok else 0}/1")
-        return 0
+        return 0 if ok else 1
 
     c, all_mem = http_json("GET", f"{args.api_base}/memories", headers=headers)
     if c != 200 or not isinstance(all_mem, list):
@@ -1290,13 +1436,14 @@ def main() -> int:
     print(f"INFO: {len(memories)} memories")
     try:
         ok = process_day(memories, user_id, target_date, gemini_key,
-                         args.api_base, headers, args.dry_run, args.force)
+                         args.api_base, headers, args.dry_run, args.force,
+                         args.allow_fallback, zone)
     except Exception as e:
         print(f"ERROR collage diario: {e}", file=sys.stderr)
         ok = False
 
     print(f"\nSUMMARY fecha={target_date} ok={1 if ok else 0}/1")
-    return 0
+    return 0 if ok else 1
 
 if __name__ == "__main__":
     raise SystemExit(main())
