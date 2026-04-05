@@ -430,6 +430,9 @@ log_step "Instalando dependencias"
 apt-get install -y -q \
     curl wget nano git htop \
     python3 \
+    python3-pil \
+    python3-opencv \
+    opencv-data \
     lm-sensors \
     zram-tools sysstat \
     smartmontools \
@@ -1307,6 +1310,7 @@ SCRIPTS=(
     "post-upload-check.sh" # Verificacion puntual del flujo tras subir un asset
     "audit-snapshot.sh"  # Bitacora operativa periodica (CPU/RAM/colas/montajes)
     "memories-ensure.py" # Garantiza recuerdos "On this day" con assets en fecha local
+    "collage-daily.py" # Genera collage diario y lo coloca como portada de la memory
 )
 
 for script in "${SCRIPTS[@]}"; do
@@ -1675,8 +1679,11 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 0 2 * * * /usr/local/bin/night-run.sh
 
 # ── Recuerdos ("On this day") diarios ─────────────────────────────────────
-# Asegura que exista memoria del día con assets (idempotente, sin borrar nada).
-10 0 * * * /usr/local/bin/memories-ensure.py --timezone America/Mexico_City
+# A las 12:30 PM hora CDMX asegura que exista la memory del día con assets.
+30 12 * * * /usr/local/bin/memories-ensure.py --timezone America/Mexico_City
+
+# A las 12:35 PM hora CDMX genera el collage visual después de asegurar la memory.
+35 12 * * * /usr/local/bin/collage-daily.py --timezone America/Mexico_City
 
 # ── Guardia térmica reactiva ──────────────────────────────────────────────
 # Independiente de night-run.sh: detecta sobrecalentamiento en cualquier

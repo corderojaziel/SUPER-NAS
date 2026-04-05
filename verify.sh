@@ -109,7 +109,7 @@ else
 fi
 
 section "SCRIPTS DE MANTENIMIENTO"
-for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/video-autopilot.sh /usr/local/bin/iml-autopilot.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/manual-retention.sh /usr/local/bin/failover-sync.sh /usr/local/bin/storage-failover.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/playback-watchdog.sh /usr/local/bin/temp-clean.sh /usr/local/bin/state-backup.sh /usr/local/bin/state-restore.sh /usr/local/bin/disaster-restore.sh /usr/local/bin/bootstrap-restore.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh /usr/local/bin/zram-nas-apply.sh /usr/local/bin/memories-ensure.py; do
+for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/video-autopilot.sh /usr/local/bin/iml-autopilot.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/manual-retention.sh /usr/local/bin/failover-sync.sh /usr/local/bin/storage-failover.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/playback-watchdog.sh /usr/local/bin/temp-clean.sh /usr/local/bin/state-backup.sh /usr/local/bin/state-restore.sh /usr/local/bin/disaster-restore.sh /usr/local/bin/bootstrap-restore.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh /usr/local/bin/zram-nas-apply.sh /usr/local/bin/memories-ensure.py /usr/local/bin/collage-daily.py; do
   if [ ! -x "$f" ]; then
     fail "$f ausente"
     continue
@@ -133,6 +133,20 @@ if [ -x /usr/local/bin/reconcile-emmc-cache.py ]; then
   python3 -m py_compile /usr/local/bin/reconcile-emmc-cache.py >/dev/null 2>&1 && ok "/usr/local/bin/reconcile-emmc-cache.py instalado y sintaxis válida" || fail "/usr/local/bin/reconcile-emmc-cache.py con errores de sintaxis"
 else
   warn "/usr/local/bin/reconcile-emmc-cache.py no instalado"
+fi
+if python3 - <<'PY' >/dev/null 2>&1
+from PIL import Image  # noqa: F401
+import cv2  # noqa: F401
+PY
+then
+  ok "Pillow y OpenCV disponibles para collage-daily.py"
+else
+  fail "Faltan dependencias Python para collage-daily.py (Pillow/OpenCV)"
+fi
+if [ -f /usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml ] || [ -f /usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml ]; then
+  ok "Haar cascades de OpenCV presentes"
+else
+  warn "No encontré haarcascade_frontalface_default.xml; collage-daily.py dependerá del modelo DNN descargable"
 fi
 
 section "POLÍTICA FOTOS/VIDEOS"
@@ -330,7 +344,8 @@ fi
 
 section "CRONTAB"
 crontab -l 2>/dev/null | grep -q 'night-run.sh' && ok "Cron night-run presente" || fail "Cron night-run ausente"
-crontab -l 2>/dev/null | grep -q 'memories-ensure.py' && ok "Cron recuerdos diarios presente" || warn "Cron recuerdos diarios ausente"
+crontab -l 2>/dev/null | grep -q '^30 12 \* \* \* /usr/local/bin/memories-ensure.py --timezone America/Mexico_City$' && ok "Cron recuerdos diarios 12:30 PM presente" || warn "Cron recuerdos diarios 12:30 PM ausente"
+crontab -l 2>/dev/null | grep -q '^35 12 \* \* \* /usr/local/bin/collage-daily.py --timezone America/Mexico_City$' && ok "Cron collage diario 12:35 PM presente" || warn "Cron collage diario 12:35 PM ausente"
 crontab -l 2>/dev/null | grep -q 'iml-autopilot.sh' && ok "Cron iml-autopilot presente" || warn "Cron iml-autopilot ausente"
 crontab -l 2>/dev/null | grep -q 'video-autopilot.sh' && ok "Cron video-autopilot presente" || warn "Cron video-autopilot ausente"
 crontab -l 2>/dev/null | grep -q 'ml-temp-guard' && ok "Cron ml-temp-guard presente" || warn "Cron ml-temp-guard ausente"

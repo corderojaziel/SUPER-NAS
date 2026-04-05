@@ -1,2 +1,4 @@
 config/nas.wsl.generated.conf
+artifacts/
+maintenance/__pycache__/
 

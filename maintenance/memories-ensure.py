@@ -243,14 +243,22 @@ def main() -> int:
         )
 
     year_rows = db_query(
-        "select y::text || '|' || ids from ("
-        "select extract(year from \"localDateTime\")::int as y, "
-        "string_agg(id::text, ',' order by \"localDateTime\" desc) as ids "
-        "from asset "
-        f"where \"ownerId\"='{owner_id}' and \"deletedAt\" is null and status='active' "
-        f"and to_char(\"localDateTime\",'MM-DD')='{mmdd}' "
-        "group by 1"
-        ") t order by y;"
+        "select y::text || '|' || string_agg(id_txt, ',' order by face_count desc, screen_rank asc, local_dt desc) "
+        "from ("
+        "select extract(year from a.\"localDateTime\")::int as y, "
+        "a.id::text as id_txt, "
+        "a.\"localDateTime\" as local_dt, "
+        "count(af.\"assetId\")::int as face_count, "
+        "case "
+        "when lower(a.\"originalFileName\") like 'screenshot%' then 1 "
+        "when lower(a.\"originalFileName\") like 'screen recording%' then 1 "
+        "else 0 end as screen_rank "
+        "from asset a "
+        "left join asset_face af on af.\"assetId\"=a.id "
+        f"where a.\"ownerId\"='{owner_id}' and a.\"deletedAt\" is null and a.status='active' and a.visibility='timeline' "
+        f"and to_char(a.\"localDateTime\",'MM-DD')='{mmdd}' "
+        "group by a.id"
+        ") ranked group by y order by y;"
     )
 
     if not year_rows:
