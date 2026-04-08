@@ -62,6 +62,8 @@ RECENT_DECISION_DAYS = max(1, int(os.environ.get("COLLAGE_RECENT_DECISION_DAYS",
 COLLAGE_RETENTION_DAYS = max(3, int(os.environ.get("COLLAGE_RETENTION_DAYS", "45")))
 COLLAGE_MIN_FREE_MB = max(64, int(os.environ.get("COLLAGE_MIN_FREE_MB", "256")))
 MAX_RUNTIME_SEC = max(60, int(os.environ.get("COLLAGE_MAX_RUNTIME_SEC", "600")))
+NEAR_DUPLICATE_SIZE = max(8, int(os.environ.get("COLLAGE_NEAR_DUP_SIZE", "18")))
+NEAR_DUPLICATE_DISTANCE = max(1.0, float(os.environ.get("COLLAGE_NEAR_DUP_DISTANCE", "9.5")))
 TEMPLATE_SAFE_TOP = 165
 TEMPLATE_SAFE_BOTTOM = 1280
 TEMPLATE_MIN_SIZE = 80
@@ -478,7 +480,7 @@ def layout_columns(photos, title, subtitle, pal):
     draw.ellipse([W-200,-80,W+60,180], fill=(*pal["c2"],40))
     draw.ellipse([-60,H-200,180,H+60], fill=(*pal["c1"],40))
     fonts = get_fonts()
-    draw_header(canvas, draw, title, subtitle, pal, W, fonts)
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "sidebar", fonts)
     PAD, TOP, BOT = 20, 168, H-65
     cw_l = int((W-PAD*3)*0.40)
     cw_r = int((W-PAD*3)*0.60)
@@ -488,7 +490,7 @@ def layout_columns(photos, title, subtitle, pal):
     stem_flower(draw, mx, TOP+col_h//3,   h=60, sc=pal["c2"], pc=pal["c1"], cc=pal["c4"])
     stem_flower(draw, mx, TOP+col_h*2//3, h=50, sc=pal["c2"], pc=pal["c5"], cc=pal["c4"])
     place_rect(canvas, photos[1], PAD*2+cw_l, TOP+10, cw_r, col_h-20, r=26)
-    draw_footer(canvas, draw, W, H, pal, BOT)
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal")
     return canvas.convert("RGB"), W, H
 
 def layout_story(photos, title, subtitle, pal):
@@ -500,7 +502,7 @@ def layout_story(photos, title, subtitle, pal):
     draw.ellipse([-80,H//2-200,200,H//2+200], fill=(*pal["c5"],25))
     draw.ellipse([-60,H-240,200,H+60], fill=(*pal["c1"],35))
     fonts = get_fonts(58, 30)
-    draw_header(canvas, draw, title, subtitle, pal, W, fonts)
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "ribbon", fonts)
     PAD, TOP, BOT = 22, 180, H-75
     AREA = BOT-TOP
     ph   = int(AREA*0.30)
@@ -515,7 +517,7 @@ def layout_story(photos, title, subtitle, pal):
             flower_row(draw, W//2-88, sy-22, n=5, gap=44,
                        colors=[pal["c1"],pal["c5"],pal["c3"],pal["c5"],pal["c1"]],
                        cc=pal["c4"])
-    draw_footer(canvas, draw, W, H, pal, BOT)
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "dots_wave")
     return canvas.convert("RGB"), W, H
 
 def layout_featured(photos, title, subtitle, pal):
@@ -526,7 +528,7 @@ def layout_featured(photos, title, subtitle, pal):
     draw.ellipse([W-220,-80,W+60,220], fill=(*pal["c3"],40))
     draw.ellipse([-60,H-200,180,H+60], fill=(*pal["c1"],40))
     fonts = get_fonts()
-    draw_header(canvas, draw, title, subtitle, pal, W, fonts)
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts)
     PAD, TOP, BOT = 20, 168, H-65
     AREA = BOT-TOP
     ph1  = int(AREA*0.55)
@@ -547,7 +549,7 @@ def layout_featured(photos, title, subtitle, pal):
         pw2  = (W-PAD*3)//2
         place_rect(canvas, photos[1], PAD,       y2, pw2, ph2, r=22)
         place_rect(canvas, photos[2], PAD*2+pw2, y2, pw2, ph2, r=22)
-    draw_footer(canvas, draw, W, H, pal, BOT)
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal")
     return canvas.convert("RGB"), W, H
 
 def layout_polaroid(photos, title, subtitle, pal):
@@ -558,7 +560,7 @@ def layout_polaroid(photos, title, subtitle, pal):
     draw.ellipse([W-200,-80,W+60,180], fill=(*pal["c2"],40))
     draw.ellipse([-60,H-200,180,H+60], fill=(*pal["c1"],40))
     fonts = get_fonts()
-    draw_header(canvas, draw, title, subtitle, pal, W, fonts)
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "sidebar", fonts)
     PAD, TOP, BOT = 20, 168, H-65
     AREA  = BOT-TOP
     pw, ph = 420, 480
@@ -569,7 +571,7 @@ def layout_polaroid(photos, title, subtitle, pal):
     ]
     for i, (cx, cy, angle) in enumerate(positions[:len(photos)]):
         place_rotated(canvas, photos[i%len(photos)], cx, cy, pw, ph, angle)
-    draw_footer(canvas, draw, W, H, pal, BOT)
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "stems")
     return canvas.convert("RGB"), W, H
 
 def layout_circle_hero(photos, title, subtitle, pal):
@@ -580,7 +582,7 @@ def layout_circle_hero(photos, title, subtitle, pal):
     draw.ellipse([W-240,-100,W+80,200], fill=(*pal["c3"],40))
     draw.ellipse([-80,H-200,180,H+60],  fill=(*pal["c5"],40))
     fonts = get_fonts()
-    draw_header(canvas, draw, title, subtitle, pal, W, fonts)
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts)
     PAD, TOP, BOT = 20, 168, H-65
     AREA  = BOT-TOP
     # Círculo central
@@ -600,7 +602,7 @@ def layout_circle_hero(photos, title, subtitle, pal):
     y2  = wy+30
     place_rect(canvas, photos[1%len(photos)], PAD,       y2, pw2, ph2, r=22)
     place_rect(canvas, photos[2%len(photos)], PAD*2+pw2, y2, pw2, ph2, r=22)
-    draw_footer(canvas, draw, W, H, pal, BOT)
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "stems")
     return canvas.convert("RGB"), W, H
 
 def layout_grid(photos, title, subtitle, pal):
@@ -611,7 +613,7 @@ def layout_grid(photos, title, subtitle, pal):
     draw.ellipse([W-200,-80,W+60,180], fill=(*pal["c2"],40))
     draw.ellipse([-60,H-200,180,H+60], fill=(*pal["c1"],40))
     fonts = get_fonts()
-    draw_header(canvas, draw, title, subtitle, pal, W, fonts)
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts)
     PAD, TOP, BOT = 16, 168, H-65
     AREA  = BOT-TOP
     n     = min(len(photos), 6)
@@ -625,7 +627,7 @@ def layout_grid(photos, title, subtitle, pal):
         x   = PAD+col*(cw+PAD)
         y   = TOP+PAD+row*(ch+PAD)
         place_rect(canvas, photo, x, y, cw, ch, r=22)
-    draw_footer(canvas, draw, W, H, pal, BOT)
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal")
     return canvas.convert("RGB"), W, H
 
 LAYOUTS = {
@@ -720,6 +722,35 @@ def img_to_b64(path:str, max_px:int=PREVIEW_SIZE) -> str:
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=75)
     return base64.b64encode(buf.getvalue()).decode()
+
+def preview_signature(path: str, size: int=NEAR_DUPLICATE_SIZE) -> Optional[Tuple[int, ...]]:
+    ensure_runtime("calculando similitud visual")
+    try:
+        with Image.open(path) as src:
+            img = ImageOps.exif_transpose(src).convert("L")
+            img = ImageOps.fit(img, (size, size), Image.LANCZOS)
+            return tuple(img.getdata())
+    except Exception:
+        return None
+
+def preview_distance(sig_a: Optional[Tuple[int, ...]], sig_b: Optional[Tuple[int, ...]]) -> float:
+    if not sig_a or not sig_b or len(sig_a) != len(sig_b):
+        return 999.0
+    return sum(abs(a - b) for a, b in zip(sig_a, sig_b)) / len(sig_a)
+
+def dedupe_photo_order(photo_paths: List[str], order: List[int], threshold: float=NEAR_DUPLICATE_DISTANCE) -> List[int]:
+    if len(order) <= 2:
+        return list(order)
+    signatures: Dict[int, Optional[Tuple[int, ...]]] = {}
+    kept: List[int] = []
+    deferred: List[int] = []
+    for idx in order:
+        signatures.setdefault(idx, preview_signature(photo_paths[idx]))
+        if any(preview_distance(signatures[idx], signatures[other]) <= threshold for other in kept):
+            deferred.append(idx)
+            continue
+        kept.append(idx)
+    return kept + deferred
 
 def choice_from_seed(options: List[str], seed: str) -> str:
     if not options:
@@ -1351,6 +1382,24 @@ def score_render_template(template: dict, photo_count: int, preferred_palette: s
         score -= 8
     return score
 
+def desired_template_cells(layout_name: str, photo_count: int, scope_kind: str="general") -> int:
+    if photo_count <= 1:
+        return 1
+    layout = str(layout_name or "").strip().lower()
+    base = {
+        "columns": 2,
+        "story": 3,
+        "featured": 3 if photo_count >= 3 else photo_count,
+        "polaroid": 3,
+        "circle_hero": 3,
+        "grid": min(4, photo_count),
+    }.get(layout, min(3, photo_count))
+    if scope_kind == "monthly":
+        return max(2, min(base, 3 if photo_count >= 3 else photo_count))
+    if scope_kind == "daily_memory":
+        return max(2, min(base, photo_count))
+    return max(1, min(base, photo_count))
+
 def build_render_template(template: dict, title: str, palette_name: str, photo_order: List[int],
                           template_id: str="", template_source: str="", layout_name: str="") -> dict:
     payload = dict(template)
@@ -1401,9 +1450,15 @@ def load_template_fallback(n_photos: int, template_seed: str, avoid_ids: Optiona
 
 def choose_render_template(decision: dict, title: str, palette_name: str, photo_order: List[int],
                            layout_name: str, photo_count: int, template_seed: str,
-                           avoid_template_ids: Optional[List[str]]=None) -> Optional[dict]:
+                           avoid_template_ids: Optional[List[str]]=None,
+                           scope_kind: str="general") -> Optional[dict]:
     candidates: List[dict] = []
-    if usable_template_cell_count(decision, photo_count) > 0:
+    required_cells = desired_template_cells(layout_name, photo_count, scope_kind)
+    preferred_layouts = [layout_name] + layout_candidates_from_decision(decision)
+    wanted_layouts = [layout for layout in preferred_layouts if layout in LAYOUTS]
+
+    inline_usable = usable_template_cell_count(decision, photo_count)
+    if inline_usable >= required_cells:
         candidates.append(build_render_template(
             decision,
             title,
@@ -1413,7 +1468,7 @@ def choose_render_template(decision: dict, title: str, palette_name: str, photo_
             template_source="gemini_inline",
             layout_name=str(layout_name or decision.get("layout") or ""),
         ))
-    preferred_layouts = [layout_name] + layout_candidates_from_decision(decision)
+
     bank_template = load_template_fallback(
         photo_count,
         template_seed,
@@ -1422,15 +1477,23 @@ def choose_render_template(decision: dict, title: str, palette_name: str, photo_
         preferred_layouts=preferred_layouts,
     )
     if bank_template:
-        candidates.append(build_render_template(
-            bank_template,
-            title,
-            bank_template.get("palette_name") or palette_name,
-            photo_order,
-            template_id=str(bank_template.get("_template_id") or bank_template.get("id") or ""),
-            template_source=str(bank_template.get("_template_source") or "bank"),
-            layout_name=str(decision.get("layout") or bank_template.get("layout") or ""),
-        ))
+        bank_usable = usable_template_cell_count(bank_template, photo_count)
+        bank_primary_layout = template_primary_layout(bank_template)
+        bank_layout_ok = (
+            not wanted_layouts
+            or not bank_primary_layout
+            or bank_primary_layout in wanted_layouts
+        )
+        if bank_usable >= required_cells and (scope_kind != "daily_memory" or bank_layout_ok):
+            candidates.append(build_render_template(
+                bank_template,
+                title,
+                bank_template.get("palette_name") or palette_name,
+                photo_order,
+                template_id=str(bank_template.get("_template_id") or bank_template.get("id") or ""),
+                template_source=str(bank_template.get("_template_source") or "bank"),
+                layout_name=str(bank_template.get("layout") or ""),
+            ))
     if not candidates:
         return None
     ranked: List[Tuple[int, str, dict]] = []
@@ -2040,6 +2103,10 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
     for i in range(len(paths)):
         if i not in seen:
             valid_order.append(i)
+    deduped_order = dedupe_photo_order(paths, valid_order)
+    if deduped_order != valid_order:
+        print("  INFO: reordenando tomas muy similares para no repetir el mismo encuadre al inicio")
+        valid_order = deduped_order
 
     model_used = decision.get("_gemini_model", "fallback")
     print(f"  Gemini[{model_used}] → layout={layout_name} paleta={palette_name} título='{title}'")
@@ -2057,6 +2124,7 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
         layout_name,
         len(paths),
         template_seed=f"{mid}:{year}:{target_date.isoformat()}:{model_used}",
+        scope_kind="daily_memory",
     )
 
     if dry_run:
@@ -2309,6 +2377,7 @@ def process_month(memories:List[dict], user_id:str, target_date:dt.date,
         len(monthly_paths),
         template_seed=f"monthly:{target_date.year}-{target_date.month:02d}:{model_used}:{layout_name}",
         avoid_template_ids=recent_template_bank_ids,
+        scope_kind="monthly",
     )
 
     if dry_run:
