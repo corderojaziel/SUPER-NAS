@@ -143,6 +143,11 @@ then
 else
   fail "Faltan dependencias Python para collage-daily.py (Pillow/OpenCV)"
 fi
+if [ -f /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf ] && [ -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf ]; then
+  ok "Fuentes DejaVu presentes para collage-daily.py"
+else
+  fail "Faltan fuentes DejaVu requeridas por collage-daily.py"
+fi
 if [ -d /var/lib/immich/collages ] && [ -d /var/lib/immich/collage-templates/gemini ]; then
   ok "Directorios de collage y plantillas presentes"
 else

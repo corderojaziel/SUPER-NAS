@@ -433,6 +433,7 @@ apt-get install -y -q \
     python3-pil \
     python3-opencv \
     opencv-data \
+    fonts-dejavu-core \
     lm-sensors \
     zram-tools sysstat \
     smartmontools \
