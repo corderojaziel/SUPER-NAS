@@ -109,7 +109,7 @@ else
 fi
 
 section "SCRIPTS DE MANTENIMIENTO"
-for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/video-autopilot.sh /usr/local/bin/iml-autopilot.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/manual-retention.sh /usr/local/bin/failover-sync.sh /usr/local/bin/storage-failover.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/playback-watchdog.sh /usr/local/bin/temp-clean.sh /usr/local/bin/state-backup.sh /usr/local/bin/state-restore.sh /usr/local/bin/disaster-restore.sh /usr/local/bin/bootstrap-restore.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh /usr/local/bin/zram-nas-apply.sh /usr/local/bin/memories-ensure.py /usr/local/bin/collage-daily.py /usr/local/bin/collage-template-refresh.py; do
+for f in /usr/local/bin/video-optimize.sh /usr/local/bin/video-reprocess-nightly.sh /usr/local/bin/video-autopilot.sh /usr/local/bin/iml-autopilot.sh /usr/local/bin/rebuild-video-cache.sh /usr/local/bin/backup.sh /usr/local/bin/manual-retention.sh /usr/local/bin/failover-sync.sh /usr/local/bin/storage-failover.sh /usr/local/bin/smart-check.sh /usr/local/bin/night-run.sh /usr/local/bin/nas-alert.sh /usr/local/bin/mount-guard.sh /usr/local/bin/playback-watchdog.sh /usr/local/bin/temp-clean.sh /usr/local/bin/state-backup.sh /usr/local/bin/state-restore.sh /usr/local/bin/disaster-restore.sh /usr/local/bin/bootstrap-restore.sh /usr/local/bin/cloud-db-upload.sh /usr/local/bin/retry-quarantine.sh /usr/local/bin/post-upload-check.sh /usr/local/bin/precheck.sh /usr/local/bin/zram-nas-apply.sh /usr/local/bin/memories-ensure.py /usr/local/bin/collage-daily.py /usr/local/bin/collage-template-refresh.py; do
   if [ ! -x "$f" ]; then
     fail "$f ausente"
     continue
@@ -157,6 +157,38 @@ if [ -f /usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml ] ||
   ok "Haar cascades de OpenCV presentes"
 else
   warn "No encontré haarcascade_frontalface_default.xml; collage-daily.py dependerá del modelo DNN descargable"
+fi
+if command -v rclone >/dev/null 2>&1; then
+  ok "rclone instalado para respaldo cloud de la DB"
+else
+  fail "rclone no instalado"
+fi
+if [ -f /etc/default/nas-cloud-backup ]; then
+  ok "Configuración cloud presente (/etc/default/nas-cloud-backup)"
+  CLOUD_DB_UPLOAD_ENABLED_RAW="$(awk -F= '$1=="CLOUD_DB_UPLOAD_ENABLED"{print substr($0, index($0, "=")+1); exit}' /etc/default/nas-cloud-backup | tr -d '"' | tr -d "'" | xargs)"
+  CLOUD_DB_UPLOAD_REMOTE_CFG="$(awk -F= '$1=="CLOUD_DB_UPLOAD_REMOTE"{print substr($0, index($0, "=")+1); exit}' /etc/default/nas-cloud-backup | tr -d '"' | tr -d "'" | xargs)"
+  RCLONE_CONFIG_FILE_CFG="$(awk -F= '$1=="RCLONE_CONFIG_FILE"{print substr($0, index($0, "=")+1); exit}' /etc/default/nas-cloud-backup | tr -d '"' | tr -d "'" | xargs)"
+  [ -n "$CLOUD_DB_UPLOAD_ENABLED_RAW" ] || CLOUD_DB_UPLOAD_ENABLED_RAW="1"
+  [ -n "$RCLONE_CONFIG_FILE_CFG" ] || RCLONE_CONFIG_FILE_CFG="/root/.config/rclone/rclone.conf"
+  case "$CLOUD_DB_UPLOAD_ENABLED_RAW" in
+    1|true|TRUE|yes|YES|on|ON)
+      if [ -f "$RCLONE_CONFIG_FILE_CFG" ]; then
+        ok "Configuración rclone presente para respaldo cloud"
+      else
+        warn "Falta $RCLONE_CONFIG_FILE_CFG para respaldo cloud"
+      fi
+      if command -v rclone >/dev/null 2>&1 && [ -n "$CLOUD_DB_UPLOAD_REMOTE_CFG" ] && rclone listremotes --config "$RCLONE_CONFIG_FILE_CFG" 2>/dev/null | grep -Fxq "${CLOUD_DB_UPLOAD_REMOTE_CFG}:"; then
+        ok "Remoto rclone '${CLOUD_DB_UPLOAD_REMOTE_CFG}:' disponible"
+      else
+        warn "Remoto rclone '${CLOUD_DB_UPLOAD_REMOTE_CFG:-gdrive-supernas}:' no configurado todavía"
+      fi
+      ;;
+    *)
+      warn "Respaldo cloud de DB deshabilitado por política"
+      ;;
+  esac
+else
+  fail "Falta /etc/default/nas-cloud-backup"
 fi
 
 section "POLÍTICA FOTOS/VIDEOS"

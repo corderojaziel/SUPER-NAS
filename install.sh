@@ -434,6 +434,7 @@ apt-get install -y -q \
     python3-opencv \
     opencv-data \
     fonts-dejavu-core \
+    rclone \
     lm-sensors \
     zram-tools sysstat \
     smartmontools \
@@ -1305,6 +1306,7 @@ SCRIPTS=(
     "state-restore.sh"   # Restauracion rapida desde snapshot de estado
     "disaster-restore.sh" # Restauracion integral en caja nueva (discos existentes)
     "bootstrap-restore.sh" # Flujo todo-en-uno desde OS limpio (install restore + restore total)
+    "cloud-db-upload.sh" # Sube el dump lógico de la DB a Google Drive con archivo remoto fijo
     "manual-retention.sh" # Depuracion manual de respaldos (sin auto-borrado)
     "log-maintenance.sh"  # Rotacion/depuracion mensual de logs tecnicos
     "mount-guard.sh"     # Detecta desmontajes/remontajes y notifica Telegram
@@ -1504,6 +1506,23 @@ MEMORIES_TIMEZONE=${MEMORIES_TIMEZONE:-America/Mexico_City}
 EOF
 chmod 0644 /etc/default/nas-video-policy
 log_ok "Politica de video instalada (/etc/default/nas-video-policy)"
+
+mkdir -p /root/.config/rclone
+
+cat > /etc/default/nas-cloud-backup <<EOF
+# Respaldo diario de la DB de Immich hacia Google Drive.
+# Requiere configurar una sola vez el remoto OAuth de rclone.
+CLOUD_DB_UPLOAD_ENABLED=${CLOUD_DB_UPLOAD_ENABLED:-1}
+CLOUD_DB_UPLOAD_REMOTE=${CLOUD_DB_UPLOAD_REMOTE:-gdrive-supernas}
+CLOUD_DB_UPLOAD_REMOTE_DIR=${CLOUD_DB_UPLOAD_REMOTE_DIR:-SUPER-NAS}
+CLOUD_DB_UPLOAD_REMOTE_FILE=${CLOUD_DB_UPLOAD_REMOTE_FILE:-immich-db-latest.sql.gz}
+CLOUD_DB_NOTIFY_SUCCESS=${CLOUD_DB_NOTIFY_SUCCESS:-0}
+CLOUD_DB_ALERT_TTL_SEC=${CLOUD_DB_ALERT_TTL_SEC:-43200}
+RCLONE_CONFIG_FILE=${RCLONE_CONFIG_FILE:-/root/.config/rclone/rclone.conf}
+EOF
+chmod 0644 /etc/default/nas-cloud-backup
+log_ok "Politica cloud instalada (/etc/default/nas-cloud-backup)"
+log_warn "Respaldo DB a Google Drive: falta configurar el remoto OAuth de rclone si aún no existe (${CLOUD_DB_UPLOAD_REMOTE:-gdrive-supernas}:)"
 
 cat > /etc/default/nas-ml-guard << EOF
 # Umbrales del guardián ML (ajustables sin editar scripts)

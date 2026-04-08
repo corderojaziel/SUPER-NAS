@@ -20,6 +20,7 @@ NAS_ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
 EMMC_DF_TARGET="${EMMC_DF_TARGET:-/var/lib/immich}"
 DOCKER_BIN="${DOCKER_BIN:-/usr/bin/docker}"
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/immich-app}"
+DB_CLOUD_UPLOAD_BIN="${DB_CLOUD_UPLOAD_BIN:-/usr/local/bin/cloud-db-upload.sh}"
 IML_DRAIN_BIN="${IML_DRAIN_BIN:-/usr/local/bin/iml-backlog-drain.py}"
 IML_AUTOPILOT_BIN="${IML_AUTOPILOT_BIN:-/usr/local/bin/iml-autopilot.sh}"
 IML_API_URL="${IML_API_URL:-http://127.0.0.1:2283/api}"
@@ -182,6 +183,7 @@ build_summary_notes() {
     add_summary_note "IA por disponibilidad: sin pendientes al cierre de esta corrida."
   fi
   [ "$DBDUMP_RES" = "FAIL" ] && add_summary_note "No pude guardar la copia lógica de la base de datos."
+  [ "${DBCLOUD_RES:-SKIPPED}" = "FAIL" ] && add_summary_note "No pude subir la copia lógica de la base de datos a Google Drive."
 
   if [ "$VIDEO_RES" = "OK" ] && [ -f "$VIDEO_SUMMARY_FILE" ]; then
     load_status_env "$VIDEO_SUMMARY_FILE"
@@ -416,6 +418,7 @@ PLAYBACK_AUDIT_RES="SKIPPED"
 BACKUP_RES="SKIPPED"
 SMART_RES="OK"
 DBDUMP_RES="SKIPPED"
+DBCLOUD_RES="SKIPPED"
 CACHE_MONITOR_RES="SKIPPED"
 CACHE_CLEAN_RES="SKIPPED"
 TEMP_CLEAN_RES="WEEKLY_SKIPPED"
@@ -513,12 +516,34 @@ if timeout 20m bash -lc "set -o pipefail; \"$DOCKER_BIN\" exec immich_postgres p
     mv -f "$DB_TMP" "$DB_FILE"
     find "$DB_DEST" -name '*.sql.gz' -mtime +7 -delete
     DBDUMP_RES="OK"
+    if [ -x "$DB_CLOUD_UPLOAD_BIN" ]; then
+      set +e
+      DB_CLOUD_REMOTE="$("$DB_CLOUD_UPLOAD_BIN" "$DB_FILE" nightly 2>&1)"
+      DB_CLOUD_RC=$?
+      set -e
+      case "$DB_CLOUD_RC" in
+        0)
+          DBCLOUD_RES="OK"
+          ;;
+        2)
+          DBCLOUD_RES="SKIPPED"
+          ;;
+        *)
+          DBCLOUD_RES="FAIL"
+          [ -n "$DB_CLOUD_REMOTE" ] && log "DB cloud upload: $DB_CLOUD_REMOTE"
+          ;;
+      esac
+    else
+      DBCLOUD_RES="FAIL"
+    fi
   else
     rm -f "$DB_TMP"
     DBDUMP_RES="FAIL"
+    DBCLOUD_RES="SKIPPED"
   fi
 else
   DBDUMP_RES="SKIPPED"
+  DBCLOUD_RES="SKIPPED"
 fi
 
 load_status_env "$HEALTH_DIR/mount-status.env"
@@ -542,6 +567,7 @@ alert "🌙 Resumen de la noche
 🧠 IA 24/7 por disponibilidad: $(pretty_status "${ML_RES}") (pendientes: ${ML_PENDING_COUNT})
 🔬 Revisión profunda de discos: $(pretty_status "${SMART_RES}")
 🗄️ Copia de la base de datos: $(pretty_status "${DBDUMP_RES}")
+☁️ Copia DB en Google Drive: $(pretty_status "${DBCLOUD_RES}")
 📝 Lo más importante:
 ${SUMMARY_NOTES}"
 exit 0

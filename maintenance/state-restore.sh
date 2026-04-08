@@ -29,6 +29,8 @@ NAS_ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
 ENV_FILE="${ENV_FILE:-/opt/immich-app/.env}"
 SECRETS_FILE="${SECRETS_FILE:-/etc/nas-secrets}"
 CACHE_ROOT="${CACHE_ROOT:-/var/lib/immich/cache}"
+CLOUD_POLICY_FILE="${CLOUD_POLICY_FILE:-/etc/default/nas-cloud-backup}"
+RCLONE_CONFIG_FILE="${RCLONE_CONFIG_FILE:-/root/.config/rclone/rclone.conf}"
 
 alert() {
   [ -x "$NAS_ALERT_BIN" ] || return 0
@@ -89,6 +91,9 @@ done
 if [ -f "$SNAP_DIR/config/nas-video-policy" ]; then
   cp -a "$SNAP_DIR/config/nas-video-policy" /etc/default/nas-video-policy
 fi
+if [ -f "$SNAP_DIR/config/nas-cloud-backup" ]; then
+  cp -a "$SNAP_DIR/config/nas-cloud-backup" "$CLOUD_POLICY_FILE"
+fi
 if [ -f "$SNAP_DIR/config/nas-disks" ]; then
   cp -a "$SNAP_DIR/config/nas-disks" /etc/nas-disks
 fi
@@ -104,6 +109,11 @@ fi
 if [ -f "$SNAP_DIR/config/nas-secrets" ]; then
   cp -a "$SNAP_DIR/config/nas-secrets" "$SECRETS_FILE"
   chmod 600 "$SECRETS_FILE" || true
+fi
+if [ -f "$SNAP_DIR/config/rclone.conf" ]; then
+  mkdir -p "$(dirname "$RCLONE_CONFIG_FILE")"
+  cp -a "$SNAP_DIR/config/rclone.conf" "$RCLONE_CONFIG_FILE"
+  chmod 600 "$RCLONE_CONFIG_FILE" || true
 fi
 if [ -f "$SNAP_DIR/config/immich.conf" ]; then
   cp -a "$SNAP_DIR/config/immich.conf" /etc/nginx/sites-enabled/immich.conf
