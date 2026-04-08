@@ -69,6 +69,8 @@ TEMPLATE_SAFE_BOTTOM = 1280
 TEMPLATE_MIN_SIZE = 80
 TEMPLATE_CELL_GAP = 16
 PREVIEW_FACE_CACHE: Dict[str, int] = {}
+PREVIEW_FACE_BOX_CACHE: Dict[str, List[Tuple[float, float, float, float]]] = {}
+PREVIEW_FOCUS_CACHE: Dict[str, Tuple[float, float]] = {}
 FACE_CASCADES = None
 DNN_FACE_NET = None
 RUN_DEADLINE: Optional[float] = None
@@ -124,12 +126,145 @@ def circle_mask(size: Tuple) -> Image.Image:
     ImageDraw.Draw(m).ellipse([0,0,size[0]-1,size[1]-1], fill=255)
     return m
 
-def fit_crop(img: Image.Image, tw: int, th: int) -> Image.Image:
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+def detect_visual_focus(img: Image.Image) -> Tuple[float, float]:
+    gray = img.convert("L").resize((96, 96), Image.LANCZOS)
+    edges = gray.filter(ImageFilter.FIND_EDGES)
+    width, height = edges.size
+    pixels = list(edges.getdata())
+    total = sum_x = sum_y = 0.0
+    default_y = 0.40 if img.height >= img.width else 0.50
+    for y in range(height):
+        top_bias = 1.30 - 0.45 * (y / max(1, height - 1))
+        for x in range(width):
+            strength = pixels[y * width + x] / 255.0
+            if strength <= 0.08:
+                continue
+            weight = (strength * strength) * top_bias
+            total += weight
+            sum_x += ((x + 0.5) / width) * weight
+            sum_y += ((y + 0.5) / height) * weight
+    if total <= 0.001:
+        return 0.5, default_y
+    fx = sum_x / total
+    fy = sum_y / total
+    fx = 0.85 * fx + 0.15 * 0.50
+    fy = 0.70 * fy + 0.30 * default_y
+    return clamp(fx, 0.18, 0.82), clamp(fy, 0.18, 0.82)
+
+def load_face_cascades():
+    global FACE_CASCADES
+    if FACE_CASCADES is not None:
+        return [] if FACE_CASCADES is False else FACE_CASCADES
+    if cv2 is None:
+        FACE_CASCADES = False
+        return []
+    cascade_dirs = []
+    cv2_data = getattr(getattr(cv2, "data", None), "haarcascades", "")
+    if cv2_data:
+        cascade_dirs.append(cv2_data)
+    cascade_dirs.extend([
+        "/usr/share/opencv4/haarcascades",
+        "/usr/share/opencv/haarcascades",
+    ])
+    cascade_names = [
+        "haarcascade_frontalface_default.xml",
+        "haarcascade_frontalface_alt2.xml",
+        "haarcascade_profileface.xml",
+    ]
+    loaded = []
+    seen_paths = set()
+    for base in cascade_dirs:
+        for name in cascade_names:
+            cascade_path = str(Path(base) / name)
+            if cascade_path in seen_paths or not Path(cascade_path).exists():
+                continue
+            seen_paths.add(cascade_path)
+            cascade = cv2.CascadeClassifier(cascade_path)
+            if not getattr(cascade, "empty", lambda: True)():
+                loaded.append(cascade)
+    FACE_CASCADES = loaded or False
+    return loaded
+
+def preview_face_boxes(path:str) -> List[Tuple[float, float, float, float]]:
+    if not path:
+        return []
+    cached = PREVIEW_FACE_BOX_CACHE.get(path)
+    if cached is not None:
+        return cached
+    boxes: List[Tuple[float, float, float, float]] = []
+    if cv2 is None:
+        PREVIEW_FACE_BOX_CACHE[path] = boxes
+        return boxes
+    try:
+        img = cv2.imread(path)
+        if img is None:
+            PREVIEW_FACE_BOX_CACHE[path] = boxes
+            return boxes
+        h, w = img.shape[:2]
+        net = load_dnn_face_net()
+        if net is not None:
+            blob = cv2.dnn.blobFromImage(cv2.resize(img, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0))
+            net.setInput(blob)
+            detections = net.forward()
+            for i in range(detections.shape[2]):
+                confidence = float(detections[0, 0, i, 2])
+                if confidence < 0.60:
+                    continue
+                x1, y1, x2, y2 = detections[0, 0, i, 3:7]
+                x1 = clamp(float(x1), 0.0, 1.0)
+                y1 = clamp(float(y1), 0.0, 1.0)
+                x2 = clamp(float(x2), 0.0, 1.0)
+                y2 = clamp(float(y2), 0.0, 1.0)
+                if (x2 - x1) >= 0.04 and (y2 - y1) >= 0.04:
+                    boxes.append((x1, y1, x2, y2))
+        if not boxes:
+            cascades = load_face_cascades()
+            if cascades:
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                gray = cv2.equalizeHist(gray)
+                for cascade in cascades:
+                    detected = cascade.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=3, minSize=(24, 24))
+                    for x, y, bw, bh in detected:
+                        boxes.append((x / w, y / h, (x + bw) / w, (y + bh) / h))
+        if len(boxes) > 6:
+            boxes = []
+    except Exception:
+        boxes = []
+    PREVIEW_FACE_BOX_CACHE[path] = boxes
+    PREVIEW_FACE_CACHE[path] = len(boxes)
+    return boxes
+
+def smart_focus_point(path: str, img: Image.Image) -> Tuple[float, float]:
+    cached = PREVIEW_FOCUS_CACHE.get(path)
+    if cached is not None:
+        return cached
+    boxes = preview_face_boxes(path)
+    if boxes:
+        x1 = min(box[0] for box in boxes)
+        y1 = min(box[1] for box in boxes)
+        x2 = max(box[2] for box in boxes)
+        y2 = max(box[3] for box in boxes)
+        fx = (x1 + x2) / 2.0
+        fy = y1 + ((y2 - y1) * 0.38)
+        focus = (clamp(fx, 0.18, 0.82), clamp(fy, 0.18, 0.70))
+    else:
+        focus = detect_visual_focus(img)
+    PREVIEW_FOCUS_CACHE[path] = focus
+    return focus
+
+def fit_crop(img: Image.Image, tw: int, th: int, path: str="") -> Image.Image:
     iw, ih = img.size
     scale = max(tw/iw, th/ih)
     nw, nh = int(iw*scale), int(ih*scale)
     img = img.resize((nw,nh), Image.LANCZOS)
-    x, y = (nw-tw)//2, (nh-th)//2
+    fx, fy = smart_focus_point(path, img) if path else detect_visual_focus(img)
+    x_pref = tw * 0.50
+    y_pref = th * (0.38 if nh > th else 0.50)
+    x = int(clamp((fx * nw) - x_pref, 0, max(0, nw - tw)))
+    y = int(clamp((fy * nh) - y_pref, 0, max(0, nh - th)))
     return img.crop((x,y,x+tw,y+th))
 
 def add_shadow(canvas: Image.Image, x:int, y:int, w:int, h:int, r:int=22):
@@ -143,7 +278,7 @@ def place_rect(canvas: Image.Image, path:str, x:int, y:int, w:int, h:int, r:int=
     b = Image.new("RGBA", (w+6,h+6), (255,255,255,255))
     b.putalpha(rounded_mask((w+6,h+6), r+3))
     canvas.alpha_composite(b, (x-3,y-3))
-    img = fit_crop(open_img(path), w, h).convert("RGBA")
+    img = fit_crop(open_img(path), w, h, path).convert("RGBA")
     img.putalpha(rounded_mask((w,h), r))
     canvas.alpha_composite(img, (x,y))
 
@@ -153,13 +288,13 @@ def place_circle(canvas: Image.Image, path:str, cx:int, cy:int, r:int):
     b = Image.new("RGBA", (r*2+6,r*2+6), (255,255,255,255))
     b.putalpha(circle_mask((r*2+6,r*2+6)))
     canvas.alpha_composite(b, (x-3,y-3))
-    img = fit_crop(open_img(path), r*2, r*2).convert("RGBA")
+    img = fit_crop(open_img(path), r*2, r*2, path).convert("RGBA")
     img.putalpha(circle_mask((r*2,r*2)))
     canvas.alpha_composite(img, (x,y))
 
 def place_rotated(canvas: Image.Image, path:str, cx:int, cy:int,
                   w:int, h:int, angle:float, r:int=16):
-    img = fit_crop(open_img(path), w, h).convert("RGBA")
+    img = fit_crop(open_img(path), w, h, path).convert("RGBA")
     # marco blanco
     frm = Image.new("RGBA", (w+20, h+30), (255,255,255,255))
     frm.paste(img, (10,10))
@@ -1899,75 +2034,12 @@ def load_dnn_face_net():
     return None if DNN_FACE_NET is False else DNN_FACE_NET
 
 def preview_face_count(path:str) -> int:
-    global FACE_CASCADES
     if not path:
         return 0
     cached = PREVIEW_FACE_CACHE.get(path)
     if cached is not None:
         return cached
-    if cv2 is None:
-        PREVIEW_FACE_CACHE[path] = 0
-        return 0
-    if FACE_CASCADES is None:
-        cascade_dirs = []
-        cv2_data = getattr(getattr(cv2, "data", None), "haarcascades", "")
-        if cv2_data:
-            cascade_dirs.append(cv2_data)
-        cascade_dirs.extend([
-            "/usr/share/opencv4/haarcascades",
-            "/usr/share/opencv/haarcascades",
-        ])
-        cascade_names = [
-            "haarcascade_frontalface_default.xml",
-            "haarcascade_frontalface_alt2.xml",
-            "haarcascade_profileface.xml",
-        ]
-        loaded = []
-        seen_paths = set()
-        for base in cascade_dirs:
-            for name in cascade_names:
-                cascade_path = str(Path(base) / name)
-                if cascade_path in seen_paths or not Path(cascade_path).exists():
-                    continue
-                seen_paths.add(cascade_path)
-                cascade = cv2.CascadeClassifier(cascade_path)
-                if not getattr(cascade, "empty", lambda: True)():
-                    loaded.append(cascade)
-        FACE_CASCADES = loaded or False
-    if FACE_CASCADES is False:
-        PREVIEW_FACE_CACHE[path] = 0
-        return 0
-    try:
-        img = cv2.imread(path)
-        if img is None:
-            PREVIEW_FACE_CACHE[path] = 0
-            return 0
-        count = 0
-        net = load_dnn_face_net()
-        if net is not None:
-            h, w = img.shape[:2]
-            blob = cv2.dnn.blobFromImage(cv2.resize(img, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0))
-            net.setInput(blob)
-            detections = net.forward()
-            for i in range(detections.shape[2]):
-                confidence = float(detections[0, 0, i, 2])
-                if confidence < 0.60:
-                    continue
-                x1, y1, x2, y2 = detections[0, 0, i, 3:7]
-                bw = max(0.0, (x2 - x1) * w)
-                bh = max(0.0, (y2 - y1) * h)
-                if bw >= w * 0.04 and bh >= h * 0.04:
-                    count += 1
-        if count <= 0:
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            gray = cv2.equalizeHist(gray)
-            for cascade in FACE_CASCADES:
-                faces = cascade.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=3, minSize=(24, 24))
-                count = max(count, int(len(faces)))
-        if count > 6:
-            count = 0
-    except Exception:
-        count = 0
+    count = len(preview_face_boxes(path))
     PREVIEW_FACE_CACHE[path] = count
     return count
 
