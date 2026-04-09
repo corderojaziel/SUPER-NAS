@@ -103,6 +103,8 @@ PALETTE_ALIASES = {
     "default": "default",
 }
 
+DECOR_FAMILIES = {"auto", "floral", "travel", "confetti", "minimal", "playful", "ribbon"}
+
 LAYOUT_MIN_PHOTOS = {
     "columns": 2,
     "story": 3,
@@ -336,23 +338,87 @@ def dots(draw, x,y, cols=5, rows=2, gap=20, color=(70,130,200,120)):
             cx,cy = x+i*gap, y+j*gap
             draw.ellipse([cx-4,cy-4,cx+4,cy+4], fill=color)
 
+def draw_confetti_cluster(draw, x:int, y:int, pal:dict, scale:float=1.0):
+    dots(draw, x, y, cols=4, rows=2, gap=max(14, int(18 * scale)), color=pal["c3"] + (120,))
+    draw.ellipse([x+76*scale, y-10*scale, x+104*scale, y+18*scale], fill=pal["c1"] + (180,))
+    draw.ellipse([x+112*scale, y+12*scale, x+136*scale, y+36*scale], fill=pal["c5"] + (170,))
+    draw.rounded_rectangle([x+88*scale, y+44*scale, x+132*scale, y+58*scale], radius=5, fill=pal["c4"] + (190,))
+
+def draw_travel_badge(draw, cx:int, cy:int, pal:dict, scale:float=1.0):
+    r = int(46 * scale)
+    draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=pal["c4"] + (235,))
+    draw.rounded_rectangle([cx-int(30*scale), cy+int(8*scale), cx+int(30*scale), cy+int(18*scale)], radius=5, fill=pal["c2"])
+    wavy_line(draw, cx-int(28*scale), cy-int(4*scale), cx+int(28*scale), amp=max(3, int(4*scale)), freq=max(18, int(24*scale)), color=pal["c1"], w=max(2, int(3*scale)))
+    dots(draw, cx-int(22*scale), cy-int(18*scale), cols=4, rows=1, gap=max(10, int(12*scale)), color=pal["c2"] + (140,))
+
+def draw_ribbon_accent(draw, x:int, y:int, pal:dict, scale:float=1.0):
+    bar_h = max(10, int(12 * scale))
+    draw.rounded_rectangle([x, y, x+int(92*scale), y+bar_h], radius=5, fill=pal["c1"])
+    draw.rounded_rectangle([x+int(18*scale), y+int(18*scale), x+int(136*scale), y+int(18*scale)+bar_h], radius=5, fill=pal["c3"])
+    draw.rounded_rectangle([x+int(48*scale), y+int(36*scale), x+int(126*scale), y+int(36*scale)+bar_h], radius=5, fill=pal["c5"])
+
+def draw_decor_accent(draw, family:str, pal:dict, W:int, header:bool=True):
+    family = normalize_decor_family(family, "playful")
+    if header:
+        if family == "travel":
+            draw_travel_badge(draw, W-96, 82, pal, 1.0)
+            return
+        if family == "confetti":
+            draw_confetti_cluster(draw, W-178, 54, pal, 1.0)
+            return
+        if family == "ribbon":
+            draw_ribbon_accent(draw, W-188, 50, pal, 1.0)
+            return
+        if family == "minimal":
+            draw.rounded_rectangle([W-170, 52, W-72, 62], radius=5, fill=pal["c3"])
+            dots(draw, W-160, 84, cols=4, rows=1, gap=18, color=pal["c2"] + (120,))
+            return
+        if family == "floral":
+            flower(draw, W-85, 58,  n=6, rp=17, rc=12, pc=pal["c3"], cc=pal["c4"])
+            flower(draw, W-140,95,  n=5, rp=12, rc=8,  pc=pal["c5"], cc=pal["c1"])
+            flower(draw, W-55, 106, n=5, rp=10, rc=7,  pc=pal["c2"], cc=pal["c4"])
+            return
+        draw_confetti_cluster(draw, W-170, 56, pal, 0.95)
+        return
+
+def draw_footer_accent(draw, family:str, pal:dict, W:int, y:int):
+    family = normalize_decor_family(family, "playful")
+    if family == "travel":
+        wavy_line(draw, 30, y+6, W-30, amp=5, freq=42, color=pal["c2"], w=4)
+        dots(draw, W//2-68, y+14, cols=6, rows=1, gap=22, color=pal["c3"] + (110,))
+        return
+    if family == "confetti":
+        draw.rounded_rectangle([34, y, W-34, y+4], radius=2, fill=pal["c2"])
+        draw_confetti_cluster(draw, W//2-76, y+8, pal, 0.8)
+        return
+    if family == "ribbon":
+        draw.rounded_rectangle([28, y, W-28, y+5], radius=3, fill=pal["c2"])
+        draw_ribbon_accent(draw, W//2-78, y+10, pal, 0.7)
+        return
+    if family == "minimal":
+        draw.rounded_rectangle([34, y, W-34, y+4], radius=2, fill=pal["c2"])
+        dots(draw, W//2-48, y+14, cols=5, rows=1, gap=18, color=pal["c3"] + (90,))
+        return
+    if family == "floral":
+        draw.rounded_rectangle([20, y, W-20, y+5], radius=3, fill=pal["c2"])
+        flower_row(draw, W//2-90, y+28, n=5, gap=46,
+                   colors=[pal["c1"],pal["c5"],pal["c3"],pal["c5"],pal["c1"]],
+                   cc=pal["c4"])
+        return
+    draw.rounded_rectangle([28, y, W-28, y+5], radius=3, fill=pal["c2"])
+    dots(draw, W//2-72, y+12, cols=7, rows=1, gap=22, color=pal["c5"] + (110,))
+
 def draw_header(canvas, draw, title:str, subtitle:str, pal:dict,
-                W:int, fonts:tuple):
+                W:int, fonts:tuple, decor_family:str="playful"):
     ft, fs = fonts
     draw.rounded_rectangle([36,44,340,58], radius=5, fill=pal["c1"])
     draw.text((36,62),  title,    font=ft, fill=(40,30,20))
     draw.text((36,126), subtitle, font=fs, fill=pal["c1"])
-    # flores decorativas header derecha
-    flower(draw, W-85, 58,  n=6, rp=17, rc=12, pc=pal["c3"], cc=pal["c4"])
-    flower(draw, W-140,95,  n=5, rp=12, rc=8,  pc=pal["c5"], cc=pal["c1"])
-    flower(draw, W-55, 106, n=5, rp=10, rc=7,  pc=pal["c2"], cc=pal["c4"])
+    draw_decor_accent(draw, decor_family, pal, W, header=True)
 
-def draw_footer(canvas, draw, W:int, H:int, pal:dict, bot:int):
+def draw_footer(canvas, draw, W:int, H:int, pal:dict, bot:int, decor_family:str="playful"):
     fy = bot+12
-    draw.rounded_rectangle([20,fy,W-20,fy+5], radius=3, fill=pal["c2"])
-    flower_row(draw, W//2-90, fy+28, n=5, gap=46,
-               colors=[pal["c1"],pal["c5"],pal["c3"],pal["c5"],pal["c1"]],
-               cc=pal["c4"])
+    draw_footer_accent(draw, decor_family, pal, W, fy)
 
 def get_fonts(size_title=54, size_sub=28):
     try:
@@ -364,7 +430,8 @@ def get_fonts(size_title=54, size_sub=28):
     return ft, fs
 
 def draw_template_header(canvas, draw, title:str, subtitle:str, pal:dict,
-                         W:int, variant:str="classic", fonts:Optional[tuple]=None):
+                         W:int, variant:str="classic", fonts:Optional[tuple]=None,
+                         decor_family:str="playful"):
     fonts = fonts or get_fonts()
     ft, fs = fonts
     variant = (variant or "classic").strip().lower()
@@ -401,27 +468,30 @@ def draw_template_header(canvas, draw, title:str, subtitle:str, pal:dict,
         dots(draw, W-180, 96, cols=5, rows=1, gap=20, color=pal["c5"] + (130,))
         draw.ellipse([W-92, 54, W-46, 100], fill=pal["c3"] + (120,))
         return
-    draw_header(canvas, draw, title, subtitle, pal, W, fonts)
+    draw_header(canvas, draw, title, subtitle, pal, W, fonts, decor_family)
 
-def draw_template_footer(canvas, draw, W:int, H:int, pal:dict, bot:int, variant:str="classic"):
+def draw_template_footer(canvas, draw, W:int, H:int, pal:dict, bot:int, variant:str="classic",
+                         decor_family:str="playful"):
     variant = (variant or "classic").strip().lower()
     fy = bot + 12
     if variant == "minimal":
-        draw.rounded_rectangle([34, fy, W-34, fy+4], radius=2, fill=pal["c2"])
-        flower(draw, 88, fy+22, n=5, rp=8, rc=6, pc=pal["c1"], cc=pal["c4"])
-        flower(draw, W-88, fy+22, n=5, rp=8, rc=6, pc=pal["c3"], cc=pal["c4"])
+        draw_footer_accent(draw, "minimal" if decor_family == "auto" else decor_family, pal, W, fy)
         return
     if variant == "dots_wave":
         wavy_line(draw, 26, fy+6, W-26, amp=6, freq=42, color=pal["c2"], w=4)
         dots(draw, W//2-78, fy+12, cols=7, rows=1, gap=26, color=pal["c3"] + (110,))
-        flower_row(draw, W//2-66, fy+30, n=4, gap=44, colors=[pal["c1"], pal["c5"], pal["c3"], pal["c1"]], cc=pal["c4"])
+        if normalize_decor_family(decor_family, "playful") == "floral":
+            flower_row(draw, W//2-66, fy+30, n=4, gap=44, colors=[pal["c1"], pal["c5"], pal["c3"], pal["c1"]], cc=pal["c4"])
         return
     if variant == "stems":
-        draw.rounded_rectangle([28, fy, W-28, fy+5], radius=3, fill=pal["c2"])
-        stem_flower(draw, 90, fy+34, h=54, sc=pal["c2"], pc=pal["c1"], cc=pal["c4"])
-        stem_flower(draw, W-90, fy+34, h=54, sc=pal["c2"], pc=pal["c3"], cc=pal["c4"])
+        if normalize_decor_family(decor_family, "playful") == "floral":
+            draw.rounded_rectangle([28, fy, W-28, fy+5], radius=3, fill=pal["c2"])
+            stem_flower(draw, 90, fy+34, h=54, sc=pal["c2"], pc=pal["c1"], cc=pal["c4"])
+            stem_flower(draw, W-90, fy+34, h=54, sc=pal["c2"], pc=pal["c3"], cc=pal["c4"])
+        else:
+            draw_footer_accent(draw, decor_family, pal, W, fy)
         return
-    draw_footer(canvas, draw, W, H, pal, bot)
+    draw_footer(canvas, draw, W, H, pal, bot, decor_family)
 
 def hex_to_rgb(hex_color: str, fallback: Tuple[int, int, int]=(128, 128, 128)) -> Tuple[int, int, int]:
     if not isinstance(hex_color, str):
@@ -504,6 +574,7 @@ def render_from_template(template: dict, photos: List[str], title: str, subtitle
     W, H = 1080, 1350
     header_variant = template_header_variant(template, len(photos))
     footer_variant = template_footer_variant(template, len(photos))
+    decor_family = infer_decor_family(template)
     bg = hex_to_rgb(template.get("background_color", ""), pal.get("bg", (250, 246, 240)))
     canvas = Image.new("RGBA", (W, H), bg + (255,))
     draw = ImageDraw.Draw(canvas)
@@ -522,7 +593,7 @@ def render_from_template(template: dict, photos: List[str], title: str, subtitle
         col = hex_to_rgb(deco.get("color", ""), pal["c2"])
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col + (alpha,))
 
-    draw_template_header(canvas, draw, title, subtitle, pal, W, header_variant, fonts)
+    draw_template_header(canvas, draw, title, subtitle, pal, W, header_variant, fonts, decor_family)
 
     cells = template.get("cells", [])
     if not isinstance(cells, list) or not cells:
@@ -603,7 +674,7 @@ def render_from_template(template: dict, photos: List[str], title: str, subtitle
         except (KeyError, TypeError, ValueError):
             continue
 
-    draw_template_footer(canvas, draw, W, H, pal, min(bottom + 10, H - 70), footer_variant)
+    draw_template_footer(canvas, draw, W, H, pal, min(bottom + 10, H - 70), footer_variant, decor_family)
     return canvas.convert("RGB"), W, H
 
 # ── Layouts ────────────────────────────────────────────────────────────────
@@ -615,7 +686,7 @@ def layout_columns(photos, title, subtitle, pal):
     draw.ellipse([W-200,-80,W+60,180], fill=(*pal["c2"],40))
     draw.ellipse([-60,H-200,180,H+60], fill=(*pal["c1"],40))
     fonts = get_fonts()
-    draw_template_header(canvas, draw, title, subtitle, pal, W, "sidebar", fonts)
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "sidebar", fonts, "minimal")
     PAD, TOP, BOT = 20, 168, H-65
     cw_l = int((W-PAD*3)*0.40)
     cw_r = int((W-PAD*3)*0.60)
@@ -625,7 +696,7 @@ def layout_columns(photos, title, subtitle, pal):
     stem_flower(draw, mx, TOP+col_h//3,   h=60, sc=pal["c2"], pc=pal["c1"], cc=pal["c4"])
     stem_flower(draw, mx, TOP+col_h*2//3, h=50, sc=pal["c2"], pc=pal["c5"], cc=pal["c4"])
     place_rect(canvas, photos[1], PAD*2+cw_l, TOP+10, cw_r, col_h-20, r=26)
-    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal")
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal", "minimal")
     return canvas.convert("RGB"), W, H
 
 def layout_story(photos, title, subtitle, pal):
@@ -637,7 +708,7 @@ def layout_story(photos, title, subtitle, pal):
     draw.ellipse([-80,H//2-200,200,H//2+200], fill=(*pal["c5"],25))
     draw.ellipse([-60,H-240,200,H+60], fill=(*pal["c1"],35))
     fonts = get_fonts(58, 30)
-    draw_template_header(canvas, draw, title, subtitle, pal, W, "ribbon", fonts)
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "ribbon", fonts, "playful")
     PAD, TOP, BOT = 22, 180, H-75
     AREA = BOT-TOP
     ph   = int(AREA*0.30)
@@ -652,7 +723,7 @@ def layout_story(photos, title, subtitle, pal):
             flower_row(draw, W//2-88, sy-22, n=5, gap=44,
                        colors=[pal["c1"],pal["c5"],pal["c3"],pal["c5"],pal["c1"]],
                        cc=pal["c4"])
-    draw_template_footer(canvas, draw, W, H, pal, BOT, "dots_wave")
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "dots_wave", "playful")
     return canvas.convert("RGB"), W, H
 
 def layout_featured(photos, title, subtitle, pal):
@@ -663,7 +734,7 @@ def layout_featured(photos, title, subtitle, pal):
     draw.ellipse([W-220,-80,W+60,220], fill=(*pal["c3"],40))
     draw.ellipse([-60,H-200,180,H+60], fill=(*pal["c1"],40))
     fonts = get_fonts()
-    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts)
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts, "minimal")
     PAD, TOP, BOT = 20, 168, H-65
     AREA = BOT-TOP
     ph1  = int(AREA*0.55)
@@ -684,7 +755,7 @@ def layout_featured(photos, title, subtitle, pal):
         pw2  = (W-PAD*3)//2
         place_rect(canvas, photos[1], PAD,       y2, pw2, ph2, r=22)
         place_rect(canvas, photos[2], PAD*2+pw2, y2, pw2, ph2, r=22)
-    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal")
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal", "minimal")
     return canvas.convert("RGB"), W, H
 
 def layout_polaroid(photos, title, subtitle, pal):
@@ -695,7 +766,7 @@ def layout_polaroid(photos, title, subtitle, pal):
     draw.ellipse([W-200,-80,W+60,180], fill=(*pal["c2"],40))
     draw.ellipse([-60,H-200,180,H+60], fill=(*pal["c1"],40))
     fonts = get_fonts()
-    draw_template_header(canvas, draw, title, subtitle, pal, W, "sidebar", fonts)
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "sidebar", fonts, "playful")
     PAD, TOP, BOT = 20, 168, H-65
     AREA  = BOT-TOP
     pw, ph = 420, 480
@@ -706,7 +777,7 @@ def layout_polaroid(photos, title, subtitle, pal):
     ]
     for i, (cx, cy, angle) in enumerate(positions[:len(photos)]):
         place_rotated(canvas, photos[i%len(photos)], cx, cy, pw, ph, angle)
-    draw_template_footer(canvas, draw, W, H, pal, BOT, "stems")
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "stems", "playful")
     return canvas.convert("RGB"), W, H
 
 def layout_circle_hero(photos, title, subtitle, pal):
@@ -717,7 +788,7 @@ def layout_circle_hero(photos, title, subtitle, pal):
     draw.ellipse([W-240,-100,W+80,200], fill=(*pal["c3"],40))
     draw.ellipse([-80,H-200,180,H+60],  fill=(*pal["c5"],40))
     fonts = get_fonts()
-    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts)
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts, "floral")
     PAD, TOP, BOT = 20, 168, H-65
     AREA  = BOT-TOP
     # Círculo central
@@ -737,7 +808,7 @@ def layout_circle_hero(photos, title, subtitle, pal):
     y2  = wy+30
     place_rect(canvas, photos[1%len(photos)], PAD,       y2, pw2, ph2, r=22)
     place_rect(canvas, photos[2%len(photos)], PAD*2+pw2, y2, pw2, ph2, r=22)
-    draw_template_footer(canvas, draw, W, H, pal, BOT, "stems")
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "stems", "floral")
     return canvas.convert("RGB"), W, H
 
 def layout_grid(photos, title, subtitle, pal):
@@ -748,7 +819,7 @@ def layout_grid(photos, title, subtitle, pal):
     draw.ellipse([W-200,-80,W+60,180], fill=(*pal["c2"],40))
     draw.ellipse([-60,H-200,180,H+60], fill=(*pal["c1"],40))
     fonts = get_fonts()
-    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts)
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts, "minimal")
     PAD, TOP, BOT = 16, 168, H-65
     AREA  = BOT-TOP
     n     = min(len(photos), 6)
@@ -762,7 +833,7 @@ def layout_grid(photos, title, subtitle, pal):
         x   = PAD+col*(cw+PAD)
         y   = TOP+PAD+row*(ch+PAD)
         place_rect(canvas, photo, x, y, cw, ch, r=22)
-    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal")
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal", "minimal")
     return canvas.convert("RGB"), W, H
 
 LAYOUTS = {
@@ -1160,6 +1231,43 @@ def coerce_string_list(value: object, max_items: int=4) -> List[str]:
             break
     return items
 
+def normalize_decor_family(value: object, fallback: str="auto") -> str:
+    raw = str(value or "").strip().lower()
+    return raw if raw in DECOR_FAMILIES else fallback
+
+def infer_decor_family(template: object) -> str:
+    if not isinstance(template, dict):
+        return "auto"
+    explicit = normalize_decor_family(template.get("decor_family") or template.get("style_family") or "", "")
+    if explicit:
+        return explicit
+    decorations = template.get("decorations", []) if isinstance(template.get("decorations"), list) else []
+    deco_types = {str(item.get("type", "")).strip().lower() for item in decorations if isinstance(item, dict)}
+    if "stem_flower" in deco_types or "flower" in deco_types:
+        return "floral"
+    if "dots" in deco_types and "wavy_line" in deco_types:
+        return "travel"
+    if "dots" in deco_types:
+        return "confetti"
+    text_blob = normalize_text_key(" ".join([
+        str(template.get("theme") or ""),
+        str(template.get("mood") or ""),
+        str(template.get("name") or ""),
+        str(template.get("id") or ""),
+        str(template.get("title") or ""),
+    ]))
+    if any(token in text_blob for token in ("viaje", "vacacion", "playa", "cozumel", "ruta", "paseo", "sendero", "aventura")):
+        return "travel"
+    if any(token in text_blob for token in ("cumple", "fiesta", "celebr", "brindis", "baile", "reunion")):
+        return "confetti"
+    if any(token in text_blob for token in ("minimal", "editor", "sereno", "geometr", "limpio", "aire")):
+        return "minimal"
+    if any(token in text_blob for token in ("hogar", "cocina", "mesa", "casa", "familia")):
+        return "ribbon"
+    if any(token in text_blob for token in ("retrato", "mirada", "perfil")):
+        return "minimal"
+    return "playful"
+
 def is_generic_title(title: str) -> bool:
     normalized = normalize_text_key(title)
     if not normalized:
@@ -1210,9 +1318,11 @@ def recent_collage_context(recent_daily_decisions: Optional[List[dict]]) -> str:
         template_id = str(item.get("template_id") or "").strip()
         template_suffix = f", plantilla={template_id}" if template_id else ""
         when = item.get("target_date") or item.get("target_month") or "?"
+        decor_family = normalize_decor_family(item.get("decor_family") or "", "")
+        decor_suffix = f", estilo={decor_family}" if decor_family else ""
         lines.append(
             f"- {when}: layout={item.get('layout', '?')}, "
-            f"paleta={item.get('palette', '?')}, render={render_mode}{template_suffix}, "
+            f"paleta={item.get('palette', '?')}, render={render_mode}{template_suffix}{decor_suffix}, "
             f"título=\"{item.get('title', '')}\""
         )
     return "\n".join(lines)
@@ -1298,6 +1408,7 @@ Responde SOLO con JSON válido (sin markdown, sin texto fuera del JSON):
   "cells": [
     {{"photo_index": 0, "x": 20, "y": 175, "w": 1040, "h": 420, "radius": 28, "shape": "rect"}}
   ],
+  "decor_family": "floral|travel|confetti|minimal|playful|ribbon",
   "header_style": "classic|centered|sidebar|ribbon",
   "footer_style": "classic|minimal|dots_wave|stems",
   "decorations": [
@@ -1332,6 +1443,7 @@ Reglas estrictas:
 - title_options: 2 alternativas cortas y específicas
 - Si puedes diseñar una composición específica, devuelve también cells/decorations/background_color
 - Si defines plantilla custom, también puedes elegir header_style/footer_style para que el look cambie de verdad
+- decor_family define el lenguaje decorativo general; no uses flores por costumbre
 - Si no estás seguro del diseño custom, devuelve "cells": [] y usa solo layout como fallback
 - Cada celda debe estar dentro del canvas 1080x1350, con y>=165, y+h<=1280, w>=80, h>=80
 - Las celdas NO deben solaparse y deja al menos 16 px entre ellas
@@ -1432,7 +1544,8 @@ def template_style_signature(template: object) -> str:
     footer = template_footer_variant(template, int(template.get("_usable_cells") or 0))
     primary = template_primary_layout(template)
     palette = normalize_palette_name(template.get("palette_name") or template.get("palette") or "")
-    return "|".join([primary, palette, header, footer])
+    decor_family = infer_decor_family(template)
+    return "|".join([primary, palette, header, footer, decor_family])
 
 def template_layout_candidates(template: object) -> List[str]:
     if not isinstance(template, dict):
@@ -1604,6 +1717,7 @@ def build_render_template(template: dict, title: str, palette_name: str, photo_o
     payload = dict(template)
     payload["title"] = title
     payload["palette_name"] = normalize_palette_name(payload.get("palette_name") or palette_name)
+    payload["decor_family"] = infer_decor_family(payload)
     payload["photo_order"] = list(photo_order)
     payload["layout"] = str(layout_name or payload.get("layout") or "").strip().lower()
     payload["_template_id"] = str(template_id or payload.get("id") or "").strip()
@@ -2360,6 +2474,7 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
         "background_color": (render_template or {}).get("background_color"),
         "header_style": template_header_variant(render_template or {}, len(ordered_paths)) if render_template else "",
         "footer_style": template_footer_variant(render_template or {}, len(ordered_paths)) if render_template else "",
+        "decor_family": infer_decor_family(render_template or decision),
     })
     print(f"  Decisión guardada: {sidecar_path}")
 
@@ -2616,6 +2731,7 @@ def process_month(memories:List[dict], user_id:str, target_date:dt.date,
         "background_color": (render_template or {}).get("background_color"),
         "header_style": template_header_variant(render_template or {}, len(ordered_paths)) if render_template else "",
         "footer_style": template_footer_variant(render_template or {}, len(ordered_paths)) if render_template else "",
+        "decor_family": infer_decor_family(render_template or decision),
     })
     print(f"  Decisión guardada: {sidecar_path}")
 
