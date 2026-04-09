@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -24,7 +25,11 @@ from zoneinfo import ZoneInfo
 SECRETS_FILE = "/etc/nas-secrets"
 TEMPLATE_DIR = "/var/lib/immich/collage-templates/gemini"
 TIMEZONE = "America/Mexico_City"
-MAX_TEMPLATES_STORED = 60
+DEFAULT_TEMPLATE_REFRESH_COUNT = 50
+MAX_TEMPLATE_REFRESH_COUNT = 50
+MAX_TEMPLATE_BATCH = 5
+TEMPLATE_BATCH_PAUSE_SEC = 12
+MAX_TEMPLATES_STORED = 90
 TEMPLATE_SAFE_TOP = 165
 TEMPLATE_SAFE_BOTTOM = 1280
 TEMPLATE_MIN_SIZE = 80
@@ -63,6 +68,13 @@ HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 ID_RE = re.compile(r"[^a-z0-9_-]+")
 HEADER_STYLES = {"classic", "centered", "sidebar", "ribbon"}
 FOOTER_STYLES = {"classic", "minimal", "dots_wave", "stems"}
+TEMPLATE_BATCH_BRIEFS = [
+    ("retratos editoriales", "prioriza retratos, foco humano, headers sobrios, circles o heroes, y evita un look floral obvio."),
+    ("viajes y paseo", "piensa en viaje, ruta, playa, paseo o exterior; usa composiciones abiertas, dots, waves y acentos no florales."),
+    ("familia y hogar", "piensa en casa, cocina, juegos, comida, mesa y cercanía; mezcla plantillas cálidas y otras limpias."),
+    ("celebración y fiesta", "piensa en cumpleaños, reunión, brindis o baile; permite energía visual, cintas, puntos y color."),
+    ("minimal contemporáneo", "prioriza limpieza, aire, geometría, márgenes generosos y muy poca decoración."),
+]
 
 
 def read_secrets(path: str) -> dict:
@@ -200,6 +212,27 @@ def normalize_style(value: object, allowed: set[str], fallback: str) -> str:
     return raw if raw in allowed else fallback
 
 
+def template_signature(template: dict) -> str:
+    cell_tokens = []
+    for cell in template.get("cells", []):
+        cell_tokens.append(
+            ":".join([
+                str(cell.get("shape", "rect")),
+                str(int(cell.get("x", 0)) // 40),
+                str(int(cell.get("y", 0)) // 40),
+                str(int(cell.get("w", 0)) // 40),
+                str(int(cell.get("h", 0)) // 40),
+            ])
+        )
+    return "|".join([
+        str(template.get("palette_name", "")),
+        str(template.get("header_style", "")),
+        str(template.get("footer_style", "")),
+        ",".join(template.get("layout_candidates", [])[:2]),
+        ";".join(cell_tokens),
+    ])
+
+
 def validate_template(template: object, index: int, today: str, season: str) -> Tuple[Optional[dict], str]:
     if not isinstance(template, dict):
         return None, "no es dict"
@@ -272,9 +305,12 @@ def validate_template(template: object, index: int, today: str, season: str) -> 
     return normalized, "ok"
 
 
-def ask_gemini_templates(api_key: str, month: int, count: int) -> List[dict]:
+def ask_gemini_templates(api_key: str, month: int, count: int, batch_index: int=0,
+                         focus_name: str="", focus_note: str="",
+                         blocked_ids: Optional[List[str]]=None) -> List[dict]:
     season = TEMPORADAS[month]
     mes = MESES[month]
+    blocked = ", ".join(blocked_ids or [])
     prompt = f"""Eres un director de arte para collages familiares.
 
 Inventa {count} plantillas MUY DIFERENTES entre si para fotos de {mes}.
@@ -282,6 +318,10 @@ Quiero variedad real: no repitas siempre featured o grid. Piensa en composicione
 editoriales, asimetricas, romanticas, casuales, de retrato, de grupo, de viaje
 y de celebracion. La temporada {season} puede influir en color y decoracion,
 pero no debe volver todas las plantillas iguales.
+
+Tanda #{batch_index + 1}: {focus_name or "variedad amplia"}.
+En esta tanda: {focus_note or "mezcla composiciones, moods y decoraciones"}.
+IDs ya usados que NO debes repetir: {blocked or "ninguno"}.
 
 Canvas fijo: 1080x1350.
 Header reservado: y < 165 no se toca con fotos.
@@ -322,13 +362,15 @@ Reglas:
 - Mezcla estilos: featured, columns, polaroid, circle_hero, grid, story, pero tambien
   composiciones originales dentro de esas familias.
 - Cambia header_style y footer_style entre plantillas para que no se vea siempre la misma portada.
+- No hagas toda la tanda floral ni toda la tanda con paleta {season}; reparte familias visuales y cromáticas.
+- Al menos la mitad de esta tanda debe usar decoraciones no florales o incluso cero decoraciones.
 - layout_candidates debe listar 1-3 layouts hardcodeados que mas se parecen.
 - No devuelvas explicacion fuera del JSON."""
 
     last_error = "sin modelos"
     for model in GEMINI_MODELS:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        generation_config = {"temperature": 0.8, "maxOutputTokens": 4096}
+        generation_config = {"temperature": 0.92, "maxOutputTokens": 4096}
         if model.startswith("gemini-2.5"):
             generation_config["thinkingConfig"] = {"thinkingBudget": 0}
         body = {
@@ -379,14 +421,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--secrets-file", default=SECRETS_FILE)
     parser.add_argument("--timezone", default=os.environ.get("MEMORIES_TIMEZONE", TIMEZONE))
-    parser.add_argument("--count", type=int, default=5)
+    parser.add_argument("--count", type=int, default=DEFAULT_TEMPLATE_REFRESH_COUNT)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    count = max(1, min(12, int(args.count)))
+    count = max(1, min(MAX_TEMPLATE_REFRESH_COUNT, int(args.count)))
     try:
         zone = ZoneInfo(args.timezone)
     except Exception:
@@ -403,28 +445,70 @@ def main() -> int:
     season = TEMPORADAS[now.month]
     print(f"INFO fecha={today} temporada={season} count={count}")
 
-    try:
-        templates = ask_gemini_templates(api_key, now.month, count)
-    except RuntimeError as exc:
-        print(f"ERROR Gemini: {exc}", file=sys.stderr)
-        return 1
-
-    print(f"INFO Gemini devolvio {len(templates)} plantilla(s)")
     valid: List[dict] = []
+    seen_ids = set()
+    seen_signatures = set()
     skipped = 0
-    for index, template in enumerate(templates):
-        normalized, reason = validate_template(template, index, today, season)
-        if not normalized:
-            skipped += 1
-            print(f"  SKIP plantilla {index}: {reason}")
+    attempts = 0
+    batch_index = 0
+    while len(valid) < count and attempts < max(8, len(TEMPLATE_BATCH_BRIEFS) * 3):
+        batch_target = min(MAX_TEMPLATE_BATCH, count - len(valid))
+        focus_name, focus_note = TEMPLATE_BATCH_BRIEFS[batch_index % len(TEMPLATE_BATCH_BRIEFS)]
+        try:
+            templates = ask_gemini_templates(
+                api_key,
+                now.month,
+                batch_target,
+                batch_index=batch_index,
+                focus_name=focus_name,
+                focus_note=focus_note,
+                blocked_ids=sorted(seen_ids)[-24:],
+            )
+        except RuntimeError as exc:
+            print(f"ERROR Gemini lote {batch_index + 1}: {exc}", file=sys.stderr)
+            if not valid:
+                return 1
+            batch_index += 1
+            attempts += 1
+            time.sleep(TEMPLATE_BATCH_PAUSE_SEC)
             continue
-        valid.append(normalized)
+
         print(
-            f"  OK plantilla {index}: id={normalized['id']} "
-            f"celdas={len(normalized['cells'])} "
-            f"paleta={normalized['palette_name']} "
-            f"layouts={','.join(normalized['layout_candidates'])}"
+            f"INFO lote {batch_index + 1}: Gemini devolvio {len(templates)} plantilla(s) "
+            f"para {focus_name}"
         )
+        for index, template in enumerate(templates):
+            normalized, reason = validate_template(template, index + batch_index * MAX_TEMPLATE_BATCH, today, season)
+            if not normalized:
+                skipped += 1
+                print(f"  SKIP plantilla {batch_index + 1}.{index}: {reason}")
+                continue
+            template_id = normalized["id"]
+            signature = template_signature(normalized)
+            if template_id in seen_ids:
+                skipped += 1
+                print(f"  SKIP plantilla {batch_index + 1}.{index}: id duplicado={template_id}")
+                continue
+            if signature in seen_signatures:
+                skipped += 1
+                print(f"  SKIP plantilla {batch_index + 1}.{index}: geometría muy parecida")
+                continue
+            valid.append(normalized)
+            seen_ids.add(template_id)
+            seen_signatures.add(signature)
+            print(
+                f"  OK plantilla {batch_index + 1}.{index}: id={normalized['id']} "
+                f"celdas={len(normalized['cells'])} "
+                f"paleta={normalized['palette_name']} "
+                f"header={normalized['header_style']} footer={normalized['footer_style']} "
+                f"layouts={','.join(normalized['layout_candidates'])}"
+            )
+            if len(valid) >= count:
+                break
+        batch_index += 1
+        attempts += 1
+        if len(valid) < count:
+            time.sleep(TEMPLATE_BATCH_PAUSE_SEC)
 
     if args.dry_run:
         print(f"SUMMARY dry_run validas={len(valid)} saltadas={skipped}")

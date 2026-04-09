@@ -1082,6 +1082,31 @@ def load_recent_daily_decisions(target_date: dt.date, days: int=RECENT_DECISION_
             decisions.append(payload)
     return decisions
 
+def load_recent_collage_decisions(limit: int=6, modes: Optional[List[str]]=None) -> List[dict]:
+    root = Path(COLLAGE_DIR)
+    if not root.exists():
+        return []
+    allowed_modes = {str(mode).strip() for mode in (modes or []) if str(mode).strip()}
+    decisions: List[dict] = []
+    for path in sorted(
+        root.glob("*.json"),
+        key=lambda item: item.stat().st_mtime if item.exists() else 0,
+        reverse=True,
+    ):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        mode = str(payload.get("mode") or "").strip()
+        if allowed_modes and mode not in allowed_modes:
+            continue
+        decisions.append(payload)
+        if len(decisions) >= max(1, limit):
+            break
+    return decisions
+
 def load_recent_monthly_decisions(target_date: dt.date, months: int=3) -> List[dict]:
     decisions: List[dict] = []
     year = target_date.year
@@ -1297,6 +1322,8 @@ Reglas estrictas:
 - Si hay más fotos de las que el layout necesita, photo_order debe poner primero las que sí se usarán
 - ANTI-REPETICIÓN: si el layout que ibas a elegir aparece en el contexto reciente, debes elegir otro salvo que sea claramente el único que funciona
 - featured es el layout con más riesgo de repetirse; si aparece en el historial reciente, busca activamente otra opción válida
+- ANTI-REPETICIÓN DE PALETA: si la paleta reciente se repite y no es indispensable para estas fotos, elige otra compatible con el mood visual
+- No conviertas viajes, familia o retratos en "verano" por costumbre; mira color real, luz, ropa, cielo, interior/exterior y energía de las fotos
 - El título debe sonar humano y concreto: por ejemplo relación, actividad o escena; evita frases comodín como "Momentos de...", "Recuerdo de..." o "Alegría compartida"
 - Si ves una relación clara como padre e hijo, familia, amigas, fiesta o comida, nómbrala sin inventar nombres propios
 - photo_order: lista de enteros 0..{n_photos-1}, sin repetir, sin strings
@@ -1389,6 +1416,23 @@ def recent_template_ids(recent_daily_decisions: Optional[List[dict]]) -> List[st
         if template_id and template_id not in ids:
             ids.append(template_id)
     return ids
+
+def recent_palette_names(recent_daily_decisions: Optional[List[dict]]) -> List[str]:
+    palettes: List[str] = []
+    for item in recent_daily_decisions or []:
+        palette = normalize_palette_name(item.get("palette") or "")
+        if palette and palette not in palettes:
+            palettes.append(palette)
+    return palettes
+
+def template_style_signature(template: object) -> str:
+    if not isinstance(template, dict):
+        return ""
+    header = template_header_variant(template, int(template.get("_usable_cells") or 0))
+    footer = template_footer_variant(template, int(template.get("_usable_cells") or 0))
+    primary = template_primary_layout(template)
+    palette = normalize_palette_name(template.get("palette_name") or template.get("palette") or "")
+    return "|".join([primary, palette, header, footer])
 
 def template_layout_candidates(template: object) -> List[str]:
     if not isinstance(template, dict):
@@ -1493,7 +1537,8 @@ def template_footer_variant(template: object, photo_count: int) -> str:
     return "classic"
 
 def score_render_template(template: dict, photo_count: int, preferred_palette: str,
-                          preferred_layouts: Optional[List[str]]=None) -> int:
+                          preferred_layouts: Optional[List[str]]=None,
+                          recent_decisions: Optional[List[dict]]=None) -> int:
     score = template_visual_score(template, photo_count)
     if score < 0:
         return score
@@ -1515,6 +1560,25 @@ def score_render_template(template: dict, photo_count: int, preferred_palette: s
         score += 2
     if source == "gemini_inline" and template_is_bland(template, photo_count):
         score -= 8
+    recent_decisions = recent_decisions or []
+    template_id = str(template.get("_template_id") or template.get("id") or "").strip()
+    recent_ids = recent_template_ids(recent_decisions)
+    if template_id and recent_ids and template_id == recent_ids[0]:
+        score -= 12
+    elif template_id and template_id in recent_ids[1:3]:
+        score -= 6
+    recent_palettes = recent_palette_names(recent_decisions)
+    if recent_palettes and template_palette == recent_palettes[0]:
+        score -= 3
+    current_signature = template_style_signature(template)
+    recent_signatures = {
+        template_style_signature(item)
+        for item in recent_decisions[:2]
+        if isinstance(item, dict)
+    }
+    recent_signatures.discard("")
+    if current_signature and current_signature in recent_signatures:
+        score -= 5
     return score
 
 def desired_template_cells(layout_name: str, photo_count: int, scope_kind: str="general") -> int:
@@ -1548,7 +1612,8 @@ def build_render_template(template: dict, title: str, palette_name: str, photo_o
     return payload
 
 def load_template_fallback(n_photos: int, template_seed: str, avoid_ids: Optional[List[str]]=None,
-                           preferred_palette: str="", preferred_layouts: Optional[List[str]]=None) -> Optional[dict]:
+                           preferred_palette: str="", preferred_layouts: Optional[List[str]]=None,
+                           recent_decisions: Optional[List[dict]]=None) -> Optional[dict]:
     root = Path(TEMPLATE_DIR)
     if not root.exists():
         return None
@@ -1571,7 +1636,7 @@ def load_template_fallback(n_photos: int, template_seed: str, avoid_ids: Optiona
         chosen["_template_source"] = f"bank:{path.parent.name or 'root'}"
         chosen["_template_path"] = str(path)
         chosen["_usable_cells"] = usable
-        score = score_render_template(chosen, n_photos, preferred_palette, preferred_layouts)
+        score = score_render_template(chosen, n_photos, preferred_palette, preferred_layouts, recent_decisions)
         candidates.append((score, template_id, chosen))
     if not candidates:
         return None
@@ -1586,7 +1651,8 @@ def load_template_fallback(n_photos: int, template_seed: str, avoid_ids: Optiona
 def choose_render_template(decision: dict, title: str, palette_name: str, photo_order: List[int],
                            layout_name: str, photo_count: int, template_seed: str,
                            avoid_template_ids: Optional[List[str]]=None,
-                           scope_kind: str="general") -> Optional[dict]:
+                           scope_kind: str="general",
+                           recent_decisions: Optional[List[dict]]=None) -> Optional[dict]:
     candidates: List[dict] = []
     required_cells = desired_template_cells(layout_name, photo_count, scope_kind)
     preferred_layouts = [layout_name] + layout_candidates_from_decision(decision)
@@ -1610,16 +1676,11 @@ def choose_render_template(decision: dict, title: str, palette_name: str, photo_
         avoid_ids=avoid_template_ids,
         preferred_palette=palette_name,
         preferred_layouts=preferred_layouts,
+        recent_decisions=recent_decisions,
     )
     if bank_template:
         bank_usable = usable_template_cell_count(bank_template, photo_count)
-        bank_primary_layout = template_primary_layout(bank_template)
-        bank_layout_ok = (
-            not wanted_layouts
-            or not bank_primary_layout
-            or bank_primary_layout in wanted_layouts
-        )
-        if bank_usable >= required_cells and (scope_kind != "daily_memory" or bank_layout_ok):
+        if bank_usable >= required_cells:
             candidates.append(build_render_template(
                 bank_template,
                 title,
@@ -1634,7 +1695,7 @@ def choose_render_template(decision: dict, title: str, palette_name: str, photo_
     ranked: List[Tuple[int, str, dict]] = []
     for candidate in candidates:
         ranked.append((
-            score_render_template(candidate, photo_count, palette_name, preferred_layouts),
+            score_render_template(candidate, photo_count, palette_name, preferred_layouts, recent_decisions),
             str(candidate.get("_template_id") or ""),
             candidate,
         ))
@@ -2126,6 +2187,18 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
         return False
 
     print(f"  memory={mid} year={year} fotos={len(paths)}")
+    recent_decisions = load_recent_collage_decisions(
+        limit=max(4, RECENT_DECISION_DAYS * 3),
+        modes=["single_memory", "daily", "monthly"],
+    )
+    recent_layouts = [
+        item.get("layout")
+        for item in recent_decisions
+        if isinstance(item, dict) and item.get("layout") in LAYOUTS
+    ]
+    recent_template_bank_ids = recent_template_ids(recent_decisions)
+    if recent_decisions:
+        print(f"  Historial reciente: {recent_collage_context(recent_decisions)}")
 
     # Gemini decide todo
     decision = ask_gemini(
@@ -2135,6 +2208,7 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
         memory_key=f"{mid}:{year}",
         allow_fallback=allow_fallback,
         alert_context=f"memory {mid} ({target_date.isoformat()})",
+        recent_daily_decisions=recent_decisions,
         scope_note=(
             f"Estas fotos pertenecen a un solo recuerdo del día {target_date.day} de {MESES[target_date.month]} "
             f"de {year}. Busca una historia coherente de una sola ocasión, evento o vínculo."
@@ -2145,8 +2219,14 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
     palette_name = decision_palette_name(decision)
     order_raw    = decision.get("photo_order", [])
     reason       = decision.get("reason", "")
-    fallback = fallback_decision(len(paths), target_date.month, memory_key=f"{mid}:{year}", photo_paths=paths)
-    layout_name, layout_note = choose_layout(layout_name, len(paths), fallback, decision)
+    fallback = fallback_decision(
+        len(paths),
+        target_date.month,
+        memory_key=f"{mid}:{year}",
+        photo_paths=paths,
+        avoid_layouts=recent_layouts[:1],
+    )
+    layout_name, layout_note = choose_layout(layout_name, len(paths), fallback, decision, recent_layouts=recent_layouts)
     if layout_note:
         print(f"  WARN: {layout_note}")
 
@@ -2196,6 +2276,8 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
         layout_name,
         len(paths),
         template_seed=f"{mid}:{year}:{target_date.isoformat()}:{model_used}",
+        avoid_template_ids=recent_template_bank_ids,
+        recent_decisions=recent_decisions,
         scope_kind="daily_memory",
     )
 
@@ -2449,6 +2531,7 @@ def process_month(memories:List[dict], user_id:str, target_date:dt.date,
         len(monthly_paths),
         template_seed=f"monthly:{target_date.year}-{target_date.month:02d}:{model_used}:{layout_name}",
         avoid_template_ids=recent_template_bank_ids,
+        recent_decisions=recent_monthly_decisions,
         scope_kind="monthly",
     )
 
