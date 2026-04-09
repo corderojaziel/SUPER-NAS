@@ -103,7 +103,35 @@ PALETTE_ALIASES = {
     "default": "default",
 }
 
-DECOR_FAMILIES = {"auto", "floral", "travel", "confetti", "minimal", "playful", "ribbon"}
+VISUAL_SYSTEMS = {
+    "auto",
+    "floral",
+    "travel",
+    "route",
+    "confetti",
+    "minimal",
+    "ribbon",
+    "editorial",
+    "postcard",
+    "ticket",
+    "scrapbook",
+    "notebook",
+}
+
+VISUAL_SYSTEM_ALIASES = {
+    "playful": "editorial",
+    "travel": "travel",
+    "route": "route",
+    "floral": "floral",
+    "confetti": "confetti",
+    "minimal": "minimal",
+    "ribbon": "ribbon",
+    "editorial": "editorial",
+    "postcard": "postcard",
+    "ticket": "ticket",
+    "scrapbook": "scrapbook",
+    "notebook": "notebook",
+}
 
 LAYOUT_MIN_PHOTOS = {
     "columns": 2,
@@ -357,49 +385,177 @@ def draw_ribbon_accent(draw, x:int, y:int, pal:dict, scale:float=1.0):
     draw.rounded_rectangle([x+int(18*scale), y+int(18*scale), x+int(136*scale), y+int(18*scale)+bar_h], radius=5, fill=pal["c3"])
     draw.rounded_rectangle([x+int(48*scale), y+int(36*scale), x+int(126*scale), y+int(36*scale)+bar_h], radius=5, fill=pal["c5"])
 
-def draw_decor_accent(draw, family:str, pal:dict, W:int, header:bool=True):
-    family = normalize_decor_family(family, "playful")
+def draw_ticket_accent(draw, x:int, y:int, pal:dict, scale:float=1.0):
+    w = int(144 * scale)
+    h = int(54 * scale)
+    draw.rounded_rectangle([x, y, x+w, y+h], radius=12, fill=pal["c4"] + (215,))
+    for hole_x in (x+18, x+w-18):
+        draw.ellipse([hole_x-8, y+h//2-8, hole_x+8, y+h//2+8], fill=(245, 245, 240, 255))
+    draw.line([(x+34, y+14), (x+w-34, y+14)], fill=pal["c2"], width=3)
+    dots(draw, x+36, y+26, cols=5, rows=1, gap=16, color=pal["c1"] + (130,))
+
+def draw_postcard_stamp(draw, x:int, y:int, pal:dict, scale:float=1.0):
+    w = int(126 * scale)
+    h = int(92 * scale)
+    draw.rounded_rectangle([x, y, x+w, y+h], radius=12, fill=pal["c4"] + (200,), outline=pal["c2"], width=3)
+    for i in range(5):
+        px = x + 12 + i * int(20 * scale)
+        draw.line([(px, y+8), (px+8, y+8)], fill=(245, 245, 245, 255), width=2)
+    draw.line([(x+18, y+h-26), (x+w-18, y+h-40)], fill=pal["c1"], width=3)
+    draw.line([(x+18, y+h-12), (x+w-18, y+h-26)], fill=pal["c3"], width=3)
+
+def draw_tape_strip(draw, x:int, y:int, w:int, h:int, color:Tuple[int,int,int,int]):
+    draw.rounded_rectangle([x, y, x+w, y+h], radius=5, fill=color)
+
+def draw_notebook_marks(draw, x:int, y:int, count:int=4, gap:int=28):
+    for i in range(count):
+        cy = y + i * gap
+        draw.ellipse([x-7, cy-7, x+7, cy+7], fill=(245, 245, 240, 255))
+
+def draw_editorial_blocks(draw, x:int, y:int, pal:dict, scale:float=1.0):
+    draw.rounded_rectangle([x, y, x+int(110*scale), y+int(12*scale)], radius=6, fill=pal["c1"])
+    draw.rounded_rectangle([x+int(16*scale), y+int(20*scale), x+int(178*scale), y+int(30*scale)], radius=5, fill=pal["c3"])
+    draw.rounded_rectangle([x+int(42*scale), y+int(38*scale), x+int(138*scale), y+int(48*scale)], radius=5, fill=pal["c5"])
+
+def draw_visual_system_background(draw, system:str, pal:dict, W:int, H:int):
+    system = normalize_visual_system(system, "editorial")
+    if system == "notebook":
+        draw.rounded_rectangle([26, 26, W-26, H-26], radius=26, outline=pal["c2"] + (70,), width=3)
+        for y in range(188, H-120, 72):
+            draw.line([(48, y), (W-48, y)], fill=pal["c3"] + (42,), width=2)
+        draw.line([(92, 170), (92, H-80)], fill=pal["c1"] + (70,), width=3)
+        draw_notebook_marks(draw, 54, 214, count=12, gap=78)
+        return
+    if system == "postcard":
+        draw.rounded_rectangle([22, 22, W-22, H-22], radius=24, outline=pal["c2"] + (85,), width=4)
+        draw.rounded_rectangle([42, 42, W-42, H-42], radius=18, outline=pal["c4"] + (90,), width=2)
+        return
+    if system == "ticket":
+        draw.rounded_rectangle([24, 24, W-24, H-24], radius=24, outline=pal["c4"] + (85,), width=3)
+        for y in range(120, H-120, 82):
+            draw.ellipse([W-34, y-6, W-22, y+6], fill=(245, 245, 240, 255))
+            draw.ellipse([22, y-6, 34, y+6], fill=(245, 245, 240, 255))
+        return
+    if system == "scrapbook":
+        draw.ellipse([W-220, -70, W+40, 190], fill=pal["c5"] + (55,))
+        draw.ellipse([-50, H-220, 220, H+50], fill=pal["c2"] + (40,))
+        return
+    if system == "route":
+        draw.ellipse([W-210, -80, W+40, 170], fill=pal["c2"] + (38,))
+        draw.ellipse([-60, H-220, 180, H+40], fill=pal["c5"] + (38,))
+        return
+    if system == "travel":
+        draw.ellipse([W-220, -90, W+50, 180], fill=pal["c4"] + (42,))
+        draw.rounded_rectangle([36, H-168, 196, H-154], radius=7, fill=pal["c3"] + (90,))
+        return
+    if system == "confetti":
+        dots(draw, 54, 76, cols=4, rows=2, gap=20, color=pal["c5"] + (95,))
+        dots(draw, W-180, H-146, cols=5, rows=2, gap=18, color=pal["c1"] + (95,))
+        return
+    if system == "ribbon":
+        draw_ribbon_accent(draw, 36, 42, pal, 0.8)
+        draw_ribbon_accent(draw, W-188, H-112, pal, 0.7)
+        return
+    if system == "floral":
+        draw.ellipse([W-200, -80, W+60, 180], fill=pal["c2"] + (36,))
+        draw.ellipse([-60, H-200, 180, H+60], fill=pal["c1"] + (36,))
+        return
+    if system == "minimal":
+        draw.rounded_rectangle([38, 38, W-38, H-38], radius=22, outline=pal["c3"] + (55,), width=2)
+        return
+    draw_editorial_blocks(draw, 34, 42, pal, 1.0)
+    draw.rounded_rectangle([W-172, H-104, W-44, H-92], radius=5, fill=pal["c2"] + (90,))
+
+def draw_decor_accent(draw, system:str, pal:dict, W:int, header:bool=True):
+    system = normalize_visual_system(system, "editorial")
     if header:
-        if family == "travel":
+        if system == "travel":
             draw_travel_badge(draw, W-96, 82, pal, 1.0)
             return
-        if family == "confetti":
+        if system == "route":
+            wavy_line(draw, W-230, 88, W-52, amp=7, freq=36, color=pal["c2"], w=4)
+            draw.ellipse([W-90, 60, W-58, 92], fill=pal["c1"] + (190,))
+            draw.ellipse([W-162, 96, W-130, 128], fill=pal["c3"] + (190,))
+            return
+        if system == "confetti":
             draw_confetti_cluster(draw, W-178, 54, pal, 1.0)
             return
-        if family == "ribbon":
+        if system == "ribbon":
             draw_ribbon_accent(draw, W-188, 50, pal, 1.0)
             return
-        if family == "minimal":
+        if system == "minimal":
             draw.rounded_rectangle([W-170, 52, W-72, 62], radius=5, fill=pal["c3"])
             dots(draw, W-160, 84, cols=4, rows=1, gap=18, color=pal["c2"] + (120,))
             return
-        if family == "floral":
+        if system == "editorial":
+            draw_editorial_blocks(draw, W-196, 46, pal, 0.9)
+            return
+        if system == "postcard":
+            draw_postcard_stamp(draw, W-172, 42, pal, 0.9)
+            return
+        if system == "ticket":
+            draw_ticket_accent(draw, W-184, 50, pal, 0.9)
+            return
+        if system == "scrapbook":
+            draw_tape_strip(draw, W-174, 46, 68, 18, pal["c4"] + (150,))
+            draw_tape_strip(draw, W-108, 86, 58, 16, pal["c5"] + (150,))
+            return
+        if system == "notebook":
+            draw_notebook_marks(draw, W-82, 52, count=3, gap=26)
+            draw.rounded_rectangle([W-172, 54, W-94, 64], radius=5, fill=pal["c3"])
+            return
+        if system == "floral":
             flower(draw, W-85, 58,  n=6, rp=17, rc=12, pc=pal["c3"], cc=pal["c4"])
             flower(draw, W-140,95,  n=5, rp=12, rc=8,  pc=pal["c5"], cc=pal["c1"])
             flower(draw, W-55, 106, n=5, rp=10, rc=7,  pc=pal["c2"], cc=pal["c4"])
             return
-        draw_confetti_cluster(draw, W-170, 56, pal, 0.95)
+        draw_editorial_blocks(draw, W-188, 52, pal, 0.85)
         return
 
-def draw_footer_accent(draw, family:str, pal:dict, W:int, y:int):
-    family = normalize_decor_family(family, "playful")
-    if family == "travel":
+def draw_footer_accent(draw, system:str, pal:dict, W:int, y:int):
+    system = normalize_visual_system(system, "editorial")
+    if system == "travel":
         wavy_line(draw, 30, y+6, W-30, amp=5, freq=42, color=pal["c2"], w=4)
         dots(draw, W//2-68, y+14, cols=6, rows=1, gap=22, color=pal["c3"] + (110,))
         return
-    if family == "confetti":
+    if system == "route":
+        wavy_line(draw, 34, y+8, W-34, amp=4, freq=46, color=pal["c2"], w=3)
+        draw.ellipse([W//2-6, y+2, W//2+6, y+14], fill=pal["c1"] + (190,))
+        return
+    if system == "confetti":
         draw.rounded_rectangle([34, y, W-34, y+4], radius=2, fill=pal["c2"])
         draw_confetti_cluster(draw, W//2-76, y+8, pal, 0.8)
         return
-    if family == "ribbon":
+    if system == "ribbon":
         draw.rounded_rectangle([28, y, W-28, y+5], radius=3, fill=pal["c2"])
         draw_ribbon_accent(draw, W//2-78, y+10, pal, 0.7)
         return
-    if family == "minimal":
+    if system == "minimal":
         draw.rounded_rectangle([34, y, W-34, y+4], radius=2, fill=pal["c2"])
         dots(draw, W//2-48, y+14, cols=5, rows=1, gap=18, color=pal["c3"] + (90,))
         return
-    if family == "floral":
+    if system == "editorial":
+        draw.rounded_rectangle([28, y, W-28, y+5], radius=3, fill=pal["c2"])
+        draw_editorial_blocks(draw, W//2-86, y+10, pal, 0.65)
+        return
+    if system == "postcard":
+        draw.rounded_rectangle([28, y, W-28, y+5], radius=3, fill=pal["c2"])
+        draw_postcard_stamp(draw, W//2-62, y+8, pal, 0.6)
+        return
+    if system == "ticket":
+        draw.rounded_rectangle([28, y, W-28, y+5], radius=3, fill=pal["c2"])
+        draw_ticket_accent(draw, W//2-70, y+8, pal, 0.65)
+        return
+    if system == "scrapbook":
+        draw.rounded_rectangle([28, y, W-28, y+5], radius=3, fill=pal["c2"])
+        draw_tape_strip(draw, W//2-82, y+12, 44, 16, pal["c4"] + (150,))
+        draw_tape_strip(draw, W//2+10, y+18, 50, 16, pal["c5"] + (150,))
+        return
+    if system == "notebook":
+        draw.rounded_rectangle([28, y, W-28, y+5], radius=3, fill=pal["c2"])
+        draw_notebook_marks(draw, W//2-48, y+18, count=4, gap=22)
+        return
+    if system == "floral":
         draw.rounded_rectangle([20, y, W-20, y+5], radius=3, fill=pal["c2"])
         flower_row(draw, W//2-90, y+28, n=5, gap=46,
                    colors=[pal["c1"],pal["c5"],pal["c3"],pal["c5"],pal["c1"]],
@@ -409,14 +565,14 @@ def draw_footer_accent(draw, family:str, pal:dict, W:int, y:int):
     dots(draw, W//2-72, y+12, cols=7, rows=1, gap=22, color=pal["c5"] + (110,))
 
 def draw_header(canvas, draw, title:str, subtitle:str, pal:dict,
-                W:int, fonts:tuple, decor_family:str="playful"):
+                W:int, fonts:tuple, decor_family:str="editorial"):
     ft, fs = fonts
     draw.rounded_rectangle([36,44,340,58], radius=5, fill=pal["c1"])
     draw.text((36,62),  title,    font=ft, fill=(40,30,20))
     draw.text((36,126), subtitle, font=fs, fill=pal["c1"])
     draw_decor_accent(draw, decor_family, pal, W, header=True)
 
-def draw_footer(canvas, draw, W:int, H:int, pal:dict, bot:int, decor_family:str="playful"):
+def draw_footer(canvas, draw, W:int, H:int, pal:dict, bot:int, decor_family:str="editorial"):
     fy = bot+12
     draw_footer_accent(draw, decor_family, pal, W, fy)
 
@@ -431,7 +587,7 @@ def get_fonts(size_title=54, size_sub=28):
 
 def draw_template_header(canvas, draw, title:str, subtitle:str, pal:dict,
                          W:int, variant:str="classic", fonts:Optional[tuple]=None,
-                         decor_family:str="playful"):
+                         decor_family:str="editorial"):
     fonts = fonts or get_fonts()
     ft, fs = fonts
     variant = (variant or "classic").strip().lower()
@@ -443,10 +599,7 @@ def draw_template_header(canvas, draw, title:str, subtitle:str, pal:dict,
         sx = (W - (subtitle_box[2] - subtitle_box[0])) // 2
         draw.text((tx, 66), title, font=ft, fill=(40,30,20))
         draw.text((sx, 126), subtitle, font=fs, fill=pal["c1"])
-        draw.ellipse([54, 44, 138, 128], fill=pal["c5"] + (70,))
-        draw.ellipse([W-142, 46, W-54, 134], fill=pal["c2"] + (80,))
-        dots(draw, 84, 82, cols=3, rows=2, gap=18, color=pal["c3"] + (120,))
-        dots(draw, W-126, 74, cols=3, rows=2, gap=18, color=pal["c1"] + (120,))
+        draw_decor_accent(draw, decor_family, pal, W, header=True)
         return
     if variant == "sidebar":
         draw.rounded_rectangle([28, 40, 46, 150], radius=8, fill=pal["c2"])
@@ -454,9 +607,7 @@ def draw_template_header(canvas, draw, title:str, subtitle:str, pal:dict,
         draw.text((72, 64), title, font=ft, fill=(40,30,20))
         draw.rounded_rectangle([72, 122, 270, 156], radius=16, fill=pal["c5"] + (255,))
         draw.text((88, 126), subtitle, font=fs, fill=(60,40,24))
-        draw.ellipse([W-164, 44, W-58, 132], fill=pal["c3"] + (68,))
-        draw.rounded_rectangle([W-178, 102, W-54, 114], radius=6, fill=pal["c4"])
-        dots(draw, W-150, 72, cols=4, rows=2, gap=18, color=pal["c2"] + (125,))
+        draw_decor_accent(draw, decor_family, pal, W, header=True)
         return
     if variant == "ribbon":
         draw.rounded_rectangle([32, 44, 260, 58], radius=6, fill=pal["c1"])
@@ -464,14 +615,12 @@ def draw_template_header(canvas, draw, title:str, subtitle:str, pal:dict,
         draw.text((36, 68), title, font=ft, fill=(40,30,20))
         draw.rounded_rectangle([36, 126, 236, 158], radius=16, fill=pal["c4"] + (255,))
         draw.text((52, 129), subtitle, font=fs, fill=(60,40,24))
-        wavy_line(draw, W-280, 74, W-48, amp=5, freq=40, color=pal["c2"], w=4)
-        dots(draw, W-180, 96, cols=5, rows=1, gap=20, color=pal["c5"] + (130,))
-        draw.ellipse([W-92, 54, W-46, 100], fill=pal["c3"] + (120,))
+        draw_decor_accent(draw, decor_family, pal, W, header=True)
         return
     draw_header(canvas, draw, title, subtitle, pal, W, fonts, decor_family)
 
 def draw_template_footer(canvas, draw, W:int, H:int, pal:dict, bot:int, variant:str="classic",
-                         decor_family:str="playful"):
+                         decor_family:str="editorial"):
     variant = (variant or "classic").strip().lower()
     fy = bot + 12
     if variant == "minimal":
@@ -480,11 +629,11 @@ def draw_template_footer(canvas, draw, W:int, H:int, pal:dict, bot:int, variant:
     if variant == "dots_wave":
         wavy_line(draw, 26, fy+6, W-26, amp=6, freq=42, color=pal["c2"], w=4)
         dots(draw, W//2-78, fy+12, cols=7, rows=1, gap=26, color=pal["c3"] + (110,))
-        if normalize_decor_family(decor_family, "playful") == "floral":
+        if normalize_decor_family(decor_family, "editorial") == "floral":
             flower_row(draw, W//2-66, fy+30, n=4, gap=44, colors=[pal["c1"], pal["c5"], pal["c3"], pal["c1"]], cc=pal["c4"])
         return
     if variant == "stems":
-        if normalize_decor_family(decor_family, "playful") == "floral":
+        if normalize_decor_family(decor_family, "editorial") == "floral":
             draw.rounded_rectangle([28, fy, W-28, fy+5], radius=3, fill=pal["c2"])
             stem_flower(draw, 90, fy+34, h=54, sc=pal["c2"], pc=pal["c1"], cc=pal["c4"])
             stem_flower(draw, W-90, fy+34, h=54, sc=pal["c2"], pc=pal["c3"], cc=pal["c4"])
@@ -574,11 +723,12 @@ def render_from_template(template: dict, photos: List[str], title: str, subtitle
     W, H = 1080, 1350
     header_variant = template_header_variant(template, len(photos))
     footer_variant = template_footer_variant(template, len(photos))
-    decor_family = infer_decor_family(template)
+    decor_family = infer_visual_system(template)
     bg = hex_to_rgb(template.get("background_color", ""), pal.get("bg", (250, 246, 240)))
     canvas = Image.new("RGBA", (W, H), bg + (255,))
     draw = ImageDraw.Draw(canvas)
     fonts = get_fonts()
+    draw_visual_system_background(draw, decor_family, pal, W, H)
 
     for deco in template.get("decorations", []):
         if not isinstance(deco, dict) or deco.get("type") != "circle_deco":
@@ -683,10 +833,9 @@ def layout_columns(photos, title, subtitle, pal):
     W, H = 1080, 1350
     canvas = Image.new("RGBA", (W,H), pal["bg"]+(255,))
     draw   = ImageDraw.Draw(canvas)
-    draw.ellipse([W-200,-80,W+60,180], fill=(*pal["c2"],40))
-    draw.ellipse([-60,H-200,180,H+60], fill=(*pal["c1"],40))
+    draw_visual_system_background(draw, "editorial", pal, W, H)
     fonts = get_fonts()
-    draw_template_header(canvas, draw, title, subtitle, pal, W, "sidebar", fonts, "minimal")
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "sidebar", fonts, "editorial")
     PAD, TOP, BOT = 20, 168, H-65
     cw_l = int((W-PAD*3)*0.40)
     cw_r = int((W-PAD*3)*0.60)
@@ -696,7 +845,7 @@ def layout_columns(photos, title, subtitle, pal):
     stem_flower(draw, mx, TOP+col_h//3,   h=60, sc=pal["c2"], pc=pal["c1"], cc=pal["c4"])
     stem_flower(draw, mx, TOP+col_h*2//3, h=50, sc=pal["c2"], pc=pal["c5"], cc=pal["c4"])
     place_rect(canvas, photos[1], PAD*2+cw_l, TOP+10, cw_r, col_h-20, r=26)
-    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal", "minimal")
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal", "editorial")
     return canvas.convert("RGB"), W, H
 
 def layout_story(photos, title, subtitle, pal):
@@ -704,11 +853,9 @@ def layout_story(photos, title, subtitle, pal):
     W, H = 1080, 1920
     canvas = Image.new("RGBA", (W,H), pal["bg"]+(255,))
     draw   = ImageDraw.Draw(canvas)
-    draw.ellipse([W-240,-100,W+80,240], fill=(*pal["c2"],35))
-    draw.ellipse([-80,H//2-200,200,H//2+200], fill=(*pal["c5"],25))
-    draw.ellipse([-60,H-240,200,H+60], fill=(*pal["c1"],35))
+    draw_visual_system_background(draw, "route", pal, W, H)
     fonts = get_fonts(58, 30)
-    draw_template_header(canvas, draw, title, subtitle, pal, W, "ribbon", fonts, "playful")
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "ribbon", fonts, "route")
     PAD, TOP, BOT = 22, 180, H-75
     AREA = BOT-TOP
     ph   = int(AREA*0.30)
@@ -723,7 +870,7 @@ def layout_story(photos, title, subtitle, pal):
             flower_row(draw, W//2-88, sy-22, n=5, gap=44,
                        colors=[pal["c1"],pal["c5"],pal["c3"],pal["c5"],pal["c1"]],
                        cc=pal["c4"])
-    draw_template_footer(canvas, draw, W, H, pal, BOT, "dots_wave", "playful")
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "dots_wave", "route")
     return canvas.convert("RGB"), W, H
 
 def layout_featured(photos, title, subtitle, pal):
@@ -731,10 +878,9 @@ def layout_featured(photos, title, subtitle, pal):
     W, H = 1080, 1350
     canvas = Image.new("RGBA", (W,H), pal["bg"]+(255,))
     draw   = ImageDraw.Draw(canvas)
-    draw.ellipse([W-220,-80,W+60,220], fill=(*pal["c3"],40))
-    draw.ellipse([-60,H-200,180,H+60], fill=(*pal["c1"],40))
+    draw_visual_system_background(draw, "postcard", pal, W, H)
     fonts = get_fonts()
-    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts, "minimal")
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts, "postcard")
     PAD, TOP, BOT = 20, 168, H-65
     AREA = BOT-TOP
     ph1  = int(AREA*0.55)
@@ -755,7 +901,7 @@ def layout_featured(photos, title, subtitle, pal):
         pw2  = (W-PAD*3)//2
         place_rect(canvas, photos[1], PAD,       y2, pw2, ph2, r=22)
         place_rect(canvas, photos[2], PAD*2+pw2, y2, pw2, ph2, r=22)
-    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal", "minimal")
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal", "postcard")
     return canvas.convert("RGB"), W, H
 
 def layout_polaroid(photos, title, subtitle, pal):
@@ -763,10 +909,9 @@ def layout_polaroid(photos, title, subtitle, pal):
     W, H = 1080, 1350
     canvas = Image.new("RGBA", (W,H), pal["bg"]+(255,))
     draw   = ImageDraw.Draw(canvas)
-    draw.ellipse([W-200,-80,W+60,180], fill=(*pal["c2"],40))
-    draw.ellipse([-60,H-200,180,H+60], fill=(*pal["c1"],40))
+    draw_visual_system_background(draw, "scrapbook", pal, W, H)
     fonts = get_fonts()
-    draw_template_header(canvas, draw, title, subtitle, pal, W, "sidebar", fonts, "playful")
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "sidebar", fonts, "scrapbook")
     PAD, TOP, BOT = 20, 168, H-65
     AREA  = BOT-TOP
     pw, ph = 420, 480
@@ -777,7 +922,7 @@ def layout_polaroid(photos, title, subtitle, pal):
     ]
     for i, (cx, cy, angle) in enumerate(positions[:len(photos)]):
         place_rotated(canvas, photos[i%len(photos)], cx, cy, pw, ph, angle)
-    draw_template_footer(canvas, draw, W, H, pal, BOT, "stems", "playful")
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "stems", "scrapbook")
     return canvas.convert("RGB"), W, H
 
 def layout_circle_hero(photos, title, subtitle, pal):
@@ -785,8 +930,7 @@ def layout_circle_hero(photos, title, subtitle, pal):
     W, H = 1080, 1350
     canvas = Image.new("RGBA", (W,H), pal["bg"]+(255,))
     draw   = ImageDraw.Draw(canvas)
-    draw.ellipse([W-240,-100,W+80,200], fill=(*pal["c3"],40))
-    draw.ellipse([-80,H-200,180,H+60],  fill=(*pal["c5"],40))
+    draw_visual_system_background(draw, "floral", pal, W, H)
     fonts = get_fonts()
     draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts, "floral")
     PAD, TOP, BOT = 20, 168, H-65
@@ -816,10 +960,9 @@ def layout_grid(photos, title, subtitle, pal):
     W, H = 1080, 1350
     canvas = Image.new("RGBA", (W,H), pal["bg"]+(255,))
     draw   = ImageDraw.Draw(canvas)
-    draw.ellipse([W-200,-80,W+60,180], fill=(*pal["c2"],40))
-    draw.ellipse([-60,H-200,180,H+60], fill=(*pal["c1"],40))
+    draw_visual_system_background(draw, "notebook", pal, W, H)
     fonts = get_fonts()
-    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts, "minimal")
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts, "notebook")
     PAD, TOP, BOT = 16, 168, H-65
     AREA  = BOT-TOP
     n     = min(len(photos), 6)
@@ -833,7 +976,7 @@ def layout_grid(photos, title, subtitle, pal):
         x   = PAD+col*(cw+PAD)
         y   = TOP+PAD+row*(ch+PAD)
         place_rect(canvas, photo, x, y, cw, ch, r=22)
-    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal", "minimal")
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal", "notebook")
     return canvas.convert("RGB"), W, H
 
 LAYOUTS = {
@@ -1231,14 +1374,25 @@ def coerce_string_list(value: object, max_items: int=4) -> List[str]:
             break
     return items
 
-def normalize_decor_family(value: object, fallback: str="auto") -> str:
+def normalize_visual_system(value: object, fallback: str="auto") -> str:
     raw = str(value or "").strip().lower()
-    return raw if raw in DECOR_FAMILIES else fallback
+    if raw in VISUAL_SYSTEMS:
+        return raw
+    return VISUAL_SYSTEM_ALIASES.get(raw, fallback)
 
-def infer_decor_family(template: object) -> str:
+def normalize_decor_family(value: object, fallback: str="auto") -> str:
+    return normalize_visual_system(value, fallback)
+
+def infer_visual_system(template: object) -> str:
     if not isinstance(template, dict):
         return "auto"
-    explicit = normalize_decor_family(template.get("decor_family") or template.get("style_family") or "", "")
+    explicit = normalize_visual_system(
+        template.get("visual_system")
+        or template.get("decor_family")
+        or template.get("style_family")
+        or "",
+        "",
+    )
     if explicit:
         return explicit
     decorations = template.get("decorations", []) if isinstance(template.get("decorations"), list) else []
@@ -1246,7 +1400,7 @@ def infer_decor_family(template: object) -> str:
     if "stem_flower" in deco_types or "flower" in deco_types:
         return "floral"
     if "dots" in deco_types and "wavy_line" in deco_types:
-        return "travel"
+        return "route"
     if "dots" in deco_types:
         return "confetti"
     text_blob = normalize_text_key(" ".join([
@@ -1260,13 +1414,18 @@ def infer_decor_family(template: object) -> str:
         return "travel"
     if any(token in text_blob for token in ("cumple", "fiesta", "celebr", "brindis", "baile", "reunion")):
         return "confetti"
-    if any(token in text_blob for token in ("minimal", "editor", "sereno", "geometr", "limpio", "aire")):
+    if any(token in text_blob for token in ("minimal", "sereno", "geometr", "limpio", "aire")):
         return "minimal"
+    if any(token in text_blob for token in ("editor", "magazine", "portada", "collage")):
+        return "editorial"
     if any(token in text_blob for token in ("hogar", "cocina", "mesa", "casa", "familia")):
-        return "ribbon"
+        return "scrapbook"
     if any(token in text_blob for token in ("retrato", "mirada", "perfil")):
-        return "minimal"
-    return "playful"
+        return "editorial"
+    return "editorial"
+
+def infer_decor_family(template: object) -> str:
+    return infer_visual_system(template)
 
 def is_generic_title(title: str) -> bool:
     normalized = normalize_text_key(title)
@@ -1318,11 +1477,11 @@ def recent_collage_context(recent_daily_decisions: Optional[List[dict]]) -> str:
         template_id = str(item.get("template_id") or "").strip()
         template_suffix = f", plantilla={template_id}" if template_id else ""
         when = item.get("target_date") or item.get("target_month") or "?"
-        decor_family = normalize_decor_family(item.get("decor_family") or "", "")
-        decor_suffix = f", estilo={decor_family}" if decor_family else ""
+        visual_system = normalize_visual_system(item.get("visual_system") or item.get("decor_family") or "", "")
+        visual_suffix = f", estilo={visual_system}" if visual_system else ""
         lines.append(
             f"- {when}: layout={item.get('layout', '?')}, "
-            f"paleta={item.get('palette', '?')}, render={render_mode}{template_suffix}{decor_suffix}, "
+            f"paleta={item.get('palette', '?')}, render={render_mode}{template_suffix}{visual_suffix}, "
             f"título=\"{item.get('title', '')}\""
         )
     return "\n".join(lines)
@@ -1408,7 +1567,7 @@ Responde SOLO con JSON válido (sin markdown, sin texto fuera del JSON):
   "cells": [
     {{"photo_index": 0, "x": 20, "y": 175, "w": 1040, "h": 420, "radius": 28, "shape": "rect"}}
   ],
-  "decor_family": "floral|travel|confetti|minimal|playful|ribbon",
+  "visual_system": "floral|travel|route|confetti|minimal|ribbon|editorial|postcard|ticket|scrapbook|notebook",
   "header_style": "classic|centered|sidebar|ribbon",
   "footer_style": "classic|minimal|dots_wave|stems",
   "decorations": [
@@ -1428,6 +1587,7 @@ Reglas estrictas:
 - Piensa primero en la historia: vínculo visible, actividad, emoción, edad, celebración o gesto
 - Si el set mezcla tiempos, años o contextos distintos, no lo fuerces a parecer un solo evento; diseña un resumen visual coherente
 - La paleta debe responder al ambiente visual; usa la temporada solo como desempate, no como regla ciega
+- Elige tambien un visual_system cuando diseñes plantilla custom: editorial, postcard, ticket, scrapbook, notebook, route, travel, confetti, ribbon, minimal o floral
 - NO elijas grid solo por cantidad; si una o dos fotos dominan, usa un layout editorial y deja esas fotos al inicio de photo_order
 - Evita una grilla uniforme 2x3 salvo que sea claramente la unica composicion que funciona
 - Si hay más fotos de las que el layout necesita, photo_order debe poner primero las que sí se usarán
@@ -1443,7 +1603,7 @@ Reglas estrictas:
 - title_options: 2 alternativas cortas y específicas
 - Si puedes diseñar una composición específica, devuelve también cells/decorations/background_color
 - Si defines plantilla custom, también puedes elegir header_style/footer_style para que el look cambie de verdad
-- decor_family define el lenguaje decorativo general; no uses flores por costumbre
+- visual_system define el lenguaje visual general; no uses flores por costumbre
 - Si no estás seguro del diseño custom, devuelve "cells": [] y usa solo layout como fallback
 - Cada celda debe estar dentro del canvas 1080x1350, con y>=165, y+h<=1280, w>=80, h>=80
 - Las celdas NO deben solaparse y deja al menos 16 px entre ellas
@@ -1544,8 +1704,8 @@ def template_style_signature(template: object) -> str:
     footer = template_footer_variant(template, int(template.get("_usable_cells") or 0))
     primary = template_primary_layout(template)
     palette = normalize_palette_name(template.get("palette_name") or template.get("palette") or "")
-    decor_family = infer_decor_family(template)
-    return "|".join([primary, palette, header, footer, decor_family])
+    visual_system = infer_visual_system(template)
+    return "|".join([primary, palette, header, footer, visual_system])
 
 def template_layout_candidates(template: object) -> List[str]:
     if not isinstance(template, dict):
@@ -1717,7 +1877,8 @@ def build_render_template(template: dict, title: str, palette_name: str, photo_o
     payload = dict(template)
     payload["title"] = title
     payload["palette_name"] = normalize_palette_name(payload.get("palette_name") or palette_name)
-    payload["decor_family"] = infer_decor_family(payload)
+    payload["visual_system"] = infer_visual_system(payload)
+    payload["decor_family"] = payload["visual_system"]
     payload["photo_order"] = list(photo_order)
     payload["layout"] = str(layout_name or payload.get("layout") or "").strip().lower()
     payload["_template_id"] = str(template_id or payload.get("id") or "").strip()
@@ -2474,7 +2635,8 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
         "background_color": (render_template or {}).get("background_color"),
         "header_style": template_header_variant(render_template or {}, len(ordered_paths)) if render_template else "",
         "footer_style": template_footer_variant(render_template or {}, len(ordered_paths)) if render_template else "",
-        "decor_family": infer_decor_family(render_template or decision),
+        "visual_system": infer_visual_system(render_template or decision),
+        "decor_family": infer_visual_system(render_template or decision),
     })
     print(f"  Decisión guardada: {sidecar_path}")
 
@@ -2731,7 +2893,8 @@ def process_month(memories:List[dict], user_id:str, target_date:dt.date,
         "background_color": (render_template or {}).get("background_color"),
         "header_style": template_header_variant(render_template or {}, len(ordered_paths)) if render_template else "",
         "footer_style": template_footer_variant(render_template or {}, len(ordered_paths)) if render_template else "",
-        "decor_family": infer_decor_family(render_template or decision),
+        "visual_system": infer_visual_system(render_template or decision),
+        "decor_family": infer_visual_system(render_template or decision),
     })
     print(f"  Decisión guardada: {sidecar_path}")
 

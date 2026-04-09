@@ -68,7 +68,33 @@ HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 ID_RE = re.compile(r"[^a-z0-9_-]+")
 HEADER_STYLES = {"classic", "centered", "sidebar", "ribbon"}
 FOOTER_STYLES = {"classic", "minimal", "dots_wave", "stems"}
-DECOR_FAMILIES = {"floral", "travel", "confetti", "minimal", "playful", "ribbon"}
+VISUAL_SYSTEMS = {
+    "floral",
+    "travel",
+    "route",
+    "confetti",
+    "minimal",
+    "ribbon",
+    "editorial",
+    "postcard",
+    "ticket",
+    "scrapbook",
+    "notebook",
+}
+VISUAL_SYSTEM_ALIASES = {
+    "playful": "editorial",
+    "travel": "travel",
+    "route": "route",
+    "floral": "floral",
+    "confetti": "confetti",
+    "minimal": "minimal",
+    "ribbon": "ribbon",
+    "editorial": "editorial",
+    "postcard": "postcard",
+    "ticket": "ticket",
+    "scrapbook": "scrapbook",
+    "notebook": "notebook",
+}
 TEMPLATE_BATCH_BRIEFS = [
     ("retratos editoriales", "prioriza retratos, foco humano, headers sobrios, circles o heroes, y evita un look floral obvio."),
     ("viajes y paseo", "piensa en viaje, ruta, playa, paseo o exterior; usa composiciones abiertas, dots, waves y acentos no florales."),
@@ -213,9 +239,11 @@ def normalize_style(value: object, allowed: set[str], fallback: str) -> str:
     return raw if raw in allowed else fallback
 
 
-def normalize_decor_family(value: object, fallback: str="playful") -> str:
+def normalize_decor_family(value: object, fallback: str="editorial") -> str:
     raw = str(value or "").strip().lower()
-    return raw if raw in DECOR_FAMILIES else fallback
+    if raw in VISUAL_SYSTEMS:
+        return raw
+    return VISUAL_SYSTEM_ALIASES.get(raw, fallback)
 
 
 def template_signature(template: dict) -> str:
@@ -232,7 +260,7 @@ def template_signature(template: dict) -> str:
         )
     return "|".join([
         str(template.get("palette_name", "")),
-        str(template.get("decor_family", "")),
+        str(template.get("visual_system", "") or template.get("decor_family", "")),
         str(template.get("header_style", "")),
         str(template.get("footer_style", "")),
         ",".join(template.get("layout_candidates", [])[:2]),
@@ -290,7 +318,12 @@ def validate_template(template: object, index: int, today: str, season: str) -> 
         "min_photos": min_photos,
         "background_color": background_color,
         "palette_name": normalize_palette_name(template.get("palette_name") or template.get("palette") or season),
-        "decor_family": normalize_decor_family(template.get("decor_family") or template.get("style_family") or "playful"),
+        "visual_system": normalize_decor_family(
+            template.get("visual_system") or template.get("decor_family") or template.get("style_family") or "editorial"
+        ),
+        "decor_family": normalize_decor_family(
+            template.get("visual_system") or template.get("decor_family") or template.get("style_family") or "editorial"
+        ),
         "header_style": normalize_style(template.get("header_style"), HEADER_STYLES, "classic"),
         "footer_style": normalize_style(template.get("footer_style"), FOOTER_STYLES, "classic"),
         "cells": [
@@ -327,6 +360,10 @@ editoriales, asimetricas, romanticas, casuales, de retrato, de grupo, de viaje
 y de celebracion. La temporada {season} puede influir en color y decoracion,
 pero no debe volver todas las plantillas iguales.
 
+Quiero variedad de lenguaje visual, no solo de geometria. Mezcla sistemas como:
+editorial, postcard, ticket, scrapbook, notebook, route, travel, confetti, ribbon,
+minimal y floral.
+
 Tanda #{batch_index + 1}: {focus_name or "variedad amplia"}.
 En esta tanda: {focus_note or "mezcla composiciones, moods y decoraciones"}.
 IDs ya usados que NO debes repetir: {blocked or "ninguno"}.
@@ -345,7 +382,7 @@ Devuelve SOLO un JSON array, sin markdown:
     "min_photos": 2,
     "background_color": "#F8F2EA",
     "palette_name": "primavera|verano|otono|invierno|default",
-    "decor_family": "floral|travel|confetti|minimal|playful|ribbon",
+    "visual_system": "floral|travel|route|confetti|minimal|ribbon|editorial|postcard|ticket|scrapbook|notebook",
     "header_style": "classic|centered|sidebar|ribbon",
     "footer_style": "classic|minimal|dots_wave|stems",
     "cells": [
@@ -371,7 +408,7 @@ Reglas:
 - Mezcla estilos: featured, columns, polaroid, circle_hero, grid, story, pero tambien
   composiciones originales dentro de esas familias.
 - Cambia header_style y footer_style entre plantillas para que no se vea siempre la misma portada.
-- Cambia tambien decor_family; no hagas toda la tanda floral.
+- Cambia tambien visual_system; no hagas toda la tanda floral ni todo con el mismo lenguaje.
 - No hagas toda la tanda floral ni toda la tanda con paleta {season}; reparte familias visuales y cromáticas.
 - Al menos la mitad de esta tanda debe usar decoraciones no florales o incluso cero decoraciones.
 - layout_candidates debe listar 1-3 layouts hardcodeados que mas se parecen.
