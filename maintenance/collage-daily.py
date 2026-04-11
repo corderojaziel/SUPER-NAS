@@ -2262,6 +2262,21 @@ def ensure_collage_first(api_base:str, headers:dict, memory_id:str, asset_id:str
         if updated_ids and updated_ids[0] == asset_id:
             print(f"  OK: collage insertado como primera foto en memory {memory_id}")
             return True
+    elif cp in (404, 405):
+        # En Immich recientes el endpoint PATCH de reorder puede no existir.
+        # Si el collage ya está dentro de la memory, consideramos éxito operativo.
+        if asset_id in current_ids:
+            pos = current_ids.index(asset_id) + 1
+            print(
+                f"  INFO: servidor sin PATCH reorder (status={cp}); "
+                f"collage quedó agregado en posición {pos} en memory {memory_id}"
+            )
+            return True
+        print(
+            f"  WARN: servidor sin PATCH reorder (status={cp}) y no se detecta collage "
+            f"en memory {memory_id}",
+            file=sys.stderr,
+        )
     else:
         print(f"  WARN: el servidor no aceptó PATCH reorden (status={cp}); probando reconstrucción", file=sys.stderr)
 
@@ -2272,7 +2287,20 @@ def ensure_collage_first(api_base:str, headers:dict, memory_id:str, asset_id:str
             print(f"  OK: collage insertado como primera foto en memory {memory_id}")
             return True
 
-    print(f"  WARN: collage agregado a memory {memory_id}, pero no quedó como primera foto", file=sys.stderr)
+    final_state = fetch_memory(api_base, headers, memory_id)
+    final_ids = memory_asset_ids(final_state or {})
+    if asset_id in final_ids:
+        pos = final_ids.index(asset_id) + 1
+        print(
+            f"  WARN: collage agregado a memory {memory_id}, "
+            f"pero quedó en posición {pos}; se conserva como éxito operativo"
+        )
+        return True
+
+    print(
+        f"  WARN: collage no quedó asociado a memory {memory_id} tras intentos de reorder",
+        file=sys.stderr,
+    )
     return False
 
 # ── HTTP / DB helpers ──────────────────────────────────────────────────────

@@ -1707,7 +1707,7 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 10 0 * * * /usr/local/bin/memories-ensure.py --timezone America/Mexico_City
 
 # A las 00:15 genera el collage visual después de asegurar la memory.
-15 0 * * * /usr/local/bin/collage-daily.py --timezone America/Mexico_City
+15 0 * * * /usr/local/bin/collage-daily.py --timezone America/Mexico_City --allow-fallback
 
 # Los domingos a las 03:00 refresca plantillas para variar el diseño.
 0 3 * * 0 /usr/local/bin/collage-template-refresh.py --timezone America/Mexico_City --count 50
