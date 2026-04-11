@@ -10,6 +10,7 @@ Flujo:
   4. Sube a Immich y lo inserta como primera foto del recuerdo
 
 Layouts disponibles (Gemini elige el más apropiado):
+  - editorial_v2: layout editorial adaptable (1-6 fotos, cobertura alta)
   - columns     : 2 fotos lado a lado 40/60
   - story       : 3 fotos apiladas verticales (1080x1920)
   - featured    : 1 grande arriba + 2 pequeñas abajo
@@ -68,6 +69,14 @@ TEMPLATE_SAFE_TOP = 165
 TEMPLATE_SAFE_BOTTOM = 1280
 TEMPLATE_MIN_SIZE = 80
 TEMPLATE_CELL_GAP = 16
+COLLAGE_ENGINE_VERSION = os.environ.get("COLLAGE_ENGINE_VERSION", "v2")
+TEMPLATE_MIN_COVERAGE = max(0.35, min(0.90, float(os.environ.get("COLLAGE_TEMPLATE_MIN_COVERAGE", "0.56"))))
+TEMPLATE_MIN_HERO_RATIO = max(0.06, min(0.65, float(os.environ.get("COLLAGE_TEMPLATE_MIN_HERO_RATIO", "0.16"))))
+TEMPLATE_MAX_FIRST_CELL_Y = max(
+    TEMPLATE_SAFE_TOP,
+    min(TEMPLATE_SAFE_BOTTOM - 120, int(os.environ.get("COLLAGE_TEMPLATE_MAX_FIRST_CELL_Y", "320"))),
+)
+TEMPLATE_MIN_RENDER_CELLS = max(1, int(os.environ.get("COLLAGE_TEMPLATE_MIN_RENDER_CELLS", "2")))
 PREVIEW_FACE_CACHE: Dict[str, int] = {}
 PREVIEW_FACE_BOX_CACHE: Dict[str, List[Tuple[float, float, float, float]]] = {}
 PREVIEW_FOCUS_CACHE: Dict[str, Tuple[float, float]] = {}
@@ -134,6 +143,7 @@ VISUAL_SYSTEM_ALIASES = {
 }
 
 LAYOUT_MIN_PHOTOS = {
+    "editorial_v2": 1,
     "columns": 2,
     "story": 3,
     "featured": 1,
@@ -718,6 +728,21 @@ def usable_template_cell_count(template: object, photo_count: int) -> int:
         count += 1
     return count
 
+def template_coverage_stats(cells: List[dict]) -> Tuple[float, float, int]:
+    if not cells:
+        return 0.0, 0.0, TEMPLATE_SAFE_BOTTOM
+    areas = []
+    first_y = TEMPLATE_SAFE_BOTTOM
+    for cell in cells:
+        x1, y1, x2, y2 = cell["rect"]
+        areas.append(max(0, x2 - x1) * max(0, y2 - y1))
+        first_y = min(first_y, y1)
+    usable_canvas = 1080 * max(1, TEMPLATE_SAFE_BOTTOM - TEMPLATE_SAFE_TOP)
+    total_area = sum(areas)
+    coverage = total_area / usable_canvas
+    hero_ratio = (max(areas) / usable_canvas) if areas else 0.0
+    return coverage, hero_ratio, first_y
+
 def render_from_template(template: dict, photos: List[str], title: str, subtitle: str, pal: dict) -> Tuple[Image.Image, int, int]:
     """Ejecuta una plantilla JSON segura sobre las fotos ya ordenadas."""
     W, H = 1080, 1350
@@ -745,33 +770,29 @@ def render_from_template(template: dict, photos: List[str], title: str, subtitle
 
     draw_template_header(canvas, draw, title, subtitle, pal, W, header_variant, fonts, decor_family)
 
-    cells = template.get("cells", [])
-    if not isinstance(cells, list) or not cells:
+    cells = template_valid_cells(template, len(photos))
+    if not cells:
         raise ValueError("plantilla sin celdas")
+    required = min(
+        max(1, TEMPLATE_MIN_RENDER_CELLS),
+        len(photos),
+        max(1, usable_template_cell_count(template, len(photos))),
+    )
+    quality_ok, quality_reason = template_quality_gate(template, len(photos), required_cells=required)
+    if not quality_ok:
+        raise ValueError(f"plantilla rechazada por calidad ({quality_reason})")
 
     placed = 0
-    used_rects: List[Tuple[int, int, int, int]] = []
-    used_photos = set()
     bottom = TEMPLATE_SAFE_TOP
-    for raw_cell in cells:
-        cell = parse_template_cell(raw_cell, len(photos))
-        if not cell:
-            continue
-        if cell["photo_index"] in used_photos:
-            continue
-        if any(template_rects_overlap(cell["rect"], existing) for existing in used_rects):
-            continue
+    for cell in cells:
         if cell["shape"] == "circle":
             radius = min(cell["w"], cell["h"]) // 2
             place_circle(canvas, photos[cell["photo_index"]], cell["x"] + radius, cell["y"] + radius, radius)
         else:
             place_rect(canvas, photos[cell["photo_index"]], cell["x"], cell["y"], cell["w"], cell["h"], cell["radius"])
-        used_rects.append(cell["rect"])
-        used_photos.add(cell["photo_index"])
         placed += 1
         bottom = max(bottom, cell["rect"][3])
 
-    required = min(2, len(photos), usable_template_cell_count(template, len(photos)))
     if placed < max(1, required):
         raise ValueError(f"plantilla colocó muy pocas fotos ({placed})")
 
@@ -828,6 +849,81 @@ def render_from_template(template: dict, photos: List[str], title: str, subtitle
     return canvas.convert("RGB"), W, H
 
 # ── Layouts ────────────────────────────────────────────────────────────────
+def layout_editorial_v2(photos, title, subtitle, pal):
+    """Layout editorial adaptable 1-6 fotos con alta cobertura visual."""
+    W, H = 1080, 1350
+    canvas = Image.new("RGBA", (W, H), pal["bg"] + (255,))
+    draw = ImageDraw.Draw(canvas)
+    draw_visual_system_background(draw, "editorial", pal, W, H)
+    fonts = get_fonts()
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts, "editorial")
+
+    PAD, TOP, BOT = 20, 168, H - 65
+    AREA_H = BOT - TOP
+    n = max(1, min(len(photos), 6))
+    remaining = max(0, len(photos) - n)
+
+    if n == 1:
+        place_rect(canvas, photos[0], PAD, TOP + 8, W - PAD * 2, AREA_H - 16, r=30)
+    elif n == 2:
+        cw = (W - PAD * 3) // 2
+        place_rect(canvas, photos[0], PAD, TOP + 8, cw, AREA_H - 16, r=26)
+        place_rect(canvas, photos[1], PAD * 2 + cw, TOP + 8, cw, AREA_H - 16, r=26)
+    elif n == 3:
+        hero_w = int((W - PAD * 3) * 0.60)
+        side_w = (W - PAD * 3) - hero_w
+        gap = PAD
+        side_h = (AREA_H - gap - 16) // 2
+        place_rect(canvas, photos[0], PAD, TOP + 8, hero_w, AREA_H - 16, r=28)
+        x2 = PAD * 2 + hero_w
+        place_rect(canvas, photos[1], x2, TOP + 8, side_w, side_h, r=24)
+        place_rect(canvas, photos[2], x2, TOP + 8 + side_h + gap, side_w, side_h, r=24)
+    elif n == 4:
+        cw = (W - PAD * 3) // 2
+        ch = (AREA_H - PAD - 16) // 2
+        for i in range(4):
+            row = i // 2
+            col = i % 2
+            x = PAD + col * (cw + PAD)
+            y = TOP + 8 + row * (ch + PAD)
+            place_rect(canvas, photos[i], x, y, cw, ch, r=22)
+    elif n == 5:
+        hero_h = int((AREA_H - PAD - 16) * 0.52)
+        lower_h = AREA_H - hero_h - PAD - 16
+        cw = (W - PAD * 3) // 2
+        ch = (lower_h - PAD) // 2
+        place_rect(canvas, photos[0], PAD, TOP + 8, W - PAD * 2, hero_h, r=28)
+        for i in range(4):
+            row = i // 2
+            col = i % 2
+            x = PAD + col * (cw + PAD)
+            y = TOP + 8 + hero_h + PAD + row * (ch + PAD)
+            place_rect(canvas, photos[i + 1], x, y, cw, ch, r=20)
+    else:
+        cols, rows = 3, 2
+        cw = (W - PAD * (cols + 1)) // cols
+        ch = (AREA_H - PAD * (rows - 1) - 16) // rows
+        for i in range(6):
+            row = i // cols
+            col = i % cols
+            x = PAD + col * (cw + PAD)
+            y = TOP + 8 + row * (ch + PAD)
+            place_rect(canvas, photos[i], x, y, cw, ch, r=18)
+
+    if remaining > 0:
+        badge = f"+{remaining}"
+        fb = get_fonts(38, 20)[0]
+        box = draw.textbbox((0, 0), badge, font=fb)
+        bw = (box[2] - box[0]) + 28
+        bh = (box[3] - box[1]) + 18
+        bx = W - PAD - bw
+        by = BOT - bh - 10
+        draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=14, fill=(20, 20, 24, 170))
+        draw.text((bx + 14, by + 8), badge, font=fb, fill=(255, 255, 255))
+
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal", "editorial")
+    return canvas.convert("RGB"), W, H
+
 def layout_columns(photos, title, subtitle, pal):
     """2 fotos lado a lado 40/60"""
     W, H = 1080, 1350
@@ -980,6 +1076,7 @@ def layout_grid(photos, title, subtitle, pal):
     return canvas.convert("RGB"), W, H
 
 LAYOUTS = {
+    "editorial_v2": layout_editorial_v2,
     "columns":     layout_columns,
     "story":       layout_story,
     "featured":    layout_featured,
@@ -1182,15 +1279,19 @@ def fallback_decision(n_photos:int, month:int, memory_key:str="", photo_paths:Op
     seed = f"{memory_key}|{month}|{n_photos}|{portrait}|{landscape}|{square}"
 
     if n_photos <= 1:
-        candidates = ["featured"]
+        candidates = ["editorial_v2", "featured"]
     elif n_photos == 2:
-        candidates = ["columns", "polaroid"]
+        candidates = ["editorial_v2", "columns", "polaroid"]
     elif n_photos == 3:
-        candidates = ["story", "circle_hero", "featured", "polaroid"] if portrait >= landscape else ["featured", "polaroid", "story", "circle_hero"]
+        candidates = (
+            ["editorial_v2", "story", "circle_hero", "featured", "polaroid"]
+            if portrait >= landscape
+            else ["editorial_v2", "featured", "polaroid", "story", "circle_hero"]
+        )
     elif n_photos == 4:
-        candidates = ["featured", "grid", "polaroid", "circle_hero"]
+        candidates = ["editorial_v2", "featured", "grid", "polaroid", "circle_hero"]
     else:
-        candidates = ["grid", "polaroid", "featured", "story"]
+        candidates = ["editorial_v2", "grid", "polaroid", "featured", "story"]
 
     blocked = {layout for layout in (avoid_layouts or []) if layout in candidates}
     filtered = [layout for layout in candidates if layout not in blocked]
@@ -1527,6 +1628,7 @@ def ask_gemini(api_key:str, photo_paths:List[str], month:int, memory_key:str="",
     """Manda las fotos a Gemini y él decide todo. Devuelve dict con decisiones."""
     ensure_runtime(f"consultando Gemini para {alert_context or memory_key or 'collage'}")
     layouts_desc = (
+        "editorial_v2: layout adaptable de alta cobertura (1-6 fotos); úsalo como opción por defecto cuando quieras evitar espacios vacíos y dar peso equilibrado. "
         "columns: 2 fotos lado a lado de igual peso; úsalo cuando hay exactamente 2 fotos fuertes sin una dominante clara. "
         "story: 3 fotos apiladas en vertical; úsalo cuando hay secuencia de tiempo, lugar o progresión narrativa. "
         "featured: 1 foto hero grande + 2 pequeñas; SOLO cuando hay UNA foto claramente superior a todas las demás y las otras complementan, no cuando todo tiene peso similar. "
@@ -1607,6 +1709,8 @@ Reglas estrictas:
 - Si no estás seguro del diseño custom, devuelve "cells": [] y usa solo layout como fallback
 - Cada celda debe estar dentro del canvas 1080x1350, con y>=165, y+h<=1280, w>=80, h>=80
 - Las celdas NO deben solaparse y deja al menos 16 px entre ellas
+- Evita composiciones con mucho vacío: las celdas deben cubrir al menos ~55% del área útil (entre y=165 y y=1280)
+- La primera celda debe comenzar relativamente arriba (y<=320) para no dejar media pantalla vacía
 - Usa "circle" solo para retratos claros; lo demás debe ser "rect"
 - layout sigue siendo obligatorio y debe ser el fallback hardcodeado más cercano a tu diseño
 - columns necesita al menos 2 fotos
@@ -1615,6 +1719,7 @@ Reglas estrictas:
 - polaroid necesita al menos 2 fotos
 - circle_hero necesita al menos 3 fotos
 - grid necesita al menos 4 fotos
+- editorial_v2 necesita al menos 1 foto
 - Si el layout ideal no tiene suficientes fotos, elige el siguiente apropiado
 - El título debe ser emotivo y específico al contenido visual"""
     })
@@ -1743,13 +1848,34 @@ def template_valid_cells(template: object, photo_count: int) -> List[dict]:
         valid.append(cell)
     return valid
 
+def template_quality_gate(template: object, photo_count: int, required_cells: int=1) -> Tuple[bool, str]:
+    cells = template_valid_cells(template, photo_count)
+    if len(cells) < max(1, required_cells):
+        return False, f"celdas_insuficientes:{len(cells)}<{required_cells}"
+    coverage, hero_ratio, first_y = template_coverage_stats(cells)
+    primary = template_primary_layout(template)
+    if photo_count >= 2 and coverage < TEMPLATE_MIN_COVERAGE:
+        return False, f"cobertura_baja:{coverage:.2f}"
+    if first_y > TEMPLATE_MAX_FIRST_CELL_Y:
+        return False, f"inicio_muy_bajo:y={first_y}"
+    requires_hero = primary in {"featured", "story", "columns", "circle_hero", "polaroid", "editorial_v2", ""}
+    if requires_hero and len(cells) >= 3 and hero_ratio < TEMPLATE_MIN_HERO_RATIO:
+        return False, f"hero_bajo:{hero_ratio:.2f}"
+    return True, "ok"
+
 def template_visual_score(template: object, photo_count: int) -> int:
     cells = template_valid_cells(template, photo_count)
     if not cells:
         return -100
+    quality_ok, quality_reason = template_quality_gate(template, photo_count, required_cells=1)
+    if not quality_ok:
+        if quality_reason.startswith("cobertura_baja") or quality_reason.startswith("inicio_muy_bajo"):
+            return -120
+        return -105
     widths = {round(cell["w"] / 40) for cell in cells}
     heights = {round(cell["h"] / 40) for cell in cells}
     shapes = {cell["shape"] for cell in cells}
+    coverage, hero_ratio, first_y = template_coverage_stats(cells)
     score = 0
     if len(widths) > 1:
         score += 3
@@ -1764,6 +1890,12 @@ def template_visual_score(template: object, photo_count: int) -> int:
     if len(template.get("decorations", [])) >= 2:
         score += 1
     if template_primary_layout(template) and template_primary_layout(template) != "grid":
+        score += 2
+    if coverage >= TEMPLATE_MIN_COVERAGE:
+        score += 5
+    if hero_ratio >= TEMPLATE_MIN_HERO_RATIO:
+        score += 2
+    if first_y <= TEMPLATE_MAX_FIRST_CELL_Y:
         score += 2
     return score
 
@@ -1859,6 +1991,7 @@ def desired_template_cells(layout_name: str, photo_count: int, scope_kind: str="
         return 1
     layout = str(layout_name or "").strip().lower()
     base = {
+        "editorial_v2": min(6, photo_count),
         "columns": 2,
         "story": 3,
         "featured": 3 if photo_count >= 3 else photo_count,
@@ -1912,6 +2045,8 @@ def load_template_fallback(n_photos: int, template_seed: str, avoid_ids: Optiona
         chosen["_template_path"] = str(path)
         chosen["_usable_cells"] = usable
         score = score_render_template(chosen, n_photos, preferred_palette, preferred_layouts, recent_decisions)
+        if score < 0:
+            continue
         candidates.append((score, template_id, chosen))
     if not candidates:
         return None
@@ -1932,10 +2067,20 @@ def choose_render_template(decision: dict, title: str, palette_name: str, photo_
     required_cells = desired_template_cells(layout_name, photo_count, scope_kind)
     preferred_layouts = [layout_name] + layout_candidates_from_decision(decision)
     wanted_layouts = [layout for layout in preferred_layouts if layout in LAYOUTS]
+    rejected_notes: List[str] = []
+
+    def register_candidate(candidate: dict) -> None:
+        quality_ok, quality_reason = template_quality_gate(candidate, photo_count, required_cells=required_cells)
+        if not quality_ok:
+            rejected_notes.append(
+                f"{candidate.get('_template_source', 'template')}:{candidate.get('_template_id', '?')}={quality_reason}"
+            )
+            return
+        candidates.append(candidate)
 
     inline_usable = usable_template_cell_count(decision, photo_count)
     if inline_usable >= required_cells:
-        candidates.append(build_render_template(
+        register_candidate(build_render_template(
             decision,
             title,
             decision_palette_name(decision) or palette_name,
@@ -1956,7 +2101,7 @@ def choose_render_template(decision: dict, title: str, palette_name: str, photo_
     if bank_template:
         bank_usable = usable_template_cell_count(bank_template, photo_count)
         if bank_usable >= required_cells:
-            candidates.append(build_render_template(
+            register_candidate(build_render_template(
                 bank_template,
                 title,
                 bank_template.get("palette_name") or palette_name,
@@ -1965,6 +2110,8 @@ def choose_render_template(decision: dict, title: str, palette_name: str, photo_
                 template_source=str(bank_template.get("_template_source") or "bank"),
                 layout_name=str(bank_template.get("layout") or ""),
             ))
+    if rejected_notes:
+        print(f"  INFO: plantillas descartadas por calidad: {'; '.join(rejected_notes[:4])}")
     if not candidates:
         return None
     ranked: List[Tuple[int, str, dict]] = []
@@ -2970,6 +3117,11 @@ def main() -> int:
     print(f"INFO fecha={target_date} mes={MESES[target_date.month]}")
     print(f"INFO Gemini requerido={'no' if args.allow_fallback else 'sí'} modelos={','.join(GEMINI_MODELS)}")
     print(f"INFO runtime límite={args.max_runtime_sec}s retención={COLLAGE_RETENTION_DAYS}d")
+    print(
+        "INFO collage-engine="
+        f"{COLLAGE_ENGINE_VERSION} template(min_cov={TEMPLATE_MIN_COVERAGE:.2f}, "
+        f"hero>={TEMPLATE_MIN_HERO_RATIO:.2f}, first_y<={TEMPLATE_MAX_FIRST_CELL_Y})"
+    )
 
     try:
         Path(COLLAGE_DIR).mkdir(parents=True, exist_ok=True)
