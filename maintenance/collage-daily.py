@@ -11,6 +11,7 @@ Flujo:
 
 Layouts disponibles (Gemini elige el más apropiado):
   - editorial_v2: layout editorial adaptable (1-6 fotos, cobertura alta)
+  - cards_duo   : dos tarjetas verticales con estilo scrapbook
   - columns     : 2 fotos lado a lado 40/60
   - story       : 3 fotos apiladas verticales (1080x1920)
   - featured    : 1 grande arriba + 2 pequeñas abajo
@@ -27,7 +28,7 @@ Uso:
 
 from __future__ import annotations
 
-import argparse, base64, datetime as dt, hashlib, json, math
+import argparse, base64, colorsys, datetime as dt, hashlib, json, math
 import os, shutil, subprocess, sys, time, unicodedata, urllib.error, urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -77,6 +78,7 @@ TEMPLATE_MAX_FIRST_CELL_Y = max(
     min(TEMPLATE_SAFE_BOTTOM - 120, int(os.environ.get("COLLAGE_TEMPLATE_MAX_FIRST_CELL_Y", "320"))),
 )
 TEMPLATE_MIN_RENDER_CELLS = max(1, int(os.environ.get("COLLAGE_TEMPLATE_MIN_RENDER_CELLS", "2")))
+COLLAGE_PREFERRED_LAYOUT = str(os.environ.get("COLLAGE_PREFERRED_LAYOUT", "")).strip().lower()
 PREVIEW_FACE_CACHE: Dict[str, int] = {}
 PREVIEW_FACE_BOX_CACHE: Dict[str, List[Tuple[float, float, float, float]]] = {}
 PREVIEW_FOCUS_CACHE: Dict[str, Tuple[float, float]] = {}
@@ -144,6 +146,7 @@ VISUAL_SYSTEM_ALIASES = {
 
 LAYOUT_MIN_PHOTOS = {
     "editorial_v2": 1,
+    "cards_duo": 2,
     "columns": 2,
     "story": 3,
     "featured": 1,
@@ -168,6 +171,89 @@ def circle_mask(size: Tuple) -> Image.Image:
 
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+def clamp_rgb(color: Tuple[int, int, int]) -> Tuple[int, int, int]:
+    return tuple(max(0, min(255, int(round(c)))) for c in color)  # type: ignore[return-value]
+
+def blend_rgb(a: Tuple[int, int, int], b: Tuple[int, int, int], ratio: float) -> Tuple[int, int, int]:
+    r = clamp(ratio, 0.0, 1.0)
+    return clamp_rgb((
+        a[0] * (1.0 - r) + b[0] * r,
+        a[1] * (1.0 - r) + b[1] * r,
+        a[2] * (1.0 - r) + b[2] * r,
+    ))
+
+def adjust_hls(color: Tuple[int, int, int], sat_mul: float=1.0, light_mul: float=1.0) -> Tuple[int, int, int]:
+    rf, gf, bf = [c / 255.0 for c in color]
+    h, l, s = colorsys.rgb_to_hls(rf, gf, bf)
+    s = clamp(s * sat_mul, 0.0, 1.0)
+    l = clamp(l * light_mul, 0.0, 1.0)
+    rr, gg, bb = colorsys.hls_to_rgb(h, l, s)
+    return clamp_rgb((rr * 255, gg * 255, bb * 255))
+
+def dominant_colors_from_photo(path: str, max_colors: int=6) -> List[Tuple[Tuple[int, int, int], int]]:
+    try:
+        img = open_img(path)
+        img.thumbnail((128, 128), Image.LANCZOS)
+        pal_img = img.convert("P", palette=Image.ADAPTIVE, colors=max_colors)
+        palette = pal_img.getpalette() or []
+        raw = sorted(pal_img.getcolors() or [], reverse=True)
+    except Exception:
+        return []
+    colors: List[Tuple[Tuple[int, int, int], int]] = []
+    for count, idx in raw:
+        pos = idx * 3
+        if pos + 2 >= len(palette):
+            continue
+        rgb = (palette[pos], palette[pos + 1], palette[pos + 2])
+        rf, gf, bf = [c / 255.0 for c in rgb]
+        _, l, s = colorsys.rgb_to_hls(rf, gf, bf)
+        # Evita colores "lavados" extremos para acentos.
+        if s < 0.15 or l < 0.12 or l > 0.88:
+            continue
+        colors.append((rgb, int(count)))
+    return colors
+
+def hue_distance(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> float:
+    ah = colorsys.rgb_to_hls(a[0] / 255.0, a[1] / 255.0, a[2] / 255.0)[0]
+    bh = colorsys.rgb_to_hls(b[0] / 255.0, b[1] / 255.0, b[2] / 255.0)[0]
+    d = abs(ah - bh)
+    return min(d, 1.0 - d)
+
+def adaptive_palette_from_photos(base: dict, photo_paths: List[str]) -> dict:
+    ranked: List[Tuple[Tuple[int, int, int], int]] = []
+    for path in photo_paths[:6]:
+        for rgb, weight in dominant_colors_from_photo(path):
+            ranked.append((rgb, weight))
+    if not ranked:
+        return dict(base)
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    picked: List[Tuple[int, int, int]] = []
+    for rgb, _weight in ranked:
+        if any(hue_distance(rgb, prev) < 0.08 for prev in picked):
+            continue
+        picked.append(rgb)
+        if len(picked) >= 4:
+            break
+    if not picked:
+        return dict(base)
+
+    c1 = adjust_hls(picked[0], sat_mul=1.20, light_mul=0.95)
+    c2 = adjust_hls(picked[1] if len(picked) > 1 else picked[0], sat_mul=1.05, light_mul=0.90)
+    c3 = adjust_hls(picked[2] if len(picked) > 2 else picked[0], sat_mul=1.10, light_mul=0.88)
+    warm = (248, 204, 94)
+    c4_seed = picked[3] if len(picked) > 3 else blend_rgb(c1, warm, 0.45)
+    c4 = adjust_hls(c4_seed, sat_mul=0.95, light_mul=1.10)
+    c5 = adjust_hls(blend_rgb(c1, c2, 0.50), sat_mul=0.90, light_mul=1.15)
+    bg_tint = blend_rgb(base.get("bg", (250, 246, 240)), blend_rgb(c1, (255, 255, 255), 0.65), 0.30)
+    return {
+        "bg": bg_tint,
+        "c1": c1,
+        "c2": c2,
+        "c3": c3,
+        "c4": c4,
+        "c5": c5,
+    }
 
 def detect_visual_focus(img: Image.Image) -> Tuple[float, float]:
     gray = img.convert("L").resize((96, 96), Image.LANCZOS)
@@ -728,20 +814,22 @@ def usable_template_cell_count(template: object, photo_count: int) -> int:
         count += 1
     return count
 
-def template_coverage_stats(cells: List[dict]) -> Tuple[float, float, int]:
+def template_coverage_stats(cells: List[dict]) -> Tuple[float, float, int, int]:
     if not cells:
-        return 0.0, 0.0, TEMPLATE_SAFE_BOTTOM
+        return 0.0, 0.0, TEMPLATE_SAFE_BOTTOM, TEMPLATE_SAFE_TOP
     areas = []
     first_y = TEMPLATE_SAFE_BOTTOM
+    max_bottom = TEMPLATE_SAFE_TOP
     for cell in cells:
         x1, y1, x2, y2 = cell["rect"]
         areas.append(max(0, x2 - x1) * max(0, y2 - y1))
         first_y = min(first_y, y1)
+        max_bottom = max(max_bottom, y2)
     usable_canvas = 1080 * max(1, TEMPLATE_SAFE_BOTTOM - TEMPLATE_SAFE_TOP)
     total_area = sum(areas)
     coverage = total_area / usable_canvas
     hero_ratio = (max(areas) / usable_canvas) if areas else 0.0
-    return coverage, hero_ratio, first_y
+    return coverage, hero_ratio, first_y, max_bottom
 
 def render_from_template(template: dict, photos: List[str], title: str, subtitle: str, pal: dict) -> Tuple[Image.Image, int, int]:
     """Ejecuta una plantilla JSON segura sobre las fotos ya ordenadas."""
@@ -924,6 +1012,72 @@ def layout_editorial_v2(photos, title, subtitle, pal):
     draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal", "editorial")
     return canvas.convert("RGB"), W, H
 
+def layout_cards_duo(photos, title, subtitle, pal):
+    """Dos tarjetas estilo scrapbook con fotos distribuidas y decoraciones."""
+    W, H = 1080, 1350
+    canvas = Image.new("RGBA", (W, H), blend_rgb(pal["bg"], (250, 250, 250), 0.50) + (255,))
+    draw = ImageDraw.Draw(canvas)
+    draw_visual_system_background(draw, "scrapbook", pal, W, H)
+    fonts = get_fonts()
+    draw_template_header(canvas, draw, title, subtitle, pal, W, "centered", fonts, "scrapbook")
+
+    TOP, BOT = 170, H - 65
+    GAP = 24
+    card_w = (W - GAP * 3) // 2
+    card_h = BOT - TOP
+    left_x = GAP
+    right_x = GAP * 2 + card_w
+
+    def draw_card(x: int, y: int, w: int, h: int, tint: Tuple[int, int, int]) -> None:
+        draw.rounded_rectangle([x + 6, y + 8, x + w + 6, y + h + 8], radius=36, fill=(0, 0, 0, 30))
+        draw.rounded_rectangle([x, y, x + w, y + h], radius=34, fill=tint + (255,))
+        draw.rounded_rectangle([x + 2, y + 2, x + w - 2, y + h - 2], radius=32, outline=(255, 255, 255, 180), width=2)
+
+    left_tint = blend_rgb((255, 255, 255), pal["c4"], 0.18)
+    right_tint = blend_rgb((255, 255, 255), pal["c3"], 0.12)
+    draw_card(left_x, TOP, card_w, card_h, left_tint)
+    draw_card(right_x, TOP, card_w, card_h, right_tint)
+
+    slots: List[dict] = [
+        {"shape": "circle", "x": left_x + card_w // 2, "y": TOP + 170, "r": 130},
+        {"shape": "rect", "x": right_x + 30, "y": TOP + 88, "w": card_w - 60, "h": 390, "rad": 42},
+        {"shape": "rect", "x": left_x + 36, "y": TOP + 320, "w": card_w - 72, "h": 170, "rad": 22},
+        {"shape": "rect", "x": right_x + 30, "y": TOP + 520, "w": (card_w - 76) // 2, "h": 330, "rad": 32},
+        {"shape": "rect", "x": right_x + 46 + (card_w - 76) // 2, "y": TOP + 520, "w": (card_w - 76) // 2, "h": 330, "rad": 32},
+        {"shape": "rect", "x": left_x + 28, "y": TOP + 520, "w": card_w - 56, "h": 330, "rad": 28},
+    ]
+
+    usable = photos[:6]
+    for i, photo in enumerate(usable):
+        slot = slots[i]
+        if slot["shape"] == "circle":
+            place_circle(canvas, photo, slot["x"], slot["y"], slot["r"])
+        else:
+            place_rect(canvas, photo, slot["x"], slot["y"], slot["w"], slot["h"], r=slot["rad"])
+
+    # Decoración floral inferior izquierda.
+    base_y = TOP + card_h - 52
+    flower_row(
+        draw,
+        left_x + 46,
+        base_y,
+        n=5,
+        gap=46,
+        colors=[pal["c1"], pal["c5"], pal["c3"], pal["c5"], pal["c1"]],
+        cc=pal["c4"],
+    )
+    stem_flower(draw, left_x + 50, base_y - 8, h=58, sc=pal["c2"], pc=pal["c1"], cc=pal["c4"])
+    stem_flower(draw, left_x + card_w - 52, base_y - 8, h=58, sc=pal["c2"], pc=pal["c3"], cc=pal["c4"])
+
+    # Doodles tipo mapa en tarjeta derecha.
+    for offset in (36, 120, 204, 288):
+        y = TOP + offset
+        wavy_line(draw, right_x + 16, y, right_x + card_w - 16, amp=6, freq=32, color=(30, 30, 34), w=3)
+    dots(draw, right_x + 24, TOP + card_h - 96, cols=8, rows=2, gap=18, color=(36, 36, 40, 130))
+
+    draw_template_footer(canvas, draw, W, H, pal, BOT, "minimal", "scrapbook")
+    return canvas.convert("RGB"), W, H
+
 def layout_columns(photos, title, subtitle, pal):
     """2 fotos lado a lado 40/60"""
     W, H = 1080, 1350
@@ -1077,6 +1231,7 @@ def layout_grid(photos, title, subtitle, pal):
 
 LAYOUTS = {
     "editorial_v2": layout_editorial_v2,
+    "cards_duo":   layout_cards_duo,
     "columns":     layout_columns,
     "story":       layout_story,
     "featured":    layout_featured,
@@ -1281,24 +1436,26 @@ def fallback_decision(n_photos:int, month:int, memory_key:str="", photo_paths:Op
     if n_photos <= 1:
         candidates = ["editorial_v2", "featured"]
     elif n_photos == 2:
-        candidates = ["editorial_v2", "columns", "polaroid"]
+        candidates = ["cards_duo", "editorial_v2", "columns", "polaroid"]
     elif n_photos == 3:
         candidates = (
-            ["editorial_v2", "story", "circle_hero", "featured", "polaroid"]
+            ["cards_duo", "editorial_v2", "story", "circle_hero", "featured", "polaroid"]
             if portrait >= landscape
-            else ["editorial_v2", "featured", "polaroid", "story", "circle_hero"]
+            else ["cards_duo", "editorial_v2", "featured", "polaroid", "story", "circle_hero"]
         )
     elif n_photos == 4:
-        candidates = ["editorial_v2", "featured", "grid", "polaroid", "circle_hero"]
+        candidates = ["cards_duo", "editorial_v2", "featured", "grid", "polaroid", "circle_hero"]
     else:
-        candidates = ["editorial_v2", "grid", "polaroid", "featured", "story"]
+        candidates = ["cards_duo", "editorial_v2", "grid", "polaroid", "featured", "story"]
 
     blocked = {layout for layout in (avoid_layouts or []) if layout in candidates}
     filtered = [layout for layout in candidates if layout not in blocked]
     if filtered:
         candidates = filtered
-
-    layout = choice_from_seed(candidates, seed)
+    if COLLAGE_PREFERRED_LAYOUT in candidates and n_photos >= LAYOUT_MIN_PHOTOS.get(COLLAGE_PREFERRED_LAYOUT, 1):
+        layout = COLLAGE_PREFERRED_LAYOUT
+    else:
+        layout = choice_from_seed(candidates, seed)
     title_template = choice_from_seed(FALLBACK_TITLES, seed + "|title")
     return {
         "layout": layout,
@@ -1629,6 +1786,7 @@ def ask_gemini(api_key:str, photo_paths:List[str], month:int, memory_key:str="",
     ensure_runtime(f"consultando Gemini para {alert_context or memory_key or 'collage'}")
     layouts_desc = (
         "editorial_v2: layout adaptable de alta cobertura (1-6 fotos); úsalo como opción por defecto cuando quieras evitar espacios vacíos y dar peso equilibrado. "
+        "cards_duo: dos tarjetas verticales estilo scrapbook con composición dinámica; úsalo cuando quieres un look tipo Google Photos collage moderno con personalidad. "
         "columns: 2 fotos lado a lado de igual peso; úsalo cuando hay exactamente 2 fotos fuertes sin una dominante clara. "
         "story: 3 fotos apiladas en vertical; úsalo cuando hay secuencia de tiempo, lugar o progresión narrativa. "
         "featured: 1 foto hero grande + 2 pequeñas; SOLO cuando hay UNA foto claramente superior a todas las demás y las otras complementan, no cuando todo tiene peso similar. "
@@ -1720,6 +1878,7 @@ Reglas estrictas:
 - circle_hero necesita al menos 3 fotos
 - grid necesita al menos 4 fotos
 - editorial_v2 necesita al menos 1 foto
+- cards_duo necesita al menos 2 fotos
 - Si el layout ideal no tiene suficientes fotos, elige el siguiente apropiado
 - El título debe ser emotivo y específico al contenido visual"""
     })
@@ -1852,13 +2011,16 @@ def template_quality_gate(template: object, photo_count: int, required_cells: in
     cells = template_valid_cells(template, photo_count)
     if len(cells) < max(1, required_cells):
         return False, f"celdas_insuficientes:{len(cells)}<{required_cells}"
-    coverage, hero_ratio, first_y = template_coverage_stats(cells)
+    coverage, hero_ratio, first_y, max_bottom = template_coverage_stats(cells)
     primary = template_primary_layout(template)
     if photo_count >= 2 and coverage < TEMPLATE_MIN_COVERAGE:
         return False, f"cobertura_baja:{coverage:.2f}"
     if first_y > TEMPLATE_MAX_FIRST_CELL_Y:
         return False, f"inicio_muy_bajo:y={first_y}"
-    requires_hero = primary in {"featured", "story", "columns", "circle_hero", "polaroid", "editorial_v2", ""}
+    min_bottom = TEMPLATE_SAFE_TOP + int((TEMPLATE_SAFE_BOTTOM - TEMPLATE_SAFE_TOP) * 0.72)
+    if photo_count >= 3 and max_bottom < min_bottom:
+        return False, f"fondo_vacio:bottom={max_bottom}"
+    requires_hero = primary in {"featured", "story", "columns", "circle_hero", "polaroid", "editorial_v2", "cards_duo", ""}
     if requires_hero and len(cells) >= 3 and hero_ratio < TEMPLATE_MIN_HERO_RATIO:
         return False, f"hero_bajo:{hero_ratio:.2f}"
     return True, "ok"
@@ -1875,7 +2037,7 @@ def template_visual_score(template: object, photo_count: int) -> int:
     widths = {round(cell["w"] / 40) for cell in cells}
     heights = {round(cell["h"] / 40) for cell in cells}
     shapes = {cell["shape"] for cell in cells}
-    coverage, hero_ratio, first_y = template_coverage_stats(cells)
+    coverage, hero_ratio, first_y, max_bottom = template_coverage_stats(cells)
     score = 0
     if len(widths) > 1:
         score += 3
@@ -1896,6 +2058,9 @@ def template_visual_score(template: object, photo_count: int) -> int:
     if hero_ratio >= TEMPLATE_MIN_HERO_RATIO:
         score += 2
     if first_y <= TEMPLATE_MAX_FIRST_CELL_Y:
+        score += 2
+    min_bottom = TEMPLATE_SAFE_TOP + int((TEMPLATE_SAFE_BOTTOM - TEMPLATE_SAFE_TOP) * 0.72)
+    if max_bottom >= min_bottom:
         score += 2
     return score
 
@@ -1992,6 +2157,7 @@ def desired_template_cells(layout_name: str, photo_count: int, scope_kind: str="
     layout = str(layout_name or "").strip().lower()
     base = {
         "editorial_v2": min(6, photo_count),
+        "cards_duo": min(6, photo_count),
         "columns": 2,
         "story": 3,
         "featured": 3 if photo_count >= 3 else photo_count,
@@ -2715,7 +2881,8 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
     print(f"  Razón: {reason}")
 
     ordered_paths = [paths[i] for i in valid_order]
-    pal      = PALETTES.get(palette_name, PALETTES["default"])
+    pal_base = PALETTES.get(palette_name, PALETTES["default"])
+    pal = adaptive_palette_from_photos(pal_base, ordered_paths)
     subtitle = f"{target_date.day} {MESES[target_date.month]} {year}"
     layout_fn = LAYOUTS[layout_name]
     render_template = choose_render_template(
@@ -2752,12 +2919,16 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
         ensure_runtime("renderizando collage individual")
         if render_template:
             template_palette = normalize_palette_name(render_template.get("palette_name") or palette_name)
+            template_pal = adaptive_palette_from_photos(
+                PALETTES.get(template_palette, PALETTES["default"]),
+                ordered_paths,
+            )
             img, W, H = render_from_template(
                 render_template,
                 ordered_paths,
                 title,
                 subtitle,
-                PALETTES.get(template_palette, PALETTES["default"]),
+                template_pal,
             )
             final_palette_name = template_palette
             render_mode = "template"
@@ -2972,7 +3143,10 @@ def process_month(memories:List[dict], user_id:str, target_date:dt.date,
     print(f"  Razón: {reason}")
 
     ordered_paths = [monthly_paths[i] for i in valid_order]
-    pal = PALETTES.get(palette_name, PALETTES["default"])
+    pal = adaptive_palette_from_photos(
+        PALETTES.get(palette_name, PALETTES["default"]),
+        ordered_paths,
+    )
     layout_fn = LAYOUTS[layout_name]
     render_template = choose_render_template(
         decision,
@@ -3007,12 +3181,16 @@ def process_month(memories:List[dict], user_id:str, target_date:dt.date,
         ensure_runtime("renderizando collage mensual")
         if render_template:
             template_palette = normalize_palette_name(render_template.get("palette_name") or palette_name)
+            template_pal = adaptive_palette_from_photos(
+                PALETTES.get(template_palette, PALETTES["default"]),
+                ordered_paths,
+            )
             img, W, H = render_from_template(
                 render_template,
                 ordered_paths,
                 title,
                 subtitle,
-                PALETTES.get(template_palette, PALETTES["default"]),
+                template_pal,
             )
             final_palette_name = template_palette
             render_mode = "template"
@@ -3122,6 +3300,8 @@ def main() -> int:
         f"{COLLAGE_ENGINE_VERSION} template(min_cov={TEMPLATE_MIN_COVERAGE:.2f}, "
         f"hero>={TEMPLATE_MIN_HERO_RATIO:.2f}, first_y<={TEMPLATE_MAX_FIRST_CELL_Y})"
     )
+    if COLLAGE_PREFERRED_LAYOUT:
+        print(f"INFO collage preferred_layout={COLLAGE_PREFERRED_LAYOUT}")
 
     try:
         Path(COLLAGE_DIR).mkdir(parents=True, exist_ok=True)
