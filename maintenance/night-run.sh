@@ -131,10 +131,17 @@ build_summary_notes() {
 
   case "${GLOBAL_SMART_STATUS:-OK}" in
     WARN)
-      if [ -n "$smart_hint" ]; then
-        add_summary_note "Señal temprana en discos: $smart_hint. Conviene revisarlos pronto."
+      if [ "${SMART_WARN_CLASS:-NONE}" = "USB_NO_TELEMETRY" ]; then
+        if [ -n "$smart_hint" ]; then
+          add_summary_note "Telemetría SMART inestable en $smart_hint (bridge/cable/puerto USB). Esta alerta no confirma daño físico del disco."
+        else
+          add_summary_note "Telemetría SMART inestable (bridge/cable/puerto USB). Esta alerta no confirma daño físico del disco."
+        fi
+        [ "${DB_STATUS:-OK}" = "OK" ] && add_summary_note "La base de datos está bien; el aviso de esta noche fue de lectura SMART/USB."
+      elif [ -n "$smart_hint" ]; then
+        add_summary_note "Señal temprana real en discos: $smart_hint. Conviene revisarlos pronto."
       else
-        add_summary_note "Uno de los discos mostró una señal temprana de desgaste o temperatura alta. Conviene revisarlo pronto."
+        add_summary_note "Uno de los discos mostró una señal temprana real de desgaste o temperatura alta. Conviene revisarlo pronto."
       fi
       ;;
     CRIT)

@@ -22,6 +22,7 @@ RISKY_FILE="$STATE_DIR/risky-disks.txt"
 DISK_STATE_FILE="$STATE_DIR/smart-disk-state.tsv"
 : > "$RISKY_FILE"
 GLOBAL="OK"
+SMART_WARN_CLASS="NONE"   # NONE | USB_NO_TELEMETRY | MEDIA_RISK
 NEXT_STATE_FILE="$(mktemp)"
 trap 'rm -f "$NEXT_STATE_FILE"' EXIT
 
@@ -93,6 +94,19 @@ to_int_or_default() {
   esac
 }
 
+set_warn_class() {
+  # Prioridad: MEDIA_RISK > USB_NO_TELEMETRY > NONE
+  local new="$1"
+  case "$new" in
+    MEDIA_RISK)
+      SMART_WARN_CLASS="MEDIA_RISK"
+      ;;
+    USB_NO_TELEMETRY)
+      [ "$SMART_WARN_CLASS" = "NONE" ] && SMART_WARN_CLASS="USB_NO_TELEMETRY"
+      ;;
+  esac
+}
+
 for disk in $DISK_LIST; do
   [ -b "$disk" ] || continue
   DISK_LABEL="$(friendly_disk "$disk")"
@@ -128,9 +142,11 @@ EOF
     DISK_DETAIL="$(disk_detail "$disk" "")"
     echo "$disk|WARN|SMART no disponible" >> "$RISKY_FILE"
     GLOBAL=$(merge_status "$GLOBAL" WARN)
+    set_warn_class "USB_NO_TELEMETRY"
     NAS_ALERT_KEY="smart_trend_unavailable:${disk}" NAS_ALERT_TTL=21600 alert "⚠️ Señal temprana persistente en $DISK_LABEL
 No pude leer SMART en varios ciclos seguidos (racha: $WARN_STREAK).
 Esto suele ser telemetría inestable por bridge/cable/puerto USB.
+No hay confirmación de daño físico del disco en esta señal.
 Disco detectado: $DISK_DETAIL
 Acción sugerida:
 1) reconectar cable/puerto USB
@@ -270,6 +286,7 @@ Sugerencia:
 
   case "$STATUS" in
     WARN)
+      set_warn_class "MEDIA_RISK"
       NAS_ALERT_KEY="smart_warn:${disk}" NAS_ALERT_TTL=21600 alert "⚠️ Conviene revisar el $DISK_LABEL
 Detecté una señal temprana de desgaste o temperatura alta.
 Detalle: $USER_REASON.
@@ -299,6 +316,7 @@ Acción sugerida: programar revisión/reemplazo preventivo."
       fi
       ;;
     CRIT)
+      set_warn_class "MEDIA_RISK"
       NAS_ALERT_KEY="smart_crit:${disk}" NAS_ALERT_TTL=21600 alert "🚨 El $DISK_LABEL necesita atención
 Detecté un problema serio.
 Detalle: $USER_REASON.
@@ -325,6 +343,7 @@ cat > "$STATUS_FILE" <<EOF
 GLOBAL_SMART_STATUS=$GLOBAL
 SMART_LAST_RUN=$(date -Iseconds)
 RISKY_DISKS="$(tr '\n' ';' < "$RISKY_FILE" | sed 's/;$/ /')"
+SMART_WARN_CLASS=$SMART_WARN_CLASS
 EOF
 
 exit 0
