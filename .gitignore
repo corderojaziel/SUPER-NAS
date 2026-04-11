@@ -2,3 +2,5 @@ config/nas.wsl.generated.conf
 artifacts/
 maintenance/__pycache__/
 
+.venv-tools/
+tools/__pycache__/

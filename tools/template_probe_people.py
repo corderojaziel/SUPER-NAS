@@ -47,6 +47,9 @@ class PhotoCandidate:
     face_box: Optional[Tuple[float, float, float, float]] = None  # x,y,w,h normalizado
 
 
+SUPPORTED_TEMPLATE_PROFILES = ("auto", "floral_v1", "doodle_3slots")
+
+
 def load_secrets(path: str) -> Dict[str, str]:
     out: Dict[str, str] = {}
     p = Path(path)
@@ -184,21 +187,31 @@ def make_shape_mask(w: int, h: int, shape: str) -> Image.Image:
     return m
 
 
-def fixed_slots_for_template(width: int, height: int) -> List[Slot]:
+def fixed_slots_for_template(width: int, height: int, profile: str = "floral_v1") -> List[Slot]:
     # Coordenadas base calibradas sobre plantilla 1024x1536.
-    # Estas 3 zonas son los huecos reales para fotos:
+    # profile=floral_v1:
     #  - círculo superior derecho
     #  - rectángulo vertical izquierdo
     #  - rectángulo grande inferior
+    # profile=doodle_3slots:
+    #  - rectángulo redondeado ancho arriba
+    #  - rectángulo redondeado abajo izquierda
+    #  - rectángulo redondeado abajo derecha
     sx = width / 1024.0
     sy = height / 1536.0
-    defs = [
-        # El círculo se amplía para cubrir TODO el hueco checkerboard.
-        ("circle", 396, 47, 528, 528),
-        ("rect",   124, 372, 278, 385),
-        # Reducimos alto del slot inferior para no invadir flores del borde inferior.
-        ("rect",   124, 772, 783, 575),
-    ]
+    if profile == "doodle_3slots":
+        defs = [
+            ("rect", 133, 162, 752, 525),
+            ("rect", 157, 735, 350, 615),
+            ("rect", 546, 732, 342, 614),
+        ]
+    else:
+        defs = [
+            # El círculo se amplía para cubrir TODO el hueco checkerboard.
+            ("circle", 396, 47, 528, 528),
+            ("rect",   124, 372, 278, 385),
+            ("rect",   124, 772, 783, 575),
+        ]
     out: List[Slot] = []
     for shape, x, y, w, h in defs:
         xx = int(round(x * sx))
@@ -254,28 +267,55 @@ def build_placeholder_mask(width: int, height: int, slots: List[Slot]) -> Image.
     return mask
 
 
-def detect_slots(template_path: str, min_area: int = 12000, force_fixed_slots: bool = False) -> Tuple[List[Slot], Image.Image]:
-    img = cv2.imread(template_path, cv2.IMREAD_COLOR)
+def detect_slots(
+    template_path: str,
+    min_area: int = 12000,
+    force_fixed_slots: bool = False,
+    template_profile: str = "auto",
+) -> Tuple[List[Slot], Image.Image]:
+    img = cv2.imread(template_path, cv2.IMREAD_UNCHANGED)
     if img is None:
         raise RuntimeError(f"No pude leer plantilla: {template_path}")
     h_img, w_img = img.shape[:2]
 
-    b, g, r = cv2.split(img)
-    maxc = cv2.max(cv2.max(r, g), b)
-    minc = cv2.min(cv2.min(r, g), b)
-    sat = maxc - minc
+    # 1) Camino principal: transparencia REAL de la plantilla (canal alfa).
+    # Si la plantilla ya trae huecos transparentes, esta es la vía más robusta
+    # y no depende de colores/checkerboard.
+    mask: Optional["cv2.typing.MatLike"] = None
+    mask_source = "none"
+    if len(img.shape) == 3 and img.shape[2] >= 4:
+        alpha = img[:, :, 3]
+        alpha_inv = cv2.threshold(alpha, 250, 255, cv2.THRESH_BINARY_INV)[1]
+        nz = int(cv2.countNonZero(alpha_inv))
+        ratio = float(nz) / float(max(1, w_img * h_img))
+        if nz > 0 and ratio < 0.85:
+            k_alpha = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            alpha_inv = cv2.morphologyEx(alpha_inv, cv2.MORPH_OPEN, k_alpha, iterations=1)
+            alpha_inv = cv2.morphologyEx(alpha_inv, cv2.MORPH_CLOSE, k_alpha, iterations=2)
+            mask = alpha_inv
+            mask_source = "alpha"
 
-    # Detecta gris checkerboard: baja saturación, brillo medio/alto, no blanco puro.
-    mask = cv2.inRange(sat, 0, 18)
-    vmask = cv2.inRange(maxc, 198, 242)
-    mask = cv2.bitwise_and(mask, vmask)
+    # 2) Fallback: detectar checkerboard por color cuando no hay alfa útil.
+    if mask is None:
+        bgr = img[:, :, :3] if len(img.shape) == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        b, g, r = cv2.split(bgr)
+        maxc = cv2.max(cv2.max(r, g), b)
+        minc = cv2.min(cv2.min(r, g), b)
+        sat = maxc - minc
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        checker = cv2.inRange(sat, 0, 18)
+        vmask = cv2.inRange(maxc, 198, 242)
+        checker = cv2.bitwise_and(checker, vmask)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        checker = cv2.morphologyEx(checker, cv2.MORPH_OPEN, kernel, iterations=1)
+        checker = cv2.morphologyEx(checker, cv2.MORPH_CLOSE, kernel, iterations=2)
+        mask = checker
+        mask_source = "checkerboard"
 
-    if force_fixed_slots:
-        fixed_slots = fixed_slots_for_template(w_img, h_img)
+    explicit_profile = template_profile if template_profile in SUPPORTED_TEMPLATE_PROFILES else "auto"
+    if force_fixed_slots or explicit_profile in ("floral_v1", "doodle_3slots"):
+        profile = "floral_v1" if explicit_profile == "auto" else explicit_profile
+        fixed_slots = fixed_slots_for_template(w_img, h_img, profile=profile)
         fixed_slots = apply_template_mask_to_slots(fixed_slots, mask)
         fixed_mask = build_placeholder_mask(w_img, h_img, fixed_slots)
         return fixed_slots, fixed_mask
@@ -289,16 +329,19 @@ def detect_slots(template_path: str, min_area: int = 12000, force_fixed_slots: b
         x, y, w, h = cv2.boundingRect(c)
         if w < 80 or h < 80:
             continue
+        # Descarta contornos "hilo"/decorativos que rompen el layout.
+        fill_ratio = float(area) / float(max(1, w * h))
+        min_fill = 0.22 if mask_source == "checkerboard" else 0.35
+        if fill_ratio < min_fill:
+            continue
+        aspect = float(max(w, h)) / float(max(1, min(w, h)))
+        if aspect > 4.2:
+            continue
         peri = cv2.arcLength(c, True)
         circularity = 0.0 if peri <= 0 else float(4 * math.pi * area / (peri * peri))
         is_circle = abs(w - h) / max(1, max(w, h)) < 0.18 and circularity > 0.67
-        comp = cv2.drawContours(
-            cv2.cvtColor(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2GRAY) * 0,
-            [c],
-            -1,
-            255,
-            thickness=-1,
-        )
+        comp = np.zeros((h_img, w_img), dtype=np.uint8)
+        cv2.drawContours(comp, [c], -1, 255, thickness=-1)
         local = comp[y : y + h, x : x + w]
         slot_mask = Image.fromarray(local, mode="L")
         slots.append(
@@ -319,11 +362,15 @@ def detect_slots(template_path: str, min_area: int = 12000, force_fixed_slots: b
     image_area = float(w_img * h_img)
     suspicious = (
         len(slots) < 3
-        or len(slots) > 6
+        or len(slots) > 5
         or (slots and (slots[0].area / image_area) > 0.42)
     )
+    # Si vino por alfa real y detectamos al menos 3 huecos, confiamos en esa
+    # geometría (plantilla variable) y no forzamos coordenadas legacy.
+    if mask_source == "alpha" and len(slots) >= 3:
+        return slots[:3], build_placeholder_mask(w_img, h_img, slots[:3])
     if suspicious:
-        fixed_slots = fixed_slots_for_template(w_img, h_img)
+        fixed_slots = fixed_slots_for_template(w_img, h_img, profile="floral_v1")
         fixed_slots = apply_template_mask_to_slots(fixed_slots, mask)
         fixed_mask = build_placeholder_mask(w_img, h_img, fixed_slots)
         return fixed_slots, fixed_mask
@@ -548,9 +595,19 @@ def main() -> int:
     ap.add_argument("--gemini-models", default=os.environ.get("GEMINI_MODELS", "gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite"))
     ap.add_argument("--gemini-candidates", type=int, default=8, help="Cantidad máxima de candidatos enviados a Gemini.")
     ap.add_argument("--no-gemini", action="store_true", help="Desactiva Gemini y usa solo selección local.")
+    ap.add_argument(
+        "--template-profile",
+        default="auto",
+        choices=list(SUPPORTED_TEMPLATE_PROFILES),
+        help="auto detecta huecos por transparencia/checkerboard; floral_v1 y doodle_3slots fuerzan coordenadas conocidas.",
+    )
     args = ap.parse_args()
 
-    slots, placeholder_mask = detect_slots(args.template, force_fixed_slots=args.force_fixed_slots)
+    slots, placeholder_mask = detect_slots(
+        args.template,
+        force_fixed_slots=args.force_fixed_slots,
+        template_profile=args.template_profile,
+    )
     if not slots:
         raise RuntimeError("No detecté huecos en la plantilla.")
 
