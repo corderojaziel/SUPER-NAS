@@ -357,24 +357,28 @@ def detect_slots(
         )
 
     slots.sort(key=lambda s: s.area, reverse=True)
-    global_mask_img = Image.fromarray(mask, mode="L")
 
-    image_area = float(w_img * h_img)
-    suspicious = (
-        len(slots) < 3
-        or len(slots) > 5
-        or (slots and (slots[0].area / image_area) > 0.42)
-    )
-    # Si vino por alfa real y detectamos al menos 3 huecos, confiamos en esa
-    # geometría (plantilla variable) y no forzamos coordenadas legacy.
-    if mask_source == "alpha" and len(slots) >= 3:
-        return slots[:3], build_placeholder_mask(w_img, h_img, slots[:3])
-    if suspicious:
+    # Regla operativa:
+    # - Si hay huecos válidos, usamos exactamente esos huecos (N dinámico).
+    # - Solo caemos a fallback fijo si NO hubo detección usable.
+    # Esto evita meter 3 fotos en plantillas de 2 espacios.
+    if slots:
+        # Guardas defensivas contra detecciones absurdas en checkerboard.
+        image_area = float(w_img * h_img)
+        if mask_source == "checkerboard":
+            biggest_ratio = slots[0].area / max(1.0, image_area)
+            if len(slots) > 8 or biggest_ratio > 0.75:
+                slots = []
+        if slots:
+            return slots, build_placeholder_mask(w_img, h_img, slots)
+
+    # Fallback legacy únicamente cuando no detectamos huecos.
+    if not slots:
         fixed_slots = fixed_slots_for_template(w_img, h_img, profile="floral_v1")
         fixed_slots = apply_template_mask_to_slots(fixed_slots, mask)
         fixed_mask = build_placeholder_mask(w_img, h_img, fixed_slots)
         return fixed_slots, fixed_mask
-    return slots, global_mask_img
+    return slots, build_placeholder_mask(w_img, h_img, slots)
 
 
 def load_face_detector() -> cv2.CascadeClassifier:
