@@ -1,0 +1,55 @@
+{
+  "id": "runtime-dino",
+  "name": "Dino Park",
+  "season": "default",
+  "mood": "familiar",
+  "min_photos": 2,
+  "background_color": "#F4F4F4",
+  "palette_name": "verano",
+  "visual_system": "travel",
+  "decor_family": "travel",
+  "header_style": "minimal",
+  "footer_style": "minimal",
+  "render_mode": "overlay_png",
+  "template_png": "runtime-pack/template-runtime-dino.png",
+  "canvas_w": 1024,
+  "canvas_h": 1536,
+  "total_slots": 3,
+  "cells": [
+    {
+      "photo_index": 0,
+      "x": 269,
+      "y": 770,
+      "w": 613,
+      "h": 518,
+      "radius": 259,
+      "shape": "ellipse"
+    },
+    {
+      "photo_index": 1,
+      "x": 79,
+      "y": 308,
+      "w": 413,
+      "h": 409,
+      "radius": 204,
+      "shape": "ellipse"
+    },
+    {
+      "photo_index": 2,
+      "x": 532,
+      "y": 312,
+      "w": 413,
+      "h": 404,
+      "radius": 202,
+      "shape": "ellipse"
+    }
+  ],
+  "decorations": [],
+  "layout_candidates": [
+    "featured",
+    "circle_hero",
+    "polaroid"
+  ],
+  "created_at": "2026-04-11",
+  "source": "seeded_runtime"
+}

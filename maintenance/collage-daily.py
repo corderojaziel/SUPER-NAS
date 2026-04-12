@@ -33,6 +33,7 @@ import os, shutil, subprocess, sys, time, unicodedata, urllib.error, urllib.requ
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps
 try:
     import cv2  # type: ignore
@@ -82,6 +83,7 @@ COLLAGE_PREFERRED_LAYOUT = str(os.environ.get("COLLAGE_PREFERRED_LAYOUT", "")).s
 PREVIEW_FACE_CACHE: Dict[str, int] = {}
 PREVIEW_FACE_BOX_CACHE: Dict[str, List[Tuple[float, float, float, float]]] = {}
 PREVIEW_FOCUS_CACHE: Dict[str, Tuple[float, float]] = {}
+PREVIEW_DIM_CACHE: Dict[str, Tuple[int, int]] = {}
 FACE_CASCADES = None
 DNN_FACE_NET = None
 RUN_DEADLINE: Optional[float] = None
@@ -167,6 +169,11 @@ def rounded_mask(size: Tuple, radius: int) -> Image.Image:
 def circle_mask(size: Tuple) -> Image.Image:
     m = Image.new("L", size, 0)
     ImageDraw.Draw(m).ellipse([0,0,size[0]-1,size[1]-1], fill=255)
+    return m
+
+def ellipse_mask(size: Tuple[int, int]) -> Image.Image:
+    m = Image.new("L", size, 0)
+    ImageDraw.Draw(m).ellipse([0, 0, size[0] - 1, size[1] - 1], fill=255)
     return m
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -381,16 +388,59 @@ def smart_focus_point(path: str, img: Image.Image) -> Tuple[float, float]:
     PREVIEW_FOCUS_CACHE[path] = focus
     return focus
 
-def fit_crop(img: Image.Image, tw: int, th: int, path: str="") -> Image.Image:
+def fit_crop(
+    img: Image.Image,
+    tw: int,
+    th: int,
+    path: str="",
+    scale_boost: float=1.0,
+    safe_bottom_ratio: float=1.0,
+) -> Image.Image:
     iw, ih = img.size
-    scale = max(tw/iw, th/ih)
+    scale = max(tw / iw, th / ih) * max(1.0, float(scale_boost))
     nw, nh = int(iw*scale), int(ih*scale)
     img = img.resize((nw,nh), Image.LANCZOS)
+    boxes = preview_face_boxes(path) if path else []
+    has_faces = bool(path and boxes)
     fx, fy = smart_focus_point(path, img) if path else detect_visual_focus(img)
     x_pref = tw * 0.50
-    y_pref = th * (0.38 if nh > th else 0.50)
-    x = int(clamp((fx * nw) - x_pref, 0, max(0, nw - tw)))
-    y = int(clamp((fy * nh) - y_pref, 0, max(0, nh - th)))
+    # En overlay/template preferimos encuadre más centrado para cubrir mejor el shape.
+    if has_faces:
+        y_pref = th * 0.50
+    else:
+        y_pref = th * (0.45 if nh > th else 0.50)
+    x = float(clamp((fx * nw) - x_pref, 0, max(0, nw - tw)))
+    y = float(clamp((fy * nh) - y_pref, 0, max(0, nh - th)))
+    if has_faces and boxes:
+        sx = nw / float(max(1, iw))
+        sy = nh / float(max(1, ih))
+        ux1 = min(b[0] for b in boxes) * iw * sx
+        uy1 = min(b[1] for b in boxes) * ih * sy
+        ux2 = max(b[2] for b in boxes) * iw * sx
+        uy2 = max(b[3] for b in boxes) * ih * sy
+        pad_x = tw * 0.06
+        pad_y = th * 0.10
+        # Intenta mantener la unión facial dentro de la ventana de recorte.
+        min_x = ux2 + pad_x - tw
+        max_x = ux1 - pad_x
+        if min_x <= max_x:
+            x = float(clamp(x, min_x, max_x))
+        else:
+            x = float(clamp(((ux1 + ux2) * 0.5) - (tw * 0.5), 0, max(0, nw - tw)))
+        min_y = uy2 + pad_y - th
+        max_y = uy1 - pad_y
+        if min_y <= max_y:
+            y = float(clamp(y, min_y, max_y))
+        else:
+            y = float(clamp(((uy1 + uy2) * 0.5) - (th * 0.48), 0, max(0, nh - th)))
+        # Si hay oclusión inferior en el slot (flores/elementos), sube rostro.
+        if safe_bottom_ratio < 0.995:
+            safe_limit = th * clamp(safe_bottom_ratio - 0.03, 0.60, 0.98)
+            required_top = uy2 - safe_limit
+            y = float(max(y, required_top))
+            y = float(clamp(y, 0, max(0, nh - th)))
+    x = int(round(clamp(x, 0, max(0, nw - tw))))
+    y = int(round(clamp(y, 0, max(0, nh - th))))
     return img.crop((x,y,x+tw,y+th))
 
 def add_shadow(canvas: Image.Image, x:int, y:int, w:int, h:int, r:int=22):
@@ -417,6 +467,102 @@ def place_circle(canvas: Image.Image, path:str, cx:int, cy:int, r:int):
     img = fit_crop(open_img(path), r*2, r*2, path).convert("RGBA")
     img.putalpha(circle_mask((r*2,r*2)))
     canvas.alpha_composite(img, (x,y))
+
+def place_rect_fill(
+    canvas: Image.Image,
+    path: str,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    r: int=24,
+    safe_bottom_ratio: float=1.0,
+):
+    img = fit_crop(
+        open_img(path),
+        w,
+        h,
+        path,
+        scale_boost=1.05,
+        safe_bottom_ratio=safe_bottom_ratio,
+    ).convert("RGBA")
+    img.putalpha(rounded_mask((w, h), r))
+    canvas.alpha_composite(img, (x, y))
+
+def place_circle_fill(
+    canvas: Image.Image,
+    path: str,
+    cx: int,
+    cy: int,
+    r: int,
+    safe_bottom_ratio: float=1.0,
+):
+    x, y = cx - r, cy - r
+    img = fit_crop(
+        open_img(path),
+        r * 2,
+        r * 2,
+        path,
+        scale_boost=1.08,
+        safe_bottom_ratio=safe_bottom_ratio,
+    ).convert("RGBA")
+    img.putalpha(circle_mask((r * 2, r * 2)))
+    canvas.alpha_composite(img, (x, y))
+
+def place_ellipse_fill(
+    canvas: Image.Image,
+    path: str,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    safe_bottom_ratio: float=1.0,
+):
+    img = fit_crop(
+        open_img(path),
+        w,
+        h,
+        path,
+        scale_boost=1.06,
+        safe_bottom_ratio=safe_bottom_ratio,
+    ).convert("RGBA")
+    img.putalpha(ellipse_mask((w, h)))
+    canvas.alpha_composite(img, (x, y))
+
+def mask_safe_bottom_ratio(mask: Image.Image) -> float:
+    arr = np.array(mask.convert("L"))
+    if arr.ndim != 2:
+        return 1.0
+    h, w = arr.shape
+    if h < 6 or w < 6:
+        return 1.0
+    x0 = int(round(w * 0.30))
+    x1 = int(round(w * 0.70))
+    core = arr[:, x0:x1] if x1 > x0 else arr
+    row_cov = (core > 8).sum(axis=1) / float(max(1, core.shape[1]))
+    safe_rows = [i for i, cov in enumerate(row_cov.tolist()) if cov >= 0.96]
+    if not safe_rows:
+        return 0.88
+    return float(max(safe_rows)) / float(max(1, h - 1))
+
+def repair_runtime_slot_mask(
+    hole_mask: Image.Image,
+    geom_mask: Image.Image,
+    top_repair_ratio: float=0.82,
+) -> Image.Image:
+    """Corrige huecos incompletos (bordes cuadrados) conservando oclusión inferior."""
+    arr = np.array(hole_mask.convert("L"), dtype=np.uint8)
+    garr = np.array(geom_mask.convert("L"), dtype=np.uint8)
+    cov = float((arr > 0).sum()) / float(max(1, arr.size))
+    gcov = float((garr > 0).sum()) / float(max(1, garr.size))
+    if cov < (gcov * 0.93):
+        h = arr.shape[0]
+        y_cut = int(round(h * max(0.55, min(0.95, top_repair_ratio))))
+        arr[:y_cut, :] = np.maximum(arr[:y_cut, :], garr[:y_cut, :])
+        if cv2 is not None:
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            arr = cv2.morphologyEx(arr, cv2.MORPH_CLOSE, k, iterations=1)
+    return Image.fromarray(arr, mode="L")
 
 def place_rotated(canvas: Image.Image, path:str, cx:int, cy:int,
                   w:int, h:int, angle:float, r:int=16):
@@ -759,7 +905,38 @@ def template_rects_overlap(a: Tuple[int, int, int, int], b: Tuple[int, int, int,
         or by2 + gap <= ay1
     )
 
-def parse_template_cell(cell: object, photo_count: int) -> Optional[dict]:
+def template_canvas_size(template: object) -> Tuple[int, int]:
+    if not isinstance(template, dict):
+        return 1080, 1350
+    try:
+        w = int(template.get("canvas_w", 1080) or 1080)
+        h = int(template.get("canvas_h", 1350) or 1350)
+    except (TypeError, ValueError):
+        return 1080, 1350
+    if w < 320 or h < 320:
+        return 1080, 1350
+    return w, h
+
+def template_is_overlay(template: object) -> bool:
+    if not isinstance(template, dict):
+        return False
+    if str(template.get("render_mode") or "").strip().lower() == "overlay_png":
+        return True
+    return bool(str(template.get("template_png") or "").strip())
+
+def resolve_template_png(template: object) -> Optional[Path]:
+    if not isinstance(template, dict):
+        return None
+    raw = str(template.get("template_png") or "").strip()
+    if not raw:
+        return None
+    p = Path(raw)
+    if p.is_absolute():
+        return p
+    # Relativo al root de plantillas del NAS.
+    return Path(TEMPLATE_DIR) / raw
+
+def parse_template_cell(cell: object, photo_count: int, template: Optional[dict]=None) -> Optional[dict]:
     if not isinstance(cell, dict):
         return None
     try:
@@ -773,16 +950,20 @@ def parse_template_cell(cell: object, photo_count: int) -> Optional[dict]:
     if pidx < 0 or pidx >= photo_count:
         return None
     shape = str(cell.get("shape", "rect")).strip().lower()
-    if shape not in {"rect", "circle"}:
+    if shape not in {"rect", "circle", "ellipse"}:
         shape = "rect"
     if shape == "circle":
         size = min(w, h)
         w = h = size
+    canvas_w, canvas_h = template_canvas_size(template)
+    overlay_mode = template_is_overlay(template)
+    min_top = 0 if overlay_mode else TEMPLATE_SAFE_TOP
+    max_bottom = canvas_h if overlay_mode else TEMPLATE_SAFE_BOTTOM
     x = max(0, x)
-    y = max(TEMPLATE_SAFE_TOP, y)
+    y = max(min_top, y)
     if w < TEMPLATE_MIN_SIZE or h < TEMPLATE_MIN_SIZE:
         return None
-    if x + w > 1080 or y + h > TEMPLATE_SAFE_BOTTOM:
+    if x + w > canvas_w or y + h > max_bottom:
         return None
     return {
         "photo_index": pidx,
@@ -798,16 +979,17 @@ def parse_template_cell(cell: object, photo_count: int) -> Optional[dict]:
 def usable_template_cell_count(template: object, photo_count: int) -> int:
     if not isinstance(template, dict):
         return 0
+    overlap_gap = 2 if template_is_overlay(template) else TEMPLATE_CELL_GAP
     used_rects: List[Tuple[int, int, int, int]] = []
     used_photos = set()
     count = 0
     for raw_cell in template.get("cells", []):
-        cell = parse_template_cell(raw_cell, photo_count)
+        cell = parse_template_cell(raw_cell, photo_count, template=template)
         if not cell:
             continue
         if cell["photo_index"] in used_photos:
             continue
-        if any(template_rects_overlap(cell["rect"], existing) for existing in used_rects):
+        if any(template_rects_overlap(cell["rect"], existing, gap=overlap_gap) for existing in used_rects):
             continue
         used_rects.append(cell["rect"])
         used_photos.add(cell["photo_index"])
@@ -831,8 +1013,178 @@ def template_coverage_stats(cells: List[dict]) -> Tuple[float, float, int, int]:
     hero_ratio = (max(areas) / usable_canvas) if areas else 0.0
     return coverage, hero_ratio, first_y, max_bottom
 
+def preview_dims(path: str) -> Tuple[int, int]:
+    cached = PREVIEW_DIM_CACHE.get(path)
+    if cached:
+        return cached
+    try:
+        with Image.open(path) as src:
+            img = ImageOps.exif_transpose(src)
+            dims = (int(img.width), int(img.height))
+    except Exception:
+        dims = (1, 1)
+    PREVIEW_DIM_CACHE[path] = dims
+    return dims
+
+def choose_overlay_slot_photos(cells: List[dict], photos: List[str]) -> List[str]:
+    if not cells:
+        return []
+    if not photos:
+        raise ValueError("sin fotos para plantilla overlay")
+    pool = [p for p in photos if isinstance(p, str) and p]
+    if not pool:
+        raise ValueError("pool de fotos vacío")
+
+    photo_meta = []
+    for p in pool:
+        w, h = preview_dims(p)
+        ratio = (w / max(1, h))
+        faces = preview_face_count(p)
+        photo_meta.append({"path": p, "ratio": ratio, "faces": faces})
+
+    ordered_cells = sorted(
+        enumerate(cells),
+        key=lambda item: (item[1].get("w", 0) * item[1].get("h", 0)),
+        reverse=True,
+    )
+    assigned: List[Optional[str]] = [None] * len(cells)
+    used = set()
+
+    for rank, (idx, cell) in enumerate(ordered_cells):
+        cw = max(1, int(cell.get("w", 1)))
+        ch = max(1, int(cell.get("h", 1)))
+        cell_ratio = cw / float(ch)
+        is_round = str(cell.get("shape", "rect")) in {"circle", "ellipse"}
+
+        best = None
+        best_score = -999.0
+        for meta in photo_meta:
+            p = meta["path"]
+            if p in used:
+                continue
+            pr = max(0.05, float(meta["ratio"]))
+            ratio_delta = abs(math.log(pr / max(0.05, cell_ratio)))
+            ratio_score = max(0.0, 1.0 - min(1.8, ratio_delta) / 1.8)
+            faces = int(meta["faces"])
+            face_score = 0.18 if faces > 0 else 0.0
+            if is_round and faces > 0:
+                face_score += 0.15
+            if rank == 0 and faces > 0:
+                face_score += 0.08
+            score = ratio_score + face_score
+            if score > best_score:
+                best_score = score
+                best = p
+
+        if best is None:
+            best = pool[min(rank, len(pool) - 1)]
+        assigned[idx] = best
+        used.add(best)
+
+    # Si faltan slots (más celdas que fotos), reutiliza de forma estable.
+    base_cycle = [p for p in assigned if p] or pool
+    cursor = 0
+    for i, current in enumerate(assigned):
+        if current:
+            continue
+        assigned[i] = base_cycle[cursor % len(base_cycle)]
+        cursor += 1
+    return [str(p) for p in assigned if p]
+
 def render_from_template(template: dict, photos: List[str], title: str, subtitle: str, pal: dict) -> Tuple[Image.Image, int, int]:
     """Ejecuta una plantilla JSON segura sobre las fotos ya ordenadas."""
+    cells = template_valid_cells(template, len(photos))
+    if not cells:
+        raise ValueError("plantilla sin celdas")
+    required = min(
+        max(1, TEMPLATE_MIN_RENDER_CELLS),
+        len(photos),
+        max(1, usable_template_cell_count(template, len(photos))),
+    )
+    quality_ok, quality_reason = template_quality_gate(template, len(photos), required_cells=required)
+    if not quality_ok:
+        raise ValueError(f"plantilla rechazada por calidad ({quality_reason})")
+
+    # Modo overlay PNG: respeta arte de plantilla + huecos reales.
+    template_png = resolve_template_png(template)
+    if template_is_overlay(template) and template_png and template_png.exists():
+        overlay = Image.open(template_png).convert("RGBA")
+        W, H = overlay.size
+        photo_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        overlay_alpha = overlay.getchannel("A")
+        slot_photos = choose_overlay_slot_photos(cells, photos)
+        placed = 0
+        for slot_idx, cell in enumerate(cells):
+            photo = slot_photos[slot_idx] if slot_idx < len(slot_photos) else photos[cell["photo_index"]]
+            shape = cell.get("shape", "rect")
+            cx = int(cell["x"])
+            cy = int(cell["y"])
+            cw = int(cell["w"])
+            ch = int(cell["h"])
+            geom_mask = (
+                circle_mask((cw, ch))
+                if shape == "circle"
+                else ellipse_mask((cw, ch))
+                if shape == "ellipse"
+                else rounded_mask((cw, ch), int(cell["radius"]))
+            )
+            hole_mask_raw = ImageOps.invert(overlay_alpha.crop((cx, cy, cx + cw, cy + ch)))
+            # Binariza para evitar “fugas” por antialias tenue.
+            hole_mask = hole_mask_raw.point(lambda p: 255 if p >= 12 else 0, mode="L")
+            hole_np = np.array(hole_mask, dtype=np.uint8)
+            hole_cov = float((hole_np > 0).sum()) / float(max(1, cw * ch))
+            # Regla:
+            # - Si hay hueco real útil, manda el hueco real de plantilla.
+            # - Solo cae a geométrica cuando el alpha no trae hueco usable.
+            if hole_np.size == 0 or int(hole_np.max()) < 16 or hole_cov < 0.03:
+                slot_mask = geom_mask
+            else:
+                slot_mask = repair_runtime_slot_mask(hole_mask, geom_mask)
+            safe_bottom = mask_safe_bottom_ratio(slot_mask)
+            if shape == "circle":
+                radius = min(cw, ch) // 2
+                px = cx + radius
+                py = cy + radius
+                img = fit_crop(
+                    open_img(photo),
+                    radius * 2,
+                    radius * 2,
+                    photo,
+                    scale_boost=1.08,
+                    safe_bottom_ratio=safe_bottom,
+                ).convert("RGBA")
+                img.putalpha(slot_mask)
+                photo_layer.alpha_composite(img, (cx, cy))
+            elif shape == "ellipse":
+                img = fit_crop(
+                    open_img(photo),
+                    cw,
+                    ch,
+                    photo,
+                    scale_boost=1.06,
+                    safe_bottom_ratio=safe_bottom,
+                ).convert("RGBA")
+                img.putalpha(slot_mask)
+                photo_layer.alpha_composite(img, (cx, cy))
+            else:
+                img = fit_crop(
+                    open_img(photo),
+                    cw,
+                    ch,
+                    photo,
+                    scale_boost=1.05,
+                    safe_bottom_ratio=safe_bottom,
+                ).convert("RGBA")
+                img.putalpha(slot_mask)
+                photo_layer.alpha_composite(img, (cx, cy))
+            placed += 1
+        if placed < max(1, required):
+            raise ValueError(f"overlay colocó muy pocas fotos ({placed})")
+        canvas = Image.new("RGBA", (W, H), (248, 248, 248, 255))
+        canvas = Image.alpha_composite(canvas, photo_layer)
+        canvas = Image.alpha_composite(canvas, overlay)
+        return canvas.convert("RGB"), W, H
+
     W, H = 1080, 1350
     header_variant = template_header_variant(template, len(photos))
     footer_variant = template_footer_variant(template, len(photos))
@@ -858,24 +1210,14 @@ def render_from_template(template: dict, photos: List[str], title: str, subtitle
 
     draw_template_header(canvas, draw, title, subtitle, pal, W, header_variant, fonts, decor_family)
 
-    cells = template_valid_cells(template, len(photos))
-    if not cells:
-        raise ValueError("plantilla sin celdas")
-    required = min(
-        max(1, TEMPLATE_MIN_RENDER_CELLS),
-        len(photos),
-        max(1, usable_template_cell_count(template, len(photos))),
-    )
-    quality_ok, quality_reason = template_quality_gate(template, len(photos), required_cells=required)
-    if not quality_ok:
-        raise ValueError(f"plantilla rechazada por calidad ({quality_reason})")
-
     placed = 0
     bottom = TEMPLATE_SAFE_TOP
     for cell in cells:
         if cell["shape"] == "circle":
             radius = min(cell["w"], cell["h"]) // 2
             place_circle(canvas, photos[cell["photo_index"]], cell["x"] + radius, cell["y"] + radius, radius)
+        elif cell["shape"] == "ellipse":
+            place_ellipse_fill(canvas, photos[cell["photo_index"]], cell["x"], cell["y"], cell["w"], cell["h"])
         else:
             place_rect(canvas, photos[cell["photo_index"]], cell["x"], cell["y"], cell["w"], cell["h"], cell["radius"])
         placed += 1
@@ -1781,7 +2123,8 @@ def choose_layout(layout_name: object, photo_count: int, fallback: dict,
 def ask_gemini(api_key:str, photo_paths:List[str], month:int, memory_key:str="",
                allow_fallback:bool=False, alert_context:str="",
                recent_daily_decisions:Optional[List[dict]]=None,
-               scope_note:str="") -> dict:
+               scope_note:str="",
+               template_options: Optional[List[dict]]=None) -> dict:
     """Manda las fotos a Gemini y él decide todo. Devuelve dict con decisiones."""
     ensure_runtime(f"consultando Gemini para {alert_context or memory_key or 'collage'}")
     layouts_desc = (
@@ -1807,6 +2150,18 @@ def ask_gemini(api_key:str, photo_paths:List[str], month:int, memory_key:str="",
         })
 
     n_photos = len(photo_paths)
+    template_options = template_options or []
+    template_catalog = "\n".join(
+        [
+            (
+                f"- id={opt.get('id')} slots={opt.get('slots')} "
+                f"layout={opt.get('layout')} visual={opt.get('visual_system')} "
+                f"palette={opt.get('palette_name')}"
+            )
+            for opt in template_options
+        ]
+    ) or "- sin plantilla recomendada (usa layout fallback)"
+
     parts.append({"text": f"""Eres un diseñador editorial de collages fotográficos. Analiza estas {n_photos} fotos y diseña el collage más adecuado para ESTE set.
 
 Layouts disponibles:
@@ -1818,9 +2173,13 @@ Contexto reciente para no repetir el mismo look:
 Contexto del collage:
 {scope_note or "Es un collage editorial general; si las fotos pertenecen a un solo evento busca coherencia, y si mezclan tiempos distintos busca un mood común sin fingir que es una sola escena."}
 
+Banco de plantillas disponibles para este set (elige una solo si encaja visualmente):
+{template_catalog}
+
 Responde SOLO con JSON válido (sin markdown, sin texto fuera del JSON):
 {{
   "layout": "<nombre exacto del layout>",
+  "template_id": "<id exacto de la plantilla elegida del banco o vacío>",
   "palette": "primavera|verano|otoño|otono|invierno|default",
   "title": "<título corto en español, 2-4 palabras, específico>",
   "photo_order": [0,1,2,...],
@@ -1842,6 +2201,8 @@ Responde SOLO con JSON válido (sin markdown, sin texto fuera del JSON):
 
 Reglas estrictas:
 - Decide TODO solo por el contenido visual de las fotos
+- Si una plantilla del banco resuelve mejor el set, devuelve su template_id exacto
+- Si ninguna encaja, devuelve template_id vacío y usa layout
 - Prioriza fotos de personas, familia, retratos, momentos humanos y escenas emotivas
 - Evita elegir screenshots, carreteras vacías, documentos, logos, objetos sueltos o fotos de pantallas si hay fotos humanas disponibles
 - Piensa primero en la historia: vínculo visible, actividad, emoción, edad, celebración o gesto
@@ -1991,16 +2352,17 @@ def template_primary_layout(template: object) -> str:
 def template_valid_cells(template: object, photo_count: int) -> List[dict]:
     if not isinstance(template, dict):
         return []
+    overlap_gap = 2 if template_is_overlay(template) else TEMPLATE_CELL_GAP
     valid: List[dict] = []
     used_rects: List[Tuple[int, int, int, int]] = []
     used_photos = set()
     for raw_cell in template.get("cells", []):
-        cell = parse_template_cell(raw_cell, photo_count)
+        cell = parse_template_cell(raw_cell, photo_count, template=template)
         if not cell:
             continue
         if cell["photo_index"] in used_photos:
             continue
-        if any(template_rects_overlap(cell["rect"], existing) for existing in used_rects):
+        if any(template_rects_overlap(cell["rect"], existing, gap=overlap_gap) for existing in used_rects):
             continue
         used_rects.append(cell["rect"])
         used_photos.add(cell["photo_index"])
@@ -2011,6 +2373,23 @@ def template_quality_gate(template: object, photo_count: int, required_cells: in
     cells = template_valid_cells(template, photo_count)
     if len(cells) < max(1, required_cells):
         return False, f"celdas_insuficientes:{len(cells)}<{required_cells}"
+    if template_is_overlay(template):
+        declared_slots = 0
+        if isinstance(template, dict):
+            try:
+                declared_slots = int(template.get("total_slots", 0) or 0)
+            except Exception:
+                declared_slots = 0
+            if declared_slots <= 0:
+                declared_slots = len(template.get("cells", []) or [])
+        if declared_slots > 0 and photo_count < declared_slots:
+            return False, f"slots_exceden_fotos:{photo_count}<{declared_slots}"
+        canvas_w, canvas_h = template_canvas_size(template)
+        total_area = sum(max(0, cell["w"]) * max(0, cell["h"]) for cell in cells)
+        coverage = total_area / float(max(1, canvas_w * canvas_h))
+        if photo_count >= 2 and coverage < 0.14:
+            return False, f"cobertura_baja_overlay:{coverage:.2f}"
+        return True, "ok_overlay"
     coverage, hero_ratio, first_y, max_bottom = template_coverage_stats(cells)
     primary = template_primary_layout(template)
     if photo_count >= 2 and coverage < TEMPLATE_MIN_COVERAGE:
@@ -2047,6 +2426,8 @@ def template_visual_score(template: object, photo_count: int) -> int:
         score += 2
     if "circle" in shapes:
         score += 2
+    if "ellipse" in shapes:
+        score += 2
     if len(cells) <= 4:
         score += 1
     if len(template.get("decorations", [])) >= 2:
@@ -2062,6 +2443,8 @@ def template_visual_score(template: object, photo_count: int) -> int:
     min_bottom = TEMPLATE_SAFE_TOP + int((TEMPLATE_SAFE_BOTTOM - TEMPLATE_SAFE_TOP) * 0.72)
     if max_bottom >= min_bottom:
         score += 2
+    if template_is_overlay(template):
+        score += 4
     return score
 
 def template_is_bland(template: object, photo_count: int) -> bool:
@@ -2080,7 +2463,7 @@ def template_header_variant(template: object, photo_count: int) -> str:
             return raw
     primary = template_primary_layout(template)
     cells = template_valid_cells(template, photo_count)
-    if any(cell["shape"] == "circle" for cell in cells) or primary == "circle_hero":
+    if any(cell["shape"] in {"circle", "ellipse"} for cell in cells) or primary == "circle_hero":
         return "centered"
     if primary == "story":
         return "ribbon"
@@ -2102,7 +2485,7 @@ def template_footer_variant(template: object, photo_count: int) -> str:
         return "stems"
     if primary == "grid":
         return "minimal"
-    if any(cell["shape"] == "circle" for cell in template_valid_cells(template, photo_count)):
+    if any(cell["shape"] in {"circle", "ellipse"} for cell in template_valid_cells(template, photo_count)):
         return "stems"
     return "classic"
 
@@ -2112,6 +2495,8 @@ def score_render_template(template: dict, photo_count: int, preferred_palette: s
     score = template_visual_score(template, photo_count)
     if score < 0:
         return score
+    if template.get("_preferred_template"):
+        score += 60
     target_palette = normalize_palette_name(preferred_palette)
     template_palette = normalize_palette_name(
         template.get("palette_name") or template.get("palette") or "default"
@@ -2185,6 +2570,70 @@ def build_render_template(template: dict, title: str, palette_name: str, photo_o
     payload["_usable_cells"] = usable_template_cell_count(payload, len(photo_order))
     return payload
 
+def list_template_options(photo_count: int, limit: int=12, avoid_ids: Optional[List[str]]=None) -> List[dict]:
+    root = Path(TEMPLATE_DIR)
+    if not root.exists():
+        return []
+    blocked = {str(tid).strip() for tid in (avoid_ids or []) if str(tid).strip()}
+    options: List[Tuple[int, dict]] = []
+    for path in sorted(root.rglob("*.json")):
+        try:
+            template = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(template, dict):
+            continue
+        template_id = str(template.get("id") or path.stem).strip()
+        if not template_id or template_id in blocked:
+            continue
+        min_photos = max(1, int(template.get("min_photos", len(template.get("cells", [])) or 1)))
+        usable = usable_template_cell_count(template, photo_count)
+        if photo_count < min_photos or usable < min(min_photos, photo_count):
+            continue
+        quality_ok, _ = template_quality_gate(template, photo_count, required_cells=min(min_photos, photo_count))
+        if not quality_ok:
+            continue
+        score = template_visual_score(template, photo_count)
+        options.append((score, {
+            "id": template_id,
+            "slots": int(template.get("total_slots", len(template.get("cells", [])) or usable)),
+            "layout": template_primary_layout(template) or "featured",
+            "visual_system": infer_visual_system(template),
+            "palette_name": normalize_palette_name(template.get("palette_name") or template.get("palette") or "default"),
+        }))
+    options.sort(key=lambda item: item[0], reverse=True)
+    return [item[1] for item in options[:max(1, limit)]]
+
+def load_template_by_id(template_id: str, photo_count: int) -> Optional[dict]:
+    wanted = str(template_id or "").strip()
+    if not wanted:
+        return None
+    root = Path(TEMPLATE_DIR)
+    if not root.exists():
+        return None
+    for path in sorted(root.rglob("*.json")):
+        try:
+            template = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(template, dict):
+            continue
+        cur_id = str(template.get("id") or path.stem).strip()
+        if cur_id != wanted:
+            continue
+        min_photos = max(1, int(template.get("min_photos", len(template.get("cells", [])) or 1)))
+        usable = usable_template_cell_count(template, photo_count)
+        if photo_count < min_photos or usable < min(min_photos, photo_count):
+            return None
+        chosen = dict(template)
+        chosen["_template_id"] = cur_id
+        chosen["_template_source"] = f"bank:{path.parent.name or 'root'}"
+        chosen["_template_path"] = str(path)
+        chosen["_usable_cells"] = usable
+        chosen["_preferred_template"] = True
+        return chosen
+    return None
+
 def load_template_fallback(n_photos: int, template_seed: str, avoid_ids: Optional[List[str]]=None,
                            preferred_palette: str="", preferred_layouts: Optional[List[str]]=None,
                            recent_decisions: Optional[List[dict]]=None) -> Optional[dict]:
@@ -2243,6 +2692,28 @@ def choose_render_template(decision: dict, title: str, palette_name: str, photo_
             )
             return
         candidates.append(candidate)
+
+    requested_template_id = str(decision.get("template_id") or "").strip()
+    if requested_template_id:
+        requested_template = load_template_by_id(requested_template_id, photo_count)
+        if requested_template:
+            requested_usable = usable_template_cell_count(requested_template, photo_count)
+            if requested_usable >= required_cells:
+                register_candidate(build_render_template(
+                    requested_template,
+                    title,
+                    requested_template.get("palette_name") or decision_palette_name(decision) or palette_name,
+                    photo_order,
+                    template_id=str(requested_template.get("_template_id") or requested_template_id),
+                    template_source=str(requested_template.get("_template_source") or "bank:requested"),
+                    layout_name=str(requested_template.get("layout") or layout_name or ""),
+                ))
+            else:
+                rejected_notes.append(
+                    f"bank:selected:{requested_template_id}=celdas_insuficientes:{requested_usable}<{required_cells}"
+                )
+        else:
+            rejected_notes.append(f"bank:selected:{requested_template_id}=no_encontrada_o_incompatible")
 
     inline_usable = usable_template_cell_count(decision, photo_count)
     if inline_usable >= required_cells:
@@ -2815,6 +3286,13 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
     recent_template_bank_ids = recent_template_ids(recent_decisions)
     if recent_decisions:
         print(f"  Historial reciente: {recent_collage_context(recent_decisions)}")
+    template_options = list_template_options(
+        len(paths),
+        limit=12,
+        avoid_ids=recent_template_bank_ids[:2],
+    )
+    if template_options:
+        print(f"  Catálogo de plantillas enviado a Gemini: {len(template_options)} opciones")
 
     # Gemini decide todo
     decision = ask_gemini(
@@ -2829,6 +3307,7 @@ def process_memory(memory:dict, user_id:str, target_date:dt.date,
             f"Estas fotos pertenecen a un solo recuerdo del día {target_date.day} de {MESES[target_date.month]} "
             f"de {year}. Busca una historia coherente de una sola ocasión, evento o vínculo."
         ),
+        template_options=template_options,
     )
 
     layout_name  = decision.get("layout", "")
@@ -3089,6 +3568,13 @@ def process_month(memories:List[dict], user_id:str, target_date:dt.date,
     recent_template_bank_ids = recent_template_ids(recent_monthly_decisions)
     if recent_monthly_decisions:
         print(f"  Historial mensual: {recent_collage_context(recent_monthly_decisions)}")
+    template_options = list_template_options(
+        len(monthly_paths),
+        limit=12,
+        avoid_ids=recent_template_bank_ids[:2],
+    )
+    if template_options:
+        print(f"  Catálogo mensual enviado a Gemini: {len(template_options)} opciones")
 
     decision = ask_gemini(
         gemini_key,
@@ -3102,6 +3588,7 @@ def process_month(memories:List[dict], user_id:str, target_date:dt.date,
             f"Estas fotos pertenecen a distintos recuerdos del mes de {MESES[target_date.month]} "
             f"en diferentes años. No asumas que es un solo evento: diseña un resumen del mes con mood común."
         ),
+        template_options=template_options,
     )
     layout_name  = decision.get("layout", "")
     palette_name = decision_palette_name(decision)

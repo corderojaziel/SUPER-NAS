@@ -1,0 +1,55 @@
+{
+  "id": "runtime-pop",
+  "name": "Pop Colors",
+  "season": "default",
+  "mood": "celebracion",
+  "min_photos": 2,
+  "background_color": "#F4F4F4",
+  "palette_name": "verano",
+  "visual_system": "confetti",
+  "decor_family": "confetti",
+  "header_style": "minimal",
+  "footer_style": "minimal",
+  "render_mode": "overlay_png",
+  "template_png": "runtime-pack/template-runtime-pop.png",
+  "canvas_w": 1024,
+  "canvas_h": 1536,
+  "total_slots": 3,
+  "cells": [
+    {
+      "photo_index": 0,
+      "x": 133,
+      "y": 162,
+      "w": 752,
+      "h": 525,
+      "radius": 63,
+      "shape": "rect"
+    },
+    {
+      "photo_index": 1,
+      "x": 157,
+      "y": 735,
+      "w": 350,
+      "h": 615,
+      "radius": 42,
+      "shape": "rect"
+    },
+    {
+      "photo_index": 2,
+      "x": 546,
+      "y": 732,
+      "w": 342,
+      "h": 614,
+      "radius": 41,
+      "shape": "rect"
+    }
+  ],
+  "decorations": [],
+  "layout_candidates": [
+    "grid",
+    "featured",
+    "polaroid"
+  ],
+  "created_at": "2026-04-11",
+  "source": "seeded_runtime"
+}

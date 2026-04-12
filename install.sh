@@ -1329,8 +1329,27 @@ for script in "${SCRIPTS[@]}"; do
     fi
 done
 
-mkdir -p /var/lib/immich/collages /var/lib/immich/collage-templates/gemini
-log_ok "Directorios de collage preparados (/var/lib/immich/collages y /var/lib/immich/collage-templates/gemini)"
+mkdir -p /var/lib/immich/collages \
+         /var/lib/immich/collage-templates/gemini \
+         /var/lib/immich/collage-templates/runtime-pack \
+         /var/lib/immich/collage-templates/seeded
+log_ok "Directorios de collage preparados (/var/lib/immich/collages + /var/lib/immich/collage-templates/{gemini,runtime-pack,seeded})"
+
+if [ -d "$SCRIPT_DIR/assets/collage-templates/runtime-pack" ]; then
+    find "$SCRIPT_DIR/assets/collage-templates/runtime-pack" -maxdepth 1 -type f -name '*.png' \
+        -exec install -m 0644 {} /var/lib/immich/collage-templates/runtime-pack/ \;
+    log_ok "Plantillas PNG runtime copiadas a /var/lib/immich/collage-templates/runtime-pack"
+else
+    log_warn "No existe assets/collage-templates/runtime-pack en el repo"
+fi
+
+if [ -d "$SCRIPT_DIR/assets/collage-templates/seeded" ]; then
+    find "$SCRIPT_DIR/assets/collage-templates/seeded" -maxdepth 1 -type f -name '*.json' \
+        -exec install -m 0644 {} /var/lib/immich/collage-templates/seeded/ \;
+    log_ok "Plantillas JSON seeded copiadas a /var/lib/immich/collage-templates/seeded"
+else
+    log_warn "No existe assets/collage-templates/seeded en el repo"
+fi
 
 install -m 0755 "$SCRIPT_DIR/precheck.sh" /usr/local/bin/precheck.sh
 log_ok "Instalado: /usr/local/bin/precheck.sh"

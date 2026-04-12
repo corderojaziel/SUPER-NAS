@@ -32,7 +32,7 @@ class Slot:
     y: int
     w: int
     h: int
-    shape: str  # rect|circle
+    shape: str  # rect|circle|ellipse
     area: int
     mask: Optional[Image.Image] = None
 
@@ -181,10 +181,42 @@ def make_shape_mask(w: int, h: int, shape: str) -> Image.Image:
     m = Image.new("L", (w, h), 0)
     d = ImageDraw.Draw(m)
     if shape == "circle":
+        # Círculo real (no elipse): se centra y usa el diámetro menor.
+        dia = min(w, h)
+        ox = (w - dia) // 2
+        oy = (h - dia) // 2
+        d.ellipse((ox, oy, ox + dia - 1, oy + dia - 1), fill=255)
+    elif shape == "ellipse":
         d.ellipse((0, 0, w - 1, h - 1), fill=255)
     else:
         d.rectangle((0, 0, w - 1, h - 1), fill=255)
     return m
+
+
+def repair_slot_mask(slot: Slot, top_repair_ratio: float = 0.82) -> Image.Image:
+    """Repara máscaras incompletas (recortes cuadrados) usando geometría guía.
+    Solo abre en la zona superior para no romper oclusiones inferiores decorativas.
+    """
+    base = slot.mask if slot.mask is not None else make_shape_mask(slot.w, slot.h, slot.shape)
+    if base.size != (slot.w, slot.h):
+        base = base.resize((slot.w, slot.h), Image.Resampling.NEAREST)
+    geom = make_shape_mask(slot.w, slot.h, slot.shape)
+
+    arr = np.array(base.convert("L"), dtype=np.uint8)
+    garr = np.array(geom.convert("L"), dtype=np.uint8)
+    cov = float((arr > 0).sum()) / float(max(1, slot.w * slot.h))
+    gcov = float((garr > 0).sum()) / float(max(1, slot.w * slot.h))
+
+    # Si la máscara detectada está claramente por debajo de la forma esperada,
+    # suele ser porque "se comió" parte de bordes en la zona alta.
+    if cov < (gcov * 0.93):
+        y_cut = int(round(slot.h * max(0.55, min(0.95, top_repair_ratio))))
+        arr[:y_cut, :] = np.maximum(arr[:y_cut, :], garr[:y_cut, :])
+        # Suaviza dientes al reconstruir.
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)) if cv2 is not None else None
+        if k is not None:
+            arr = cv2.morphologyEx(arr, cv2.MORPH_CLOSE, k, iterations=1)
+    return Image.fromarray(arr, mode="L")
 
 
 def fixed_slots_for_template(width: int, height: int, profile: str = "floral_v1") -> List[Slot]:
@@ -260,9 +292,7 @@ def apply_template_mask_to_slots(slots: List[Slot], template_mask: "cv2.typing.M
 def build_placeholder_mask(width: int, height: int, slots: List[Slot]) -> Image.Image:
     mask = Image.new("L", (width, height), 0)
     for slot in slots:
-        local_mask = slot.mask if slot.mask is not None else make_shape_mask(slot.w, slot.h, slot.shape)
-        if local_mask.size != (slot.w, slot.h):
-            local_mask = local_mask.resize((slot.w, slot.h), Image.Resampling.NEAREST)
+        local_mask = repair_slot_mask(slot)
         mask.paste(local_mask, (slot.x, slot.y), local_mask)
     return mask
 
@@ -339,18 +369,22 @@ def detect_slots(
             continue
         peri = cv2.arcLength(c, True)
         circularity = 0.0 if peri <= 0 else float(4 * math.pi * area / (peri * peri))
-        is_circle = abs(w - h) / max(1, max(w, h)) < 0.18 and circularity > 0.67
         comp = np.zeros((h_img, w_img), dtype=np.uint8)
         cv2.drawContours(comp, [c], -1, 255, thickness=-1)
         local = comp[y : y + h, x : x + w]
         slot_mask = Image.fromarray(local, mode="L")
+        aspect = float(max(w, h)) / float(max(1, min(w, h)))
+        if fill_ratio <= 0.90:
+            shape = "circle" if aspect <= 1.16 and circularity >= 0.62 else "ellipse"
+        else:
+            shape = "rect"
         slots.append(
             Slot(
                 x=x,
                 y=y,
                 w=w,
                 h=h,
-                shape="circle" if is_circle else "rect",
+                shape=shape,
                 area=w * h,
                 mask=slot_mask,
             )
@@ -421,14 +455,21 @@ def score_photo(path: str, detector: cv2.CascadeClassifier) -> PhotoCandidate:
     fx = fy = 0.5
     best_box: Optional[Tuple[float, float, float, float]] = None
     if count > 0:
-        # rostro más grande para centrar recorte
-        bx, by, bw, bh = max(faces, key=lambda f: int(f[2]) * int(f[3]))
+        # Usa unión de rostros para recorte más estable cuando hay varias caras.
+        xs = [int(f[0]) for f in faces]
+        ys = [int(f[1]) for f in faces]
+        x2s = [int(f[0] + f[2]) for f in faces]
+        y2s = [int(f[1] + f[3]) for f in faces]
+        bx1, by1 = min(xs), min(ys)
+        bx2, by2 = max(x2s), max(y2s)
+        bw = max(1, bx2 - bx1)
+        bh = max(1, by2 - by1)
         best_area = (bw * bh) / float(max(1, w * h))
-        fx = (bx + bw * 0.5) / float(w)
-        fy = (by + bh * 0.5) / float(h)
+        fx = (bx1 + bw * 0.5) / float(w)
+        fy = (by1 + bh * 0.40) / float(h)
         best_box = (
-            float(bx) / float(max(1, w)),
-            float(by) / float(max(1, h)),
+            float(bx1) / float(max(1, w)),
+            float(by1) / float(max(1, h)),
             float(bw) / float(max(1, w)),
             float(bh) / float(max(1, h)),
         )
@@ -519,12 +560,9 @@ def paste_into_slot(canvas: Image.Image, slot: Slot, photo: Image.Image) -> None
         getattr(photo, "_face_box", None),
         getattr(photo, "_safe_bottom_ratio", 1.0),
     )
-    base_mask = slot.mask.copy() if slot.mask is not None else make_shape_mask(slot.w, slot.h, slot.shape)
-    if base_mask.size != (slot.w, slot.h):
-        base_mask = base_mask.resize((slot.w, slot.h), Image.Resampling.NEAREST)
-    if slot.shape == "circle":
-        circle = make_shape_mask(slot.w, slot.h, "circle")
-        base_mask = ImageChops.multiply(base_mask, circle)
+    # Regla clave: si hay máscara detectada desde la transparencia real de la plantilla,
+    # esa máscara manda (evita sub-relleno en huecos elípticos o formas orgánicas).
+    base_mask = repair_slot_mask(slot)
     canvas.paste(fitted, (slot.x, slot.y), base_mask)
 
 
@@ -550,6 +588,8 @@ def slot_safe_bottom_ratio(slot: Slot) -> float:
 
 def assign_candidates_to_slots(slots: List[Slot], pool: List[PhotoCandidate]) -> List[PhotoCandidate]:
     """Asigna candidatos por slot minimizando riesgo de cara tapada."""
+    if not pool:
+        return []
     assigned: List[PhotoCandidate] = []
     used: set[str] = set()
     for slot in slots:
@@ -580,6 +620,18 @@ def assign_candidates_to_slots(slots: List[Slot], pool: List[PhotoCandidate]) ->
             if s > best_score:
                 best_score = s
                 best = c
+        # Si ya agotamos únicas, permite reutilizar para no dejar huecos.
+        if best is None:
+            for c in pool:
+                s = c.score
+                if c.faces > 0 and c.face_center is not None and safe_bottom < 0.995:
+                    fy = c.face_center[1]
+                    overflow = fy - (safe_bottom - 0.10)
+                    if overflow > 0:
+                        s -= overflow * 14000.0
+                if s > best_score:
+                    best_score = s
+                    best = c
         if best is None:
             break
         used.add(best.path)
@@ -628,6 +680,14 @@ def main() -> int:
     rest = [c for c in scored if c.faces == 0]
     local_ranked = people + rest
     shortlist = local_ranked[: max(len(slots), args.gemini_candidates)]
+    if shortlist and len(shortlist) < len(slots):
+        # Mantiene todos los slots y rellena con ciclo (evita huecos en previews).
+        base = list(shortlist)
+        cursor = 0
+        while len(shortlist) < len(slots):
+            shortlist.append(base[cursor % len(base)])
+            cursor += 1
+        print(f"WARN fotos insuficientes: reutilizando para completar {len(slots)} slots")
     chosen = shortlist[: len(slots)]
 
     secrets = load_secrets(args.secrets_file)
@@ -675,11 +735,7 @@ def main() -> int:
 
     scene = Image.new("RGBA", template.size, (245, 245, 245, 255))
     photo_layer = Image.new("RGBA", template.size, (0, 0, 0, 0))
-    used = set()
     for slot, candidate in zip(render_slots, chosen):
-        if candidate.path in used:
-            continue
-        used.add(candidate.path)
         photo = ImageOps.exif_transpose(Image.open(candidate.path).convert("RGB"))
         setattr(photo, "_face_center", candidate.face_center)
         setattr(photo, "_face_box", candidate.face_box)

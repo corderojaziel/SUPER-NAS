@@ -1,0 +1,55 @@
+{
+  "id": "runtime-neon",
+  "name": "Neon Flow",
+  "season": "default",
+  "mood": "celebracion",
+  "min_photos": 2,
+  "background_color": "#F4F4F4",
+  "palette_name": "default",
+  "visual_system": "confetti",
+  "decor_family": "confetti",
+  "header_style": "minimal",
+  "footer_style": "minimal",
+  "render_mode": "overlay_png",
+  "template_png": "runtime-pack/template-runtime-neon.png",
+  "canvas_w": 1024,
+  "canvas_h": 1536,
+  "total_slots": 3,
+  "cells": [
+    {
+      "photo_index": 0,
+      "x": 125,
+      "y": 817,
+      "w": 790,
+      "h": 545,
+      "radius": 65,
+      "shape": "rect"
+    },
+    {
+      "photo_index": 1,
+      "x": 345,
+      "y": 83,
+      "w": 564,
+      "h": 527,
+      "radius": 263,
+      "shape": "circle"
+    },
+    {
+      "photo_index": 2,
+      "x": 102,
+      "y": 420,
+      "w": 240,
+      "h": 352,
+      "radius": 120,
+      "shape": "ellipse"
+    }
+  ],
+  "decorations": [],
+  "layout_candidates": [
+    "featured",
+    "circle_hero",
+    "polaroid"
+  ],
+  "created_at": "2026-04-11",
+  "source": "seeded_runtime"
+}
