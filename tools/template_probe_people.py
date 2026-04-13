@@ -289,6 +289,14 @@ def detect_slots(template_path: str, min_area: int = 12000, force_fixed_slots: b
         x, y, w, h = cv2.boundingRect(c)
         if w < 80 or h < 80:
             continue
+        bbox_area = int(w * h)
+        if bbox_area <= 0:
+            continue
+        fill_ratio = float(area) / float(bbox_area)
+        # Descarta contornos "marco" muy grandes y huecos, típicos del borde
+        # del checkerboard que no representan un slot real.
+        if fill_ratio < 0.28:
+            continue
         peri = cv2.arcLength(c, True)
         circularity = 0.0 if peri <= 0 else float(4 * math.pi * area / (peri * peri))
         is_circle = abs(w - h) / max(1, max(w, h)) < 0.18 and circularity > 0.67
@@ -444,16 +452,47 @@ def fit_face_aware(
         cy = fy * ih
         top = int(round(clamp(cy - crop_h * 0.52, 0, ih - crop_h)))
 
-        # Si la máscara del slot tapa parte inferior (flores), empuja el recorte
-        # hacia arriba para que el rostro principal quede en zona visible.
+        # Regla dura de encuadre:
+        # forzamos el recorte a mantener el rostro dentro de una banda vertical
+        # segura del slot final para evitar caras demasiado arriba/abajo.
+        top_min = 0.0
+        top_max = float(max(0, ih - crop_h))
+
+        # Si la máscara del slot tapa parte inferior (flores), asegura que la
+        # parte baja del rostro quede por encima de esa zona.
         if face_box and safe_bottom_ratio < 0.995:
             _fx, fby, _fw, fbh = face_box
             face_bottom_src = (fby + fbh) * ih
-            # margen de seguridad dentro del slot (3%)
             y_limit_ratio = clamp(safe_bottom_ratio - 0.03, 0.60, 0.98)
-            min_top = int(round(face_bottom_src - y_limit_ratio * crop_h))
-            top = max(top, min_top)
-            top = int(round(clamp(top, 0, ih - crop_h)))
+            top_min = max(top_min, face_bottom_src - (y_limit_ratio * crop_h))
+
+        if face_center is not None:
+            face_center_src = fy * ih
+            min_face_y_out = 0.36 if safe_bottom_ratio < 0.995 else 0.32
+            max_face_y_out = safe_bottom_ratio - 0.12 if safe_bottom_ratio < 0.995 else 0.68
+            max_face_y_out = clamp(max_face_y_out, min_face_y_out + 0.08, 0.86)
+
+            # Centro del rostro dentro de la banda [min_face_y_out, max_face_y_out].
+            top_max = min(top_max, face_center_src - (min_face_y_out * crop_h))
+            top_min = max(top_min, face_center_src - (max_face_y_out * crop_h))
+
+            # Si hay box facial, añade restricciones de visibilidad del box.
+            if face_box is not None:
+                ftop_src = face_box[1] * ih
+                fbot_src = (face_box[1] + face_box[3]) * ih
+                min_face_top_out = 0.10
+                max_face_bottom_out = clamp(safe_bottom_ratio - 0.04, 0.60, 0.96)
+                top_max = min(top_max, ftop_src - (min_face_top_out * crop_h))
+                top_min = max(top_min, fbot_src - (max_face_bottom_out * crop_h))
+
+        if top_min <= top_max:
+            top = float(clamp(top, top_min, top_max))
+        else:
+            # Si no hay solución exacta, usa el punto medio del conflicto y
+            # clampa a límites físicos de la imagen.
+            target = (top_min + top_max) * 0.5
+            top = float(clamp(target, 0.0, float(max(0, ih - crop_h))))
+        top = int(round(top))
         box = (0, top, iw, top + crop_h)
 
     return img.crop(box).resize((out_w, out_h), Image.Resampling.LANCZOS)
@@ -523,6 +562,17 @@ def assign_candidates_to_slots(slots: List[Slot], pool: List[PhotoCandidate]) ->
                             s -= overflow_b * 18000.0
                     # premio a caras altas/centradas en slots con oclusión inferior
                     s += max(0.0, (safe_bottom - 0.12) - fy) * 2200.0
+
+                # En slots rectangulares grandes evita rostros excesivamente altos.
+                # Si la cara viene muy arriba en la foto, el recorte suele verse "cortado".
+                if slot.shape == "rect" and slot.area >= 250000:
+                    high_gap = 0.36 - fy
+                    if high_gap > 0:
+                        s -= high_gap * 25000.0
+                    # Favorece rostro algo más bajo/centrado en el slot grande inferior.
+                    s -= abs(fy - 0.48) * 6000.0
+                    if fy < 0.28:
+                        s -= 30000.0
             else:
                 # Si no hay caras, ligera penalización frente a candidatas humanas.
                 s -= 350.0
@@ -550,7 +600,18 @@ def main() -> int:
     ap.add_argument("--no-gemini", action="store_true", help="Desactiva Gemini y usa solo selección local.")
     args = ap.parse_args()
 
-    slots, placeholder_mask = detect_slots(args.template, force_fixed_slots=args.force_fixed_slots)
+    template_name = Path(args.template).name.lower()
+    force_fixed = args.force_fixed_slots
+    # Los slots fijos están calibrados para plantilla floral 1024x1536.
+    # En otras plantillas (doodle/birds/stars, etc.) degradan el resultado.
+    if force_fixed and "floral" not in template_name:
+        print(
+            "INFO --force-fixed-slots está calibrado para floral; "
+            "se usará detección automática de huecos para esta plantilla."
+        )
+        force_fixed = False
+
+    slots, placeholder_mask = detect_slots(args.template, force_fixed_slots=force_fixed)
     if not slots:
         raise RuntimeError("No detecté huecos en la plantilla.")
 
@@ -566,7 +627,8 @@ def main() -> int:
     people = [c for c in scored if c.faces > 0]
     rest = [c for c in scored if c.faces == 0]
     local_ranked = people + rest
-    shortlist = local_ranked[: max(len(slots), args.gemini_candidates)]
+    shortlist_size = max(len(slots) * 6, args.gemini_candidates, 24)
+    shortlist = local_ranked[: shortlist_size]
     chosen = shortlist[: len(slots)]
 
     secrets = load_secrets(args.secrets_file)
@@ -594,12 +656,13 @@ def main() -> int:
 
     render_slots = sorted(slots, key=lambda s: (s.shape != "circle", -s.area))
     # Reordena selección para evitar que flores inferiores tapen rostros.
-    slot_assigned = assign_candidates_to_slots(render_slots, chosen)
+    slot_pool = shortlist if args.no_gemini else chosen
+    slot_assigned = assign_candidates_to_slots(render_slots, slot_pool)
     if len(slot_assigned) == len(render_slots):
         chosen = slot_assigned
     else:
         # Fallback defensivo: completar con orden previo.
-        for c in chosen:
+        for c in slot_pool:
             if len(slot_assigned) >= len(render_slots):
                 break
             if c not in slot_assigned:
