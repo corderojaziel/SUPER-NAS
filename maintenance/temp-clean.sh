@@ -27,6 +27,7 @@ ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
 REPROCESS_DIR="${TEMP_CLEAN_REPROCESS_DIR:-/var/lib/nas-health/reprocess}"
 CACHE_ROOT="${CACHE_DIR:-${CACHE_ROOT:-/var/lib/immich/cache}}"
 TMP_DIRS="${TEMP_CLEAN_TMP_DIRS:-/tmp /var/tmp}"
+COLLAGE_DIR="${TEMP_CLEAN_COLLAGE_DIR:-/var/lib/immich/collages}"
 
 for arg in "$@"; do
     case "$arg" in
@@ -96,7 +97,7 @@ is_safe_delete_target() {
     done
 
     # Permitir borrado solo dentro de raíces técnicas explícitas.
-    for allowed_root in "$REPROCESS_DIR" "$CACHE_ROOT"; do
+    for allowed_root in "$REPROCESS_DIR" "$CACHE_ROOT" "$COLLAGE_DIR"; do
         [ -n "$allowed_root" ] || continue
         allowed_root="$(realpath_safe "$allowed_root")"
         if path_under "$rp" "$allowed_root"; then
@@ -183,6 +184,13 @@ if [ -d "$CACHE_ROOT" ]; then
         find "$CACHE_ROOT" -type f \
             \( -name '*.tmp.pc.mp4' -o -name '*.tmp-copy' \) \
             -mtime +2 -print0 2>/dev/null
+    )
+fi
+
+# Archivos de salida de collages ya ingeridos/publicados (retención corta semanal).
+if [ -d "$COLLAGE_DIR" ]; then
+    while IFS= read -r -d '' f; do add_candidate "$f"; done < <(
+        find "$COLLAGE_DIR" -maxdepth 1 -type f -mtime +"$AGE_DAYS" -print0 2>/dev/null
     )
 fi
 
