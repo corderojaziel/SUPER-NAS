@@ -13,7 +13,15 @@ IMMICH_EMAIL="${IMMICH_EMAIL:-${IMMICH_ADMIN_EMAIL:-}}"
 IMMICH_PASSWORD="${IMMICH_PASSWORD:-${IMMICH_ADMIN_PASSWORD:-}}"
 IMMICH_USER_ID="${IMMICH_USER_ID:-${COLLAGE_USER_ID:-38176398-2a83-433e-b966-01f9665d471b}}"
 
-TEMPLATE_DIR="${TEMPLATE_DIR:-/var/lib/immich/collage-templates/runtime}"
+DEFAULT_TEMPLATE_DIR="/var/lib/immich/collage-templates"
+LEGACY_TEMPLATE_DIR="/var/lib/immich/collage-templates/runtime"
+if [[ -z "${TEMPLATE_DIR:-}" ]]; then
+  if [[ -d "$LEGACY_TEMPLATE_DIR" ]] && find "$LEGACY_TEMPLATE_DIR" -maxdepth 1 -type f \( -name "*.png" -o -name "*.PNG" \) | grep -q .; then
+    TEMPLATE_DIR="$LEGACY_TEMPLATE_DIR"
+  else
+    TEMPLATE_DIR="$DEFAULT_TEMPLATE_DIR"
+  fi
+fi
 THUMB_ROOT="${THUMB_ROOT:-/var/lib/immich/thumbs/${IMMICH_USER_ID}}"
 OUT_DIR="${OUT_DIR:-/var/lib/immich/collages}"
 PROBE_BIN="${PROBE_BIN:-/usr/local/bin/template_probe_people.py}"
@@ -40,8 +48,7 @@ out_file="${OUT_DIR}/collage-template-random-${stamp}.jpg"
 python3 "$PROBE_BIN" \
   --template "$template" \
   --thumb-root "$THUMB_ROOT" \
-  --out "$out_file" \
-  --no-gemini
+  --out "$out_file"
 
 token="$(curl -fsS -X POST "${IMMICH_API}/auth/login" \
   -H "Content-Type: application/json" \
