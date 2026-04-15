@@ -418,6 +418,31 @@ def collect_preview_paths(root: str, max_items: int = 1200) -> List[str]:
     return [p for _m, p in files[:max_items]]
 
 
+def collect_preview_paths_from_list(list_path: str, max_items: int = 1200) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    p = Path(list_path)
+    if not p.exists():
+        return out
+    try:
+        lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return out
+    for raw in lines:
+        path = raw.strip()
+        if not path or path.startswith("#"):
+            continue
+        if path in seen:
+            continue
+        if not os.path.exists(path):
+            continue
+        seen.add(path)
+        out.append(path)
+        if len(out) >= max_items:
+            break
+    return out
+
+
 def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
@@ -591,6 +616,7 @@ def main() -> int:
     ap.add_argument("--template", required=True)
     ap.add_argument("--thumb-root", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--preview-list", default="", help="Archivo con rutas absolutas a previews candidatas (una por línea).")
     ap.add_argument("--max-candidates", type=int, default=800)
     ap.add_argument("--force-fixed-slots", action="store_true", help="Usa los 3 slots florales fijos y evita detección checkerboard.")
     ap.add_argument("--secrets-file", default="/etc/nas-secrets")
@@ -616,7 +642,15 @@ def main() -> int:
         raise RuntimeError("No detecté huecos en la plantilla.")
 
     detector = load_face_detector()
-    preview_paths = collect_preview_paths(args.thumb_root, max_items=args.max_candidates)
+    preview_paths: List[str] = []
+    if args.preview_list:
+        preview_paths = collect_preview_paths_from_list(args.preview_list, max_items=args.max_candidates)
+        if preview_paths:
+            print(f"INFO preview-list activa: {len(preview_paths)} candidatas")
+        else:
+            print(f"WARN preview-list vacía/inválida ({args.preview_list}); usando thumb-root completo.")
+    if not preview_paths:
+        preview_paths = collect_preview_paths(args.thumb_root, max_items=args.max_candidates)
     if not preview_paths:
         raise RuntimeError(f"No encontré previews en {args.thumb_root}")
 
