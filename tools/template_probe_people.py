@@ -617,6 +617,7 @@ def main() -> int:
     ap.add_argument("--thumb-root", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--preview-list", default="", help="Archivo con rutas absolutas a previews candidatas (una por línea).")
+    ap.add_argument("--picked-list-out", default="", help="Archivo de salida con previews realmente usadas (una por línea).")
     ap.add_argument("--max-candidates", type=int, default=800)
     ap.add_argument("--force-fixed-slots", action="store_true", help="Usa los 3 slots florales fijos y evita detección checkerboard.")
     ap.add_argument("--secrets-file", default="/etc/nas-secrets")
@@ -733,6 +734,10 @@ def main() -> int:
     print(f"OK out={out}")
     for i, c in enumerate(chosen[:5], 1):
         print(f"  pick{i}: faces={c.faces} ratio={c.face_ratio:.4f} {c.path}")
+    if args.picked_list_out:
+        picked_out = Path(args.picked_list_out)
+        picked_out.parent.mkdir(parents=True, exist_ok=True)
+        picked_out.write_text("".join(f"{c.path}\n" for c in chosen), encoding="utf-8")
     return 0
 
 
