@@ -16,6 +16,7 @@ LOG="/var/log/night-run.log"
 HEALTH_DIR="/var/lib/nas-health"
 VIDEO_SUMMARY_FILE="$HEALTH_DIR/video-optimize-summary.env"
 PLAYBACK_AUDIT_SUMMARY_FILE="$HEALTH_DIR/playback-audit-summary.env"
+EMMC_CLEAN_SUMMARY_FILE="${EMMC_CLEAN_SUMMARY_FILE:-$HEALTH_DIR/emmc-clean-summary.env}"
 NAS_ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
 EMMC_DF_TARGET="${EMMC_DF_TARGET:-/var/lib/immich}"
 DOCKER_BIN="${DOCKER_BIN:-/usr/bin/docker}"
@@ -177,6 +178,7 @@ build_summary_notes() {
   [ "$CACHE_MONITOR_RES" = "FAIL" ] && add_summary_note "No pude revisar el tamaño del cache de videos."
   [ "$CACHE_CLEAN_RES" = "FAIL" ] && add_summary_note "No pude auditar el cache de videos."
   [ "$TEMP_CLEAN_RES" = "FAIL" ] && add_summary_note "No pude completar la limpieza semanal de temporales."
+  [ "$EMMC_CLEAN_RES" = "FAIL" ] && add_summary_note "No pude completar la limpieza semanal segura de eMMC."
   if [ "$ML_RES" = "FAIL" ]; then
     if [ "${ML_PENDING_COUNT:-0}" -gt 0 ]; then
       add_summary_note "La IA por disponibilidad (24/7) no pudo avanzar bien en este ciclo y quedaron ${ML_PENDING_COUNT} pendientes de IML. Se reintentará automáticamente."
@@ -222,6 +224,11 @@ build_summary_notes() {
     else
       add_summary_note "Auditoría playback ($playback_scope): ${PLAYBACK_AUDIT_PLAYABLE:-0}/${PLAYBACK_AUDIT_TOTAL:-0} playables; en proceso ${PLAYBACK_AUDIT_PROCESSING:-0}; rotos detectados ${PLAYBACK_AUDIT_BROKEN:-0}; autocorregidos ${PLAYBACK_AUDIT_AUTOHEAL_CONVERTED:-0}."
     fi
+  fi
+
+  if [ "$EMMC_CLEAN_RES" = "WEEKLY_OK" ] && [ -f "$EMMC_CLEAN_SUMMARY_FILE" ]; then
+    load_status_env "$EMMC_CLEAN_SUMMARY_FILE"
+    add_summary_note "Limpieza eMMC semanal: reprocess ${EMMC_CLEAN_REPROCESS_BEFORE_GB:-0} GB -> ${EMMC_CLEAN_REPROCESS_AFTER_GB:-0} GB (liberado ${EMMC_CLEAN_REPROCESS_FREED_GB:-0} GB); eMMC total ${EMMC_CLEAN_ROOT_BEFORE_GB:-0} GB -> ${EMMC_CLEAN_ROOT_AFTER_GB:-0} GB (liberado ${EMMC_CLEAN_ROOT_FREED_GB:-0} GB). Retención reprocess: ${EMMC_CLEAN_REPROCESS_KEEP_DAYS:-2} días."
   fi
 
   [ -n "$SUMMARY_NOTES" ] || add_summary_note "El NAS terminó estable y las tareas principales salieron como se esperaba."

@@ -18,6 +18,7 @@ REPROCESS_DIR="${TEMP_CLEAN_REPROCESS_DIR:-/var/lib/nas-health/reprocess}"
 REPROCESS_AGE_DAYS="${TEMP_CLEAN_REPROCESS_AGE_DAYS:-2}"
 INSTALLER_AGE_DAYS="${EMMC_INSTALLER_RETENTION_DAYS:-30}"
 LOG_FILE="${EMMC_MONTHLY_LOG_FILE:-/var/log/emmc-safe-monthly.log}"
+SUMMARY_FILE="${EMMC_CLEAN_SUMMARY_FILE:-/var/lib/nas-health/emmc-clean-summary.env}"
 EMMC_SAFE_NOTIFY="${EMMC_SAFE_NOTIFY:-0}"
 
 case "$REPROCESS_AGE_DAYS" in
@@ -65,6 +66,7 @@ find_installers() {
 }
 
 REPROCESS_BEFORE="$(bytes_dir "$REPROCESS_DIR")"
+ROOT_BEFORE_BYTES="$(df -B1 / 2>/dev/null | awk 'NR==2{print $3+0}')"
 
 # 1) Podar históricos de reproceso (sin tocar *latest*).
 if [ -d "$REPROCESS_DIR" ]; then
@@ -110,6 +112,24 @@ rm -f "$INSTALLER_PATHS_TMP"
 
 REPROCESS_FREED=$((REPROCESS_BEFORE - REPROCESS_AFTER))
 if [ "$REPROCESS_FREED" -lt 0 ]; then REPROCESS_FREED=0; fi
+ROOT_AFTER_BYTES="$(df -B1 / 2>/dev/null | awk 'NR==2{print $3+0}')"
+ROOT_FREED=$((ROOT_BEFORE_BYTES - ROOT_AFTER_BYTES))
+if [ "$ROOT_FREED" -lt 0 ]; then ROOT_FREED=0; fi
+
+mkdir -p "$(dirname "$SUMMARY_FILE")"
+cat > "$SUMMARY_FILE" <<EOF
+EMMC_CLEAN_TS=$(date -Iseconds)
+EMMC_CLEAN_REPROCESS_KEEP_DAYS=$REPROCESS_AGE_DAYS
+EMMC_CLEAN_INSTALLER_KEEP_DAYS=$INSTALLER_AGE_DAYS
+EMMC_CLEAN_REPROCESS_BEFORE_GB=$(human_gb "$REPROCESS_BEFORE")
+EMMC_CLEAN_REPROCESS_AFTER_GB=$(human_gb "$REPROCESS_AFTER")
+EMMC_CLEAN_REPROCESS_FREED_GB=$(human_gb "$REPROCESS_FREED")
+EMMC_CLEAN_ROOT_BEFORE_GB=$(human_gb "$ROOT_BEFORE_BYTES")
+EMMC_CLEAN_ROOT_AFTER_GB=$(human_gb "$ROOT_AFTER_BYTES")
+EMMC_CLEAN_ROOT_FREED_GB=$(human_gb "$ROOT_FREED")
+EMMC_CLEAN_INSTALLERS_DELETED=$INSTALLERS_DELETED
+EMMC_CLEAN_APT_DONE=$APT_DONE
+EOF
 
 log "weekly-clean reprocess_keep_days=$REPROCESS_AGE_DAYS installers_keep_days=$INSTALLER_AGE_DAYS reprocess_freed_gb=$(human_gb "$REPROCESS_FREED") installers_deleted=$INSTALLERS_DELETED apt_done=$APT_DONE"
 
@@ -121,7 +141,8 @@ Acción del NAS:
 - Huérfanos APT revisados
 - Instaladores viejos depurados
 Resultado:
-- Liberado en reprocess: ~$(human_gb "$REPROCESS_FREED") GB
+- Reprocess: $(human_gb "$REPROCESS_BEFORE") GB -> $(human_gb "$REPROCESS_AFTER") GB (liberado ~$(human_gb "$REPROCESS_FREED") GB)
+- eMMC (/): $(human_gb "$ROOT_BEFORE_BYTES") GB -> $(human_gb "$ROOT_AFTER_BYTES") GB (liberado ~$(human_gb "$ROOT_FREED") GB)
 - Instaladores eliminados: $INSTALLERS_DELETED
 - apt autoremove/clean: $([ "$APT_DONE" = "1" ] && echo OK || echo SKIPPED)" || true
 fi
