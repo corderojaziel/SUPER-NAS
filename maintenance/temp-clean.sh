@@ -20,6 +20,7 @@ POLICY_FILE="/etc/default/nas-video-policy"
 
 MODE="dry-run"
 AGE_DAYS="${TEMP_CLEAN_AGE_DAYS:-7}"
+REPROCESS_AGE_DAYS="${TEMP_CLEAN_REPROCESS_AGE_DAYS:-2}"
 LOG_FILE="${TEMP_CLEAN_LOG_FILE:-/var/log/temp-clean.log}"
 LOCK_FILE="${TEMP_CLEAN_LOCK_FILE:-/var/lock/temp-clean.lock}"
 ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
@@ -46,6 +47,10 @@ case "$AGE_DAYS" in
     ''|*[!0-9]*) AGE_DAYS=7 ;;
 esac
 if [ "$AGE_DAYS" -lt 1 ]; then AGE_DAYS=1; fi
+case "$REPROCESS_AGE_DAYS" in
+    ''|*[!0-9]*) REPROCESS_AGE_DAYS=2 ;;
+esac
+if [ "$REPROCESS_AGE_DAYS" -lt 1 ]; then REPROCESS_AGE_DAYS=1; fi
 
 mkdir -p "$(dirname "$LOG_FILE")" "$(dirname "$LOCK_FILE")"
 exec 9>"$LOCK_FILE"
@@ -151,17 +156,18 @@ if pgrep -fa 'video-reprocess|rebuild-video-cache|video-optimize|video-autopilot
 fi
 
 if [ -d "$REPROCESS_DIR" ]; then
-    # Archivos históricos de insumos/reportes/reproceso (solo timestampados por prefijo).
+    # Históricos técnicos de reproceso.
+    # Mantener siempre *latest* para no romper scripts que dependen del "último estado".
     while IFS= read -r -d '' f; do add_candidate "$f"; done < <(
-        find "$REPROCESS_DIR" -maxdepth 2 -type f \
-            \( -name 'reprocess-*' -o -name 'heavy-latest-*' -o -name 'light-latest-*' -o -name 'broken-latest-*' -o -name 'launcher-*' -o -name 'watcher*.log' \) \
-            -mtime +"$AGE_DAYS" -print0 2>/dev/null
+        find "$REPROCESS_DIR" -maxdepth 3 -type f \
+            \( -name '*.csv' -o -name '*.json' -o -name '*.log' \) \
+            -mtime +"$REPROCESS_AGE_DAYS" ! -name '*latest*' -print0 2>/dev/null
     )
 
     # Directorios de chunks viejos (si no hay reproceso en curso).
     if [ "$reprocess_busy" -eq 0 ]; then
         while IFS= read -r -d '' d; do add_candidate "$d"; done < <(
-            find "$REPROCESS_DIR" -maxdepth 1 -type d -name 'chunks*' -mtime +"$AGE_DAYS" -print0 2>/dev/null
+            find "$REPROCESS_DIR" -maxdepth 1 -type d -name 'chunks*' -mtime +"$REPROCESS_AGE_DAYS" -print0 2>/dev/null
         )
     else
         log "INFO: reproceso activo detectado; omito limpieza de chunks para no interferir."
@@ -229,7 +235,7 @@ if [ "$MODE" = "apply" ] && [ "$deleted" -lt "$total" ]; then
     status="WARN"
 fi
 
-log "temp-clean mode=$MODE age_days=$AGE_DAYS candidates=$total candidate_mb=$(to_human_mb "$total_bytes") deleted=$deleted skipped_unsafe=$skipped_unsafe freed_mb=$(to_human_mb "$freed_bytes") status=$status"
+log "temp-clean mode=$MODE age_days=$AGE_DAYS reprocess_age_days=$REPROCESS_AGE_DAYS candidates=$total candidate_mb=$(to_human_mb "$total_bytes") deleted=$deleted skipped_unsafe=$skipped_unsafe freed_mb=$(to_human_mb "$freed_bytes") status=$status"
 
 if should_notify; then
     msg="🧽 Limpieza semanal de temporales (${MODE})

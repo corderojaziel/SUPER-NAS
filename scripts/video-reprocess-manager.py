@@ -27,6 +27,28 @@ HEAVY_LATEST = "heavy-latest.csv"
 BROKEN_LATEST = "broken-latest.csv"
 EXCLUDED_LATEST = "excluded-latest.csv"
 SUMMARY_LATEST = "summary-latest.json"
+DIRECT_COMPAT_CACHE: dict[str, bool] = {}
+
+try:
+    PROBE_TIMEOUT_DEFAULT = float(os.environ.get("VIDEO_PROBE_TIMEOUT_SEC", "3"))
+except ValueError:
+    PROBE_TIMEOUT_DEFAULT = 3.0
+try:
+    DIRECT_COMPAT_LEVEL_DEFAULT = int(os.environ.get("VIDEO_DIRECT_COMPAT_LEVEL", "41"))
+except ValueError:
+    DIRECT_COMPAT_LEVEL_DEFAULT = 41
+try:
+    DIRECT_COMPAT_MAX_LONG_EDGE_DEFAULT = int(
+        os.environ.get("VIDEO_DIRECT_COMPAT_MAX_LONG_EDGE", "1920")
+    )
+except ValueError:
+    DIRECT_COMPAT_MAX_LONG_EDGE_DEFAULT = 1920
+try:
+    DIRECT_COMPAT_MAX_FPS_DEFAULT = float(
+        os.environ.get("VIDEO_DIRECT_COMPAT_MAX_FPS", "60")
+    )
+except ValueError:
+    DIRECT_COMPAT_MAX_FPS_DEFAULT = 60.0
 
 
 @dataclass
@@ -63,6 +85,38 @@ def parse_args() -> argparse.Namespace:
     common_plan.add_argument("--local-max-mb", type=float, default=220.0)
     common_plan.add_argument("--local-max-duration-sec", type=float, default=150.0)
     common_plan.add_argument("--local-max-mb-min", type=float, default=120.0)
+    common_plan.add_argument(
+        "--probe-bin",
+        default=os.environ.get("VIDEO_PROBE_BIN", "ffprobe"),
+    )
+    common_plan.add_argument(
+        "--probe-timeout-sec",
+        type=float,
+        default=PROBE_TIMEOUT_DEFAULT,
+    )
+    common_plan.add_argument(
+        "--direct-compat-video-codec",
+        default=os.environ.get("VIDEO_DIRECT_COMPAT_VIDEO_CODEC", "h264"),
+    )
+    common_plan.add_argument(
+        "--direct-compat-pix-fmt",
+        default=os.environ.get("VIDEO_DIRECT_COMPAT_PIX_FMT", "yuv420p"),
+    )
+    common_plan.add_argument(
+        "--direct-compat-level",
+        type=int,
+        default=DIRECT_COMPAT_LEVEL_DEFAULT,
+    )
+    common_plan.add_argument(
+        "--direct-compat-max-long-edge",
+        type=int,
+        default=DIRECT_COMPAT_MAX_LONG_EDGE_DEFAULT,
+    )
+    common_plan.add_argument(
+        "--direct-compat-max-fps",
+        type=float,
+        default=DIRECT_COMPAT_MAX_FPS_DEFAULT,
+    )
     common_plan.add_argument(
         "--skip-motion-clips",
         type=int,
@@ -176,6 +230,113 @@ def parse_int(value: str, default: int = 0) -> int:
         return int(value or default)
     except Exception:
         return default
+
+
+def parse_frame_rate(value: str | None) -> float:
+    if not value:
+        return 0.0
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    try:
+        if "/" in text:
+            num, den = text.split("/", 1)
+            den_v = float(den)
+            if den_v == 0:
+                return 0.0
+            return float(num) / den_v
+        return float(text)
+    except Exception:
+        return 0.0
+
+
+def is_direct_compatible_source(
+    source_path: str,
+    *,
+    probe_bin: str,
+    probe_timeout_sec: float,
+    video_codec: str,
+    pix_fmt: str,
+    max_level: int,
+    max_long_edge: int,
+    max_fps: float,
+) -> bool:
+    cached = DIRECT_COMPAT_CACHE.get(source_path)
+    if cached is not None:
+        return cached
+
+    cmd = [
+        probe_bin,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=codec_type,codec_name,pix_fmt,level,width,height,avg_frame_rate,r_frame_rate",
+        "-of",
+        "json",
+        source_path,
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=max(probe_timeout_sec, 0.5),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        DIRECT_COMPAT_CACHE[source_path] = False
+        return False
+
+    if result.returncode != 0:
+        DIRECT_COMPAT_CACHE[source_path] = False
+        return False
+
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        DIRECT_COMPAT_CACHE[source_path] = False
+        return False
+
+    streams = payload.get("streams") if isinstance(payload, dict) else None
+    if not isinstance(streams, list) or not streams:
+        DIRECT_COMPAT_CACHE[source_path] = False
+        return False
+
+    stream = None
+    for item in streams:
+        if str(item.get("codec_type") or "").lower() == "video":
+            stream = item
+            break
+    if stream is None:
+        stream = streams[0]
+
+    codec = str(stream.get("codec_name") or "").lower()
+    stream_pix_fmt = str(stream.get("pix_fmt") or "").lower()
+    width = parse_int(str(stream.get("width") or "0"), 0)
+    height = parse_int(str(stream.get("height") or "0"), 0)
+    level = parse_int(str(stream.get("level") or "0"), 0)
+    fps = parse_frame_rate(stream.get("avg_frame_rate")) or parse_frame_rate(
+        stream.get("r_frame_rate")
+    )
+
+    compatible = True
+    video_codec = (video_codec or "").strip().lower()
+    pix_fmt = (pix_fmt or "").strip().lower()
+    if video_codec and codec != video_codec:
+        compatible = False
+    if pix_fmt and stream_pix_fmt != pix_fmt:
+        compatible = False
+    if max_level > 0 and level > max_level:
+        compatible = False
+    if max_long_edge > 0 and max(width, height) > max_long_edge:
+        compatible = False
+    if max_fps > 0 and fps > max_fps:
+        compatible = False
+
+    DIRECT_COMPAT_CACHE[source_path] = compatible
+    return compatible
 
 
 def is_real_4k(width: int, height: int) -> bool:
@@ -296,6 +457,13 @@ def classify_row(
     local_max_mb_min: float,
     skip_motion_clips: bool,
     skip_real_4k: bool,
+    probe_bin: str,
+    probe_timeout_sec: float,
+    direct_compat_video_codec: str,
+    direct_compat_pix_fmt: str,
+    direct_compat_level: int,
+    direct_compat_max_long_edge: int,
+    direct_compat_max_fps: float,
 ) -> Row | None:
     if not original_path.startswith(UPLOAD_PREFIX):
         return None
@@ -357,25 +525,6 @@ def classify_row(
             is_4k=video_is_4k,
         )
 
-    if not needs_cache:
-        return Row(
-            asset_id=asset_id,
-            original_path=original_path,
-            duration_raw=duration_raw,
-            size_bytes=size_bytes,
-            duration_sec=duration_sec,
-            mb_per_min=mb_per_min,
-            needs_cache=False,
-            cache_path=cache_path,
-            source_path=source_path,
-            classify="direct_ok",
-            reason="light_video",
-            width=width,
-            height=height,
-            is_motion=is_motion,
-            is_4k=video_is_4k,
-        )
-
     if cache_path:
         return Row(
             asset_id=asset_id,
@@ -414,6 +563,36 @@ def classify_row(
             is_motion=is_motion,
             is_4k=video_is_4k,
         )
+
+    if not needs_cache:
+        if is_direct_compatible_source(
+            source_path,
+            probe_bin=probe_bin,
+            probe_timeout_sec=probe_timeout_sec,
+            video_codec=direct_compat_video_codec,
+            pix_fmt=direct_compat_pix_fmt,
+            max_level=direct_compat_level,
+            max_long_edge=direct_compat_max_long_edge,
+            max_fps=direct_compat_max_fps,
+        ):
+            return Row(
+                asset_id=asset_id,
+                original_path=original_path,
+                duration_raw=duration_raw,
+                size_bytes=size_bytes,
+                duration_sec=duration_sec,
+                mb_per_min=mb_per_min,
+                needs_cache=False,
+                cache_path=cache_path,
+                source_path=source_path,
+                classify="direct_ok",
+                reason="light_video_direct_compatible",
+                width=width,
+                height=height,
+                is_motion=is_motion,
+                is_4k=video_is_4k,
+            )
+        needs_cache = True
 
     src_mb = src.stat().st_size / (1024 * 1024)
     local_candidate = (
@@ -525,6 +704,13 @@ def run_plan(args: argparse.Namespace) -> int:
             local_max_mb_min=args.local_max_mb_min,
             skip_motion_clips=bool(args.skip_motion_clips),
             skip_real_4k=bool(args.skip_real_4k),
+            probe_bin=args.probe_bin,
+            probe_timeout_sec=args.probe_timeout_sec,
+            direct_compat_video_codec=args.direct_compat_video_codec,
+            direct_compat_pix_fmt=args.direct_compat_pix_fmt,
+            direct_compat_level=args.direct_compat_level,
+            direct_compat_max_long_edge=args.direct_compat_max_long_edge,
+            direct_compat_max_fps=args.direct_compat_max_fps,
         )
         if row is None:
             invalid_original += 1

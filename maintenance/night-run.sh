@@ -429,6 +429,7 @@ DBCLOUD_RES="SKIPPED"
 CACHE_MONITOR_RES="SKIPPED"
 CACHE_CLEAN_RES="SKIPPED"
 TEMP_CLEAN_RES="WEEKLY_SKIPPED"
+EMMC_CLEAN_RES="WEEKLY_SKIPPED"
 ML_RES="SKIPPED"
 ML_PENDING_COUNT=0
 ML_FAIL_REASON=""
@@ -486,8 +487,14 @@ if [ "$DOW_WEEKLY" -eq 7 ]; then
   else
     TEMP_CLEAN_RES="FAIL"
   fi
+  if [ -x /usr/local/bin/emmc-safe-monthly.sh ]; then
+    run_task "eMMC clean semanal" "EMMC_SAFE_NOTIFY=0 /usr/local/bin/emmc-safe-monthly.sh" 30 && EMMC_CLEAN_RES="WEEKLY_OK" || EMMC_CLEAN_RES="FAIL"
+  else
+    EMMC_CLEAN_RES="FAIL"
+  fi
 else
   TEMP_CLEAN_RES="WEEKLY_SKIPPED"
+  EMMC_CLEAN_RES="WEEKLY_SKIPPED"
 fi
 
 write_mount_status
@@ -571,6 +578,7 @@ alert "🌙 Resumen de la noche
 📦 Revisión del cache: $(pretty_status "${CACHE_MONITOR_RES}")
 🧹 Auditoría del cache: $(pretty_status "${CACHE_CLEAN_RES}")
 🧽 Temporales semanales: $(pretty_status "${TEMP_CLEAN_RES}")
+🧰 Limpieza eMMC semanal: $(pretty_status "${EMMC_CLEAN_RES}")
 🧠 IA 24/7 por disponibilidad: $(pretty_status "${ML_RES}") (pendientes: ${ML_PENDING_COUNT})
 🔬 Revisión profunda de discos: $(pretty_status "${SMART_RES}")
 🗄️ Copia de la base de datos: $(pretty_status "${DBDUMP_RES}")

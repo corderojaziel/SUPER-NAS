@@ -1309,6 +1309,7 @@ SCRIPTS=(
     "cloud-db-upload.sh" # Sube el dump lógico de la DB a Google Drive con archivo remoto fijo
     "manual-retention.sh" # Depuracion manual de respaldos (sin auto-borrado)
     "log-maintenance.sh"  # Rotacion/depuracion mensual de logs tecnicos
+    "emmc-safe-monthly.sh" # Limpieza semanal segura de eMMC (sin tocar cache playback)
     "mount-guard.sh"     # Detecta desmontajes/remontajes y notifica Telegram
     "post-upload-check.sh" # Verificacion puntual del flujo tras subir un asset
     "audit-snapshot.sh"  # Bitacora operativa periodica (CPU/RAM/colas/montajes)
@@ -1465,6 +1466,9 @@ IML_NOTIFY_BACKLOG_THRESHOLD=${IML_NOTIFY_BACKLOG_THRESHOLD:-10}
 IML_NOTIFY_STUCK_MIN=${IML_NOTIFY_STUCK_MIN:-20}
 IML_NOTIFY_STATE_FILE=${IML_NOTIFY_STATE_FILE:-/var/lib/nas-health/iml-notify-state.json}
 TEMP_CLEAN_AGE_DAYS=${TEMP_CLEAN_AGE_DAYS:-7}
+TEMP_CLEAN_REPROCESS_AGE_DAYS=${TEMP_CLEAN_REPROCESS_AGE_DAYS:-2}
+EMMC_INSTALLER_RETENTION_DAYS=${EMMC_INSTALLER_RETENTION_DAYS:-30}
+EMMC_MONTHLY_LOG_FILE=${EMMC_MONTHLY_LOG_FILE:-/var/log/emmc-safe-monthly.log}
 PLAYBACK_AUDIT_ENABLED=${PLAYBACK_AUDIT_ENABLED:-1}
 PLAYBACK_AUDIT_MAX_MIN=${PLAYBACK_AUDIT_MAX_MIN:-45}
 PLAYBACK_AUDIT_IMMICH_API=${PLAYBACK_AUDIT_IMMICH_API:-http://127.0.0.1:2283}
@@ -1746,12 +1750,9 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 # reporta ETA; el resultado se revisa en corridas posteriores.
 0 3 15 1,4,7,10 * /usr/local/bin/smart-check.sh extended
 
-# ── Mantenimiento mensual — día 2: limpieza apt ───────────────────────────
-# autoremove: elimina librerías huérfanas y kernels viejos post-upgrade.
-# clean: elimina paquetes .deb descargados en /var/cache/apt/archives/.
-# Libera ~800 MB – 2 GB en la eMMC sin afectar ningún servicio activo.
-# Día 2 para no coincidir con el SMART del día 1.
-0 3 2 * * apt-get autoremove -y && apt-get clean
+# ── Limpieza eMMC segura semanal ───────────────────────────────────────────
+# Se ejecuta dentro de night-run.sh (domingos) y queda reportada en el
+# resumen nocturno de Telegram para visibilidad centralizada.
 
 # ── Mantenimiento mensual — día 3: limpieza journal ───────────────────────
 # journald.conf ya limita a 100 MB, esto aplica la retención activamente.

@@ -15,6 +15,13 @@ LOGROTATE_CONF="${LOGROTATE_CONF:-/etc/logrotate.d/supernas}"
 LOGROTATE_STATE="${LOGROTATE_STATE:-/var/lib/logrotate/status-supernas}"
 JOURNALCTL_BIN="${JOURNALCTL_BIN:-/usr/bin/journalctl}"
 NAS_ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
+REPROCESS_DIR="${TEMP_CLEAN_REPROCESS_DIR:-/var/lib/nas-health/reprocess}"
+REPROCESS_AGE_DAYS="${TEMP_CLEAN_REPROCESS_AGE_DAYS:-2}"
+
+case "$REPROCESS_AGE_DAYS" in
+  ''|*[!0-9]*) REPROCESS_AGE_DAYS=2 ;;
+esac
+if [ "$REPROCESS_AGE_DAYS" -lt 1 ]; then REPROCESS_AGE_DAYS=1; fi
 
 mkdir -p /var/lib/logrotate /var/lib/nas-alert-state /var/lib/nas-health/reprocess
 
@@ -37,7 +44,13 @@ find /var/log -maxdepth 1 -type f \
 find /var/lib/nas-alert-state -type f -name "*.ts" -mtime +180 -delete 2>/dev/null || true
 
 # Planes/reportes transitorios de reproceso viejos.
-find /var/lib/nas-health/reprocess -type f -mtime +45 -delete 2>/dev/null || true
+# Conservar siempre *latest* para no romper consumidores del último estado.
+if [ -d "$REPROCESS_DIR" ]; then
+  find "$REPROCESS_DIR" -maxdepth 3 -type f \
+    \( -name '*.csv' -o -name '*.json' -o -name '*.log' \) \
+    -mtime +"$REPROCESS_AGE_DAYS" ! -name '*latest*' -delete 2>/dev/null || true
+  find "$REPROCESS_DIR" -maxdepth 1 -type d -name 'chunks*' -mtime +"$REPROCESS_AGE_DAYS" -exec rm -rf {} + 2>/dev/null || true
+fi
 
 if [ -x "$NAS_ALERT_BIN" ]; then
   NAS_ALERT_KEY="logs_maintenance:monthly" NAS_ALERT_TTL=86400 \
