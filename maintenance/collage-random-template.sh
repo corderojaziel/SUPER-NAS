@@ -30,6 +30,8 @@ MIN_DAILY_PREVIEWS="${MIN_DAILY_PREVIEWS:-3}"
 MAX_PREVIEW_CANDIDATES="${MAX_PREVIEW_CANDIDATES:-800}"
 TEMPLATE_COOLDOWN_DAYS="${TEMPLATE_COOLDOWN_DAYS:-3}"
 PHOTO_HISTORY_DAYS="${PHOTO_HISTORY_DAYS:-7}"
+COLLAGE_YEAR_POLICY="${COLLAGE_YEAR_POLICY:-latest}"
+COLLAGE_CROSS_YEAR_FALLBACK="${COLLAGE_CROSS_YEAR_FALLBACK:-0}"
 
 mkdir -p "$OUT_DIR"
 STATE_DIR="${COLLAGE_STATE_DIR:-${OUT_DIR}/.state}"
@@ -112,8 +114,8 @@ if [[ -z "$token" ]]; then
   exit 1
 fi
 
-preview_meta="0,0,0"
-if ! preview_meta="$(python3 - "$IMMICH_API" "$token" "$THUMB_ROOT" "$preview_list_file" "$MIN_DAILY_PREVIEWS" "$PHOTO_HISTORY_FILE" "$PHOTO_HISTORY_DAYS" "$utc_day" "$MAX_PREVIEW_CANDIDATES" <<'PY'
+preview_meta="0,0,0,0,"
+if ! preview_meta="$(python3 - "$IMMICH_API" "$token" "$THUMB_ROOT" "$preview_list_file" "$MIN_DAILY_PREVIEWS" "$PHOTO_HISTORY_FILE" "$PHOTO_HISTORY_DAYS" "$utc_day" "$COLLAGE_YEAR_POLICY" "$COLLAGE_CROSS_YEAR_FALLBACK" "$MAX_PREVIEW_CANDIDATES" <<'PY'
 import datetime as dt
 import hashlib
 import json
@@ -122,10 +124,12 @@ import sys
 import urllib.error
 import urllib.request
 
-api, token, thumb_root, output_path, min_daily_raw, history_file, history_days_raw, day_raw, max_candidates_raw = sys.argv[1:10]
+api, token, thumb_root, output_path, min_daily_raw, history_file, history_days_raw, day_raw, year_policy_raw, cross_year_fallback_raw, max_candidates_raw = sys.argv[1:12]
 min_daily = max(1, int(min_daily_raw or "3"))
 history_days = max(1, int(history_days_raw or "7"))
 max_candidates = max(50, int(max_candidates_raw or "800"))
+year_policy = (year_policy_raw or "latest").strip().lower()
+allow_cross_year_fallback = str(cross_year_fallback_raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 today = dt.date.fromisoformat(day_raw)
 cutoff = today - dt.timedelta(days=history_days)
@@ -157,12 +161,43 @@ def thumb_path(asset_id: str) -> str:
     p2 = clean[2:4]
     return os.path.join(thumb_root, p1, p2, f"{asset_id}_preview.jpeg")
 
-asset_ids: list[str] = []
+daily_memories = []
 for memory in memories:
     if not isinstance(memory, dict):
         continue
     if show_at_utc_date(memory) != today:
         continue
+    assets = memory.get("assets") or []
+    if not isinstance(assets, list) or not assets:
+        continue
+    memory_data = memory.get("data") or {}
+    year_value = None
+    try:
+        raw_year = memory_data.get("year")
+        year_value = int(raw_year) if raw_year is not None else None
+    except (TypeError, ValueError):
+        year_value = None
+    memory_id = str(memory.get("id") or "").strip()
+    daily_memories.append((memory, year_value, memory_id, len(assets)))
+
+selected = []
+selected_year = 0
+if daily_memories:
+    years = [year for _memory, year, _mid, _count in daily_memories if year is not None]
+    if years:
+        if year_policy == "oldest":
+            selected_year = min(years)
+        else:
+            # Default y recomendado: un solo año, el más reciente.
+            selected_year = max(years)
+        selected = [item for item in daily_memories if item[1] == selected_year]
+    else:
+        # Si Immich no reporta year, usa una sola memory (la más poblada).
+        selected = [max(daily_memories, key=lambda x: (x[3], x[2]))]
+
+asset_ids: list[str] = []
+selected_memory_id = selected[0][2] if selected else ""
+for memory, _year, _mid, _count in selected:
     for asset in (memory.get("assets") or []):
         if not isinstance(asset, dict):
             continue
@@ -211,7 +246,7 @@ def stable_hash(path: str) -> int:
     return int(hashlib.sha256(f"{day_raw}|{path}".encode("utf-8", errors="ignore")).hexdigest()[:16], 16)
 
 fallback_paths: list[str] = []
-if len(memory_paths) < min_daily:
+if len(memory_paths) < min_daily and allow_cross_year_fallback:
     files: list[tuple[float, str]] = []
     for dirpath, _dirnames, filenames in os.walk(thumb_root):
         for name in filenames:
@@ -259,19 +294,32 @@ with open(output_path, "w", encoding="utf-8") as fh:
         fh.write(p + "\n")
 
 fallback_used = 1 if fallback_paths else 0
-print(f"{len(memory_paths)},{len(selected)},{fallback_used}")
+print(f"{len(memory_paths)},{len(selected)},{fallback_used},{selected_year},{selected_memory_id}")
 PY
 )"; then
-  preview_meta="0,0,0"
+  preview_meta="0,0,0,0,"
 fi
 
-IFS=',' read -r memory_count preview_count fallback_used <<< "$preview_meta"
+IFS=',' read -r memory_count preview_count fallback_used selected_year selected_memory_id <<< "$preview_meta"
 memory_count="$(printf '%s' "${memory_count:-0}" | tr -cd '0-9' | head -c 9)"
 preview_count="$(printf '%s' "${preview_count:-0}" | tr -cd '0-9' | head -c 9)"
 fallback_used="$(printf '%s' "${fallback_used:-0}" | tr -cd '0-9' | head -c 1)"
+selected_year="$(printf '%s' "${selected_year:-0}" | tr -cd '0-9' | head -c 4)"
+selected_memory_id="$(printf '%s' "${selected_memory_id:-}" | tr -cd '[:alnum:]-_')"
 [[ -z "$memory_count" ]] && memory_count="0"
 [[ -z "$preview_count" ]] && preview_count="0"
 [[ -z "$fallback_used" ]] && fallback_used="0"
+[[ -z "$selected_year" ]] && selected_year="0"
+
+if [[ "$preview_count" -lt "$MIN_DAILY_PREVIEWS" ]]; then
+  echo "WARN no hay suficientes fotos del mismo año (year=${selected_year}) para armar collage: ${preview_count}/${MIN_DAILY_PREVIEWS}."
+  if [[ -x "$ALERT_BIN" ]]; then
+    "$ALERT_BIN" "⚠️ Collage semanal omitido
+Motivo: no hay suficientes fotos del mismo año (year=${selected_year}) para completar el collage.
+Disponibles: ${preview_count}/${MIN_DAILY_PREVIEWS}." || true
+  fi
+  exit 0
+fi
 
 probe_args=(
   --template "$template"
@@ -286,9 +334,9 @@ if [[ "$preview_count" -gt 0 ]]; then
 fi
 
 if [[ "$fallback_used" -eq 1 ]]; then
-  echo "INFO daily memories candidates=${memory_count}; completando con fallback no repetido (7d)."
+  echo "INFO collage candidates=${memory_count}; year=${selected_year}; memory=${selected_memory_id}; completando con fallback cruzado por configuración."
 else
-  echo "INFO daily memories candidates=${memory_count}; pool final=${preview_count}."
+  echo "INFO collage candidates=${memory_count}; year=${selected_year}; memory=${selected_memory_id}; pool final=${preview_count}."
 fi
 
 probe_output="$(python3 "$PROBE_BIN" "${probe_args[@]}")"

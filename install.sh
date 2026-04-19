@@ -1724,8 +1724,8 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 10 0 * * * /usr/local/bin/memories-ensure.py --timezone America/Mexico_City
 
 # ── Collage oficial (template_probe_people) ───────────────────────────────
-# A las 23:50 prepara el collage para la memory del día.
-50 23 * * * /usr/local/bin/collage-random-template.sh >> /var/log/collage-random-template.log 2>&1
+# Semanal (sábado 23:50): evita ruido diario y usa un único lote semanal.
+50 23 * * 6 /usr/local/bin/collage-random-template.sh >> /var/log/collage-random-template.log 2>&1
 
 # ── Guardia térmica reactiva ──────────────────────────────────────────────
 # Independiente de night-run.sh: detecta sobrecalentamiento en cualquier
