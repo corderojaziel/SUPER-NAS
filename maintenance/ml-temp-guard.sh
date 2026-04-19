@@ -36,8 +36,8 @@ ML_TEMP_CRIT_C="${ML_TEMP_CRIT_C:-85}"
 # CPU sostenida: si el ML lleva CPU_USAGE >= ML_CPU_MAX_PCT durante
 # ML_CPU_DURATION_MIN minutos consecutivos -> se pausa.
 # Intervalo del cron = 5 min, así que el contador se incrementa en 5 cada vez.
-ML_CPU_MAX_PCT="${ML_CPU_MAX_PCT:-80}"
-ML_CPU_DURATION_MIN="${ML_CPU_DURATION_MIN:-30}"
+ML_CPU_MAX_PCT="${ML_CPU_MAX_PCT:-90}"
+ML_CPU_DURATION_MIN="${ML_CPU_DURATION_MIN:-60}"
 ML_CPU_COUNTER_FILE="${ML_CPU_COUNTER_FILE:-/run/ml-cpu-overload-min}"
 TEMP_C_OVERRIDE="${TEMP_C_OVERRIDE:-}"
 CPU_USAGE_OVERRIDE="${CPU_USAGE_OVERRIDE:-}"

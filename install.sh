@@ -276,8 +276,8 @@ HDD_APM_LEVEL="${HDD_APM_LEVEL:-254}"
 ZRAM_ALGO="${ZRAM_ALGO:-zstd}"
 ZRAM_PERCENT="${ZRAM_PERCENT:-30}"
 ZRAM_USE_NAS_SERVICE="${ZRAM_USE_NAS_SERVICE:-1}"
-ML_CPU_MAX_PCT="${ML_CPU_MAX_PCT:-80}"
-ML_CPU_DURATION_MIN="${ML_CPU_DURATION_MIN:-30}"
+ML_CPU_MAX_PCT="${ML_CPU_MAX_PCT:-90}"
+ML_CPU_DURATION_MIN="${ML_CPU_DURATION_MIN:-60}"
 FAN_IDLE_TEMP_C="${FAN_IDLE_TEMP_C:-55}"
 FAN_IDLE_CPU_MAX_PCT="${FAN_IDLE_CPU_MAX_PCT:-20}"
 ML_TEMP_HIGH_C="${ML_TEMP_HIGH_C:-75}"
@@ -1315,7 +1315,9 @@ SCRIPTS=(
     "audit-snapshot.sh"  # Bitacora operativa periodica (CPU/RAM/colas/montajes)
     "memories-ensure.py" # Garantiza recuerdos "On this day" con assets en fecha local
     "collage-daily.py" # Genera collage diario y lo coloca como portada de la memory
+    "collage-random-template.sh" # Genera collage oficial usando template_probe_people.py
     "collage-template-refresh.py" # Refresca semanalmente el banco de plantillas JSON
+    "test-alert-coverage.sh" # Matriz de pruebas de alertas Telegram (uso manual)
 )
 
 for script in "${SCRIPTS[@]}"; do
@@ -1338,6 +1340,9 @@ log_ok "Instalado: /usr/local/bin/precheck.sh"
 
 install -m 0755 "$SCRIPT_DIR/verify.sh" /usr/local/bin/verify.sh
 log_ok "Instalado: /usr/local/bin/verify.sh"
+
+install -m 0755 "$SCRIPT_DIR/check-tuning.sh" /usr/local/bin/check-tuning.sh
+log_ok "Instalado: /usr/local/bin/check-tuning.sh"
 
 install -m 0755 "$SCRIPT_DIR/scripts/immich-video-playback-resolver.py" \
     /usr/local/bin/immich-video-playback-resolver.py
@@ -1373,6 +1378,14 @@ if [ -f "$SCRIPT_DIR/maintenance/iml-backlog-drain.py" ]; then
     install -m 0755 "$SCRIPT_DIR/maintenance/iml-backlog-drain.py" \
         /usr/local/bin/iml-backlog-drain.py
     log_ok "Instalado: /usr/local/bin/iml-backlog-drain.py"
+fi
+
+if [ -f "$SCRIPT_DIR/tools/template_probe_people.py" ]; then
+    install -m 0755 "$SCRIPT_DIR/tools/template_probe_people.py" \
+        /usr/local/bin/template_probe_people.py
+    log_ok "Instalado: /usr/local/bin/template_probe_people.py"
+else
+    log_warn "No encontrado: tools/template_probe_people.py"
 fi
 
 cat > /etc/default/nas-video-policy <<EOF
@@ -1710,11 +1723,9 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 # A las 00:10 asegura que exista la memory del día con assets.
 10 0 * * * /usr/local/bin/memories-ensure.py --timezone America/Mexico_City
 
-# A las 00:15 genera el collage visual después de asegurar la memory.
-15 0 * * * /usr/local/bin/collage-daily.py --timezone America/Mexico_City --allow-fallback
-
-# Los domingos a las 03:00 refresca plantillas para variar el diseño.
-0 3 * * 0 /usr/local/bin/collage-template-refresh.py --timezone America/Mexico_City --count 50
+# ── Collage oficial (template_probe_people) ───────────────────────────────
+# A las 23:50 prepara el collage para la memory del día.
+50 23 * * * /usr/local/bin/collage-random-template.sh >> /var/log/collage-random-template.log 2>&1
 
 # ── Guardia térmica reactiva ──────────────────────────────────────────────
 # Independiente de night-run.sh: detecta sobrecalentamiento en cualquier

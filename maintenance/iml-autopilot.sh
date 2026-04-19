@@ -33,6 +33,9 @@ IML_BUSY_ALERT_TTL_SEC="${IML_BUSY_ALERT_TTL_SEC:-1800}"
 IML_AUTOPILOT_START_ML_IF_PENDING="${IML_AUTOPILOT_START_ML_IF_PENDING:-1}"
 IML_AUTOPILOT_STOP_ML_WHEN_IDLE="${IML_AUTOPILOT_STOP_ML_WHEN_IDLE:-0}"
 IML_ML_CONTAINER_NAME="${IML_ML_CONTAINER_NAME:-immich_machine_learning}"
+IML_ML_UNREACHABLE_ALERT_AFTER_SEC="${IML_ML_UNREACHABLE_ALERT_AFTER_SEC:-43200}"
+IML_ML_UNREACHABLE_ALERT_REPEAT_SEC="${IML_ML_UNREACHABLE_ALERT_REPEAT_SEC:-43200}"
+IML_ML_UNREACHABLE_STATE_FILE="${IML_ML_UNREACHABLE_STATE_FILE:-/var/lib/nas-health/iml-ml-unreachable.state}"
 IML_NOTIFY_BACKLOG_THRESHOLD="${IML_NOTIFY_BACKLOG_THRESHOLD:-10}"
 IML_NOTIFY_STUCK_MIN="${IML_NOTIFY_STUCK_MIN:-20}"
 IML_NOTIFY_STATE_FILE="${IML_NOTIFY_STATE_FILE:-/var/lib/nas-health/iml-notify-state.json}"
@@ -45,11 +48,33 @@ fi
 command -v python3 >/dev/null 2>&1 || exit 1
 command -v docker >/dev/null 2>&1 || exit 1
 
-mkdir -p "$(dirname "$LOCK_FILE")" "$(dirname "$LOG_FILE")"
+mkdir -p "$(dirname "$LOCK_FILE")" "$(dirname "$LOG_FILE")" "$(dirname "$IML_ML_UNREACHABLE_STATE_FILE")"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
   exit 0
 fi
+
+load_ml_unreachable_state() {
+  ML_UNREACHABLE_SINCE=0
+  ML_UNREACHABLE_LAST_ALERT=0
+  if [ -f "$IML_ML_UNREACHABLE_STATE_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$IML_ML_UNREACHABLE_STATE_FILE"
+    ML_UNREACHABLE_SINCE="${ML_UNREACHABLE_SINCE:-0}"
+    ML_UNREACHABLE_LAST_ALERT="${ML_UNREACHABLE_LAST_ALERT:-0}"
+  fi
+}
+
+save_ml_unreachable_state() {
+  cat > "$IML_ML_UNREACHABLE_STATE_FILE" <<EOF
+ML_UNREACHABLE_SINCE=$ML_UNREACHABLE_SINCE
+ML_UNREACHABLE_LAST_ALERT=$ML_UNREACHABLE_LAST_ALERT
+EOF
+}
+
+clear_ml_unreachable_state() {
+  rm -f "$IML_ML_UNREACHABLE_STATE_FILE"
+}
 
 iml_pending_count() {
   python3 "$IML_DRAIN_BIN" \
@@ -84,14 +109,32 @@ if [ "$pending_now" -gt 0 ] && [ "$IML_AUTOPILOT_START_ML_IF_PENDING" = "1" ]; t
     docker start "$IML_ML_CONTAINER_NAME" >/dev/null 2>&1 || true
   fi
   if ! wait_ml_ready; then
-    if [ -x "$ALERT_BIN" ]; then
-      NAS_ALERT_KEY="iml_autopilot:ml_unreachable" \
-      NAS_ALERT_TTL=900 \
-      "$ALERT_BIN" "⚠️ IML no disponible por ahora
-Acción del NAS: pospuse esta corrida y reintento automático en el siguiente ciclo." || true
+    now_ts="$(date +%s)"
+    load_ml_unreachable_state
+    if [ "$ML_UNREACHABLE_SINCE" -le 0 ]; then
+      ML_UNREACHABLE_SINCE="$now_ts"
+      ML_UNREACHABLE_LAST_ALERT=0
+      save_ml_unreachable_state
+      exit 0
+    fi
+
+    elapsed="$((now_ts - ML_UNREACHABLE_SINCE))"
+    since_alert="$((now_ts - ML_UNREACHABLE_LAST_ALERT))"
+    if [ "$elapsed" -ge "$IML_ML_UNREACHABLE_ALERT_AFTER_SEC" ] && [ "$since_alert" -ge "$IML_ML_UNREACHABLE_ALERT_REPEAT_SEC" ]; then
+      if [ -x "$ALERT_BIN" ]; then
+        hours="$((elapsed / 3600))"
+        NAS_ALERT_KEY="iml_autopilot:ml_unreachable_long" \
+        NAS_ALERT_TTL=300 \
+        "$ALERT_BIN" "⚠️ IML no disponible por más de ${hours}h
+Acción del NAS: pospuse esta corrida y seguiré reintentando automáticamente.
+Sugerencia: revisar contenedor ML y conectividad." || true
+      fi
+      ML_UNREACHABLE_LAST_ALERT="$now_ts"
+      save_ml_unreachable_state
     fi
     exit 0
   fi
+  clear_ml_unreachable_state
 fi
 
 cmd=(
