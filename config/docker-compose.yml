@@ -83,6 +83,14 @@ services:
     image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-release}
     env_file:
       - .env
+    # En algunos ARM (S905X3) gunicorn puede quedar vivo pero sin responder
+    # /ping. Uvicorn directo evita ese estado zombi de listener.
+    command: >
+      python -m uvicorn immich_ml.main:app
+      --host 0.0.0.0
+      --port 3003
+      --workers 1
+      --timeout-keep-alive 2
     # cpus a nivel de servicio sí se traduce a HostConfig/NanoCpus con
     # docker compose up, así el límite queda aplicado fuera de Swarm.
     cpus: 2.0
@@ -104,7 +112,13 @@ services:
       - /var/lib/immich/models:/cache
     restart: unless-stopped
     healthcheck:
-      disable: false
+      # El healthcheck por defecto usa requests; esta imagen no lo trae.
+      # Usamos urllib estándar para evitar falsos "unhealthy".
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request,sys;sys.exit(0 if urllib.request.urlopen(\"http://127.0.0.1:3003/ping\", timeout=2).status==200 else 1)'"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   redis:
     container_name: immich_redis
