@@ -554,7 +554,7 @@ def classify_row(
             duration_sec=duration_sec,
             mb_per_min=mb_per_min,
             needs_cache=True,
-            cache_path=str((cache_root / rel_mp4).resolve()),
+            cache_path=os.path.abspath(str(cache_root / rel_mp4)),
             source_path=source_path,
             classify="broken_source",
             reason="source_missing_or_empty",
@@ -609,7 +609,7 @@ def classify_row(
         duration_sec=duration_sec,
         mb_per_min=mb_per_min,
         needs_cache=True,
-        cache_path=str((cache_root / rel_mp4).resolve()),
+        cache_path=os.path.abspath(str(cache_root / rel_mp4)),
         source_path=source_path,
         classify="light_candidate" if local_candidate else "manual_heavy",
         reason="local_nightly_retry" if local_candidate else "manual_gpu_recommended",
@@ -845,11 +845,24 @@ def send_alert(text: str) -> None:
 
 
 def safe_dest(path_str: str, cache_root: Path) -> Path:
-    p = Path(path_str).resolve()
-    c = cache_root.resolve()
-    if p != c and c not in p.parents:
-        raise ValueError(f"destination outside cache root: {p}")
-    return p
+    # Normaliza sin resolver symlinks para no arrastrar destinos legacy externos.
+    c = Path(os.path.abspath(str(cache_root)))
+    p = Path(os.path.abspath(path_str))
+    if p == c or c in p.parents:
+        return p
+
+    # Compatibilidad con rutas legacy fuera del cache-root (ej. cache-overflow):
+    # se rebasa a cache-root conservando el subpath desde "upload/".
+    normalized = str(path_str).replace("\\", "/")
+    marker = "/upload/"
+    pos = normalized.find(marker)
+    if pos != -1:
+        rel_upload = normalized[pos + 1 :]  # drop leading slash, keep upload/...
+        rebased = Path(os.path.abspath(str(cache_root / rel_upload)))
+        if rebased == c or c in rebased.parents:
+            return rebased
+
+    raise ValueError(f"destination outside cache root: {p}")
 
 
 def convert_file(
@@ -1022,7 +1035,7 @@ def run_reprocess(args: argparse.Namespace) -> int:
                 continue
 
             current_attempts = attempts.get(asset_id, 0)
-            if args.run_class == "light" and current_attempts >= args.max_attempts:
+            if current_attempts >= args.max_attempts:
                 skipped += 1
                 writer.writerow(
                     [asset_id, source_path, dest_path, "skip", "max_attempts_reached", current_attempts, time.strftime("%Y-%m-%d %H:%M:%S")]
@@ -1034,7 +1047,11 @@ def run_reprocess(args: argparse.Namespace) -> int:
                 dst = safe_dest(dest_path, cache_root)
             except ValueError:
                 failed += 1
-                writer.writerow([asset_id, source_path, dest_path, "convert", "invalid_destination", current_attempts, time.strftime("%Y-%m-%d %H:%M:%S")])
+                new_attempts = current_attempts + 1
+                attempts[asset_id] = new_attempts
+                if new_attempts >= args.max_attempts:
+                    append_manual_queue(manual_queue, row, "invalid_destination")
+                writer.writerow([asset_id, source_path, dest_path, "convert", "invalid_destination", new_attempts, time.strftime("%Y-%m-%d %H:%M:%S")])
                 continue
 
             if not src.is_file() or src.stat().st_size <= 0:
