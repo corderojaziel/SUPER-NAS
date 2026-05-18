@@ -430,10 +430,6 @@ log_step "Instalando dependencias"
 apt-get install -y -q \
     curl wget nano git htop \
     python3 \
-    python3-pil \
-    python3-opencv \
-    opencv-data \
-    fonts-dejavu-core \
     rclone \
     lm-sensors \
     zram-tools sysstat \
@@ -1314,9 +1310,6 @@ SCRIPTS=(
     "post-upload-check.sh" # Verificacion puntual del flujo tras subir un asset
     "audit-snapshot.sh"  # Bitacora operativa periodica (CPU/RAM/colas/montajes)
     "memories-ensure.py" # Garantiza recuerdos "On this day" con assets en fecha local
-    "collage-daily.py" # Genera collage diario y lo coloca como portada de la memory
-    "collage-random-template.sh" # Genera collage oficial usando template_probe_people.py
-    "collage-template-refresh.py" # Refresca semanalmente el banco de plantillas JSON
     "test-alert-coverage.sh" # Matriz de pruebas de alertas Telegram (uso manual)
 )
 
@@ -1332,8 +1325,20 @@ for script in "${SCRIPTS[@]}"; do
     fi
 done
 
-mkdir -p /var/lib/immich/collages /var/lib/immich/collage-templates/gemini
-log_ok "Directorios de collage preparados (/var/lib/immich/collages y /var/lib/immich/collage-templates/gemini)"
+# Collages queda fuera de la instalacion oficial de SuperNAS.
+# Si se reinstala sobre una caja vieja, retiramos ejecutables legacy pero no
+# borramos salidas historicas en /var/lib/immich/collages.
+for legacy_collage_bin in \
+    /usr/local/bin/collage-daily.py \
+    /usr/local/bin/collage-random-template.sh \
+    /usr/local/bin/collage-template-refresh.py \
+    /usr/local/bin/template_probe_people.py
+do
+    if [ -e "$legacy_collage_bin" ]; then
+        rm -f "$legacy_collage_bin"
+        log_ok "Retirado componente legacy de collage: $legacy_collage_bin"
+    fi
+done
 
 install -m 0755 "$SCRIPT_DIR/precheck.sh" /usr/local/bin/precheck.sh
 log_ok "Instalado: /usr/local/bin/precheck.sh"
@@ -1378,14 +1383,6 @@ if [ -f "$SCRIPT_DIR/maintenance/iml-backlog-drain.py" ]; then
     install -m 0755 "$SCRIPT_DIR/maintenance/iml-backlog-drain.py" \
         /usr/local/bin/iml-backlog-drain.py
     log_ok "Instalado: /usr/local/bin/iml-backlog-drain.py"
-fi
-
-if [ -f "$SCRIPT_DIR/tools/template_probe_people.py" ]; then
-    install -m 0755 "$SCRIPT_DIR/tools/template_probe_people.py" \
-        /usr/local/bin/template_probe_people.py
-    log_ok "Instalado: /usr/local/bin/template_probe_people.py"
-else
-    log_warn "No encontrado: tools/template_probe_people.py"
 fi
 
 cat > /etc/default/nas-video-policy <<EOF
@@ -1722,10 +1719,6 @@ CRON_CONTENT="# NAS S905X3 — generado por install.sh $(date +%F)
 # ── Recuerdos ("On this day") diarios ─────────────────────────────────────
 # A las 00:10 asegura que exista la memory del día con assets.
 10 0 * * * /usr/local/bin/memories-ensure.py --timezone America/Mexico_City
-
-# ── Collage oficial (template_probe_people) ───────────────────────────────
-# Semanal (sábado 23:50): evita ruido diario y usa un único lote semanal.
-50 23 * * 6 /usr/local/bin/collage-random-template.sh >> /var/log/collage-random-template.log 2>&1
 
 # ── Guardia térmica reactiva ──────────────────────────────────────────────
 # Independiente de night-run.sh: detecta sobrecalentamiento en cualquier
