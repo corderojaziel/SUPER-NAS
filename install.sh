@@ -622,6 +622,55 @@ add_fstab() {
     fi
 }
 
+harden_boot_partition() {
+    local boot_source boot_fstype boot_spec boot_uuid backup_path
+
+    if [ ! -d /boot ]; then
+        log_warn "No existe /boot; omito hardening de arranque"
+        return 0
+    fi
+
+    boot_source=$(findmnt -no SOURCE /boot 2>/dev/null || true)
+    boot_fstype=$(findmnt -no FSTYPE /boot 2>/dev/null || true)
+
+    if [ -z "$boot_source" ]; then
+        log_warn "/boot no está montado; omito hardening de arranque"
+        return 0
+    fi
+
+    case "$boot_fstype" in
+        vfat|fat|msdos) ;;
+        *)
+            log_warn "/boot usa $boot_fstype, no vfat; no modifico su montaje"
+            return 0
+            ;;
+    esac
+
+    # En TV BOX/Armbian la particion FAT de boot es vulnerable a corrupcion
+    # tras cortes de energia. Mantenerla en solo lectura reduce mucho ese riesgo.
+    boot_spec=$(awk '$1 !~ /^#/ && $2=="/boot" {print $1; exit}' /etc/fstab 2>/dev/null || true)
+    if [ -z "$boot_spec" ]; then
+        boot_uuid=$(blkid -s UUID -o value "$boot_source" 2>/dev/null || true)
+        if [ -n "$boot_uuid" ]; then
+            boot_spec="UUID=$boot_uuid"
+        else
+            boot_spec="$boot_source"
+        fi
+    fi
+
+    backup_path="/etc/fstab.supernas-boot.$(date +%Y%m%d-%H%M%S).bak"
+    cp -a /etc/fstab "$backup_path"
+    add_fstab "$boot_spec /boot vfat ro,noatime,umask=0022 0 2"
+
+    if mount -o remount,ro /boot; then
+        log_ok "/boot protegido en solo lectura (backup fstab: $backup_path)"
+    else
+        log_warn "fstab actualizado para /boot ro, pero no se pudo remontar ahora; aplicará al reiniciar"
+    fi
+}
+
+harden_boot_partition
+
 # ── HDD fotos — noatime + nodiratime ─────────────────────────────────────
 # noatime: no actualizar el timestamp de acceso (atime) al leer un archivo.
 #   Sin esto, cada lectura genera una escritura de metadatos en el HDD.
