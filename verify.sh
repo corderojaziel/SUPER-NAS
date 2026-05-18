@@ -42,6 +42,21 @@ section "ALMACENAMIENTO"
 for m in /mnt/storage-main /mnt/storage-backup /mnt/merged; do
   mountpoint -q "$m" && ok "Mount listo: $m" || fail "Mount no listo: $m"
 done
+if mountpoint -q /boot; then
+  boot_fstype=$(findmnt -no FSTYPE /boot 2>/dev/null || true)
+  boot_opts=$(findmnt -no OPTIONS /boot 2>/dev/null || true)
+  if echo "$boot_fstype" | grep -Eq '^(vfat|fat|msdos)$'; then
+    if echo ",$boot_opts," | grep -q ',ro,'; then
+      ok "/boot vfat protegido en solo lectura"
+    else
+      warn "/boot vfat está en escritura; conviene remontarlo ro para tolerar apagones"
+    fi
+  else
+    warn "/boot no es vfat ($boot_fstype); hardening de TV BOX no aplica"
+  fi
+else
+  warn "/boot no está montado como partición separada"
+fi
 for d in /mnt/storage-main/photos /mnt/storage-backup/snapshots /mnt/storage-backup/snapshots/immich-db /opt/immich-app /var/lib/immich/db /var/lib/immich/models /var/lib/immich/cache /var/lib/immich/thumbs /var/lib/immich/encoded-video /var/lib/immich/nginx-cache /var/lib/immich/static; do
   [ -d "$d" ] && ok "Directorio existe: $d" || fail "Directorio faltante: $d"
 done
