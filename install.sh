@@ -437,6 +437,7 @@ apt-get install -y -q \
     hdparm \
     rsync \
     ffmpeg \
+    fonts-dejavu-core \
     ethtool \
     parted util-linux \
     nginx \
