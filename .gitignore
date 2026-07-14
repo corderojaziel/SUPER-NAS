@@ -1,4 +1,8 @@
 config/nas.wsl.generated.conf
 artifacts/
 maintenance/__pycache__/
+android/
+reports/
+analyze_prproj.py
+tools/android-build/
 
