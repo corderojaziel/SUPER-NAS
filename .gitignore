@@ -5,4 +5,6 @@ android/
 reports/
 analyze_prproj.py
 tools/android-build/
+/app.db*
+/data/app.db*
 

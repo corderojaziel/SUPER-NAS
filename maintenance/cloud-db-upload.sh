@@ -2,7 +2,7 @@
 # Sube el dump lógico de Immich a una ruta fija de Google Drive usando rclone.
 # El archivo remoto es siempre el mismo para evitar acumulación de respaldos.
 
-set -euo pipefail
+set -Eeuo pipefail
 
 POLICY_FILE="${POLICY_FILE:-/etc/default/nas-cloud-backup}"
 NAS_ALERT_BIN="${NAS_ALERT_BIN:-/usr/local/bin/nas-alert.sh}"
@@ -16,6 +16,7 @@ CLOUD_DB_UPLOAD_REMOTE_DIR="${CLOUD_DB_UPLOAD_REMOTE_DIR:-SUPER-NAS}"
 CLOUD_DB_UPLOAD_REMOTE_FILE="${CLOUD_DB_UPLOAD_REMOTE_FILE:-immich-db-latest.sql.gz}"
 CLOUD_DB_NOTIFY_SUCCESS="${CLOUD_DB_NOTIFY_SUCCESS:-0}"
 CLOUD_DB_ALERT_TTL_SEC="${CLOUD_DB_ALERT_TTL_SEC:-43200}"
+CLOUD_DB_UPLOAD_MAX_SECONDS="${CLOUD_DB_UPLOAD_MAX_SECONDS:-600}"
 
 LOCAL_FILE="${1:-}"
 UPLOAD_CONTEXT="${2:-nightly}"
@@ -59,6 +60,34 @@ if [ -f "$POLICY_FILE" ]; then
   . "$POLICY_FILE"
 fi
 
+# Un único presupuesto para toda la operación, incluidos los reintentos internos.
+if [ "${CLOUD_DB_UPLOAD_BOUNDED_WORKER:-0}" != "1" ]; then
+  case "$CLOUD_DB_UPLOAD_MAX_SECONDS" in
+    ''|*[!0-9]*|0) echo "CLOUD_DB_UPLOAD_MAX_SECONDS debe ser un entero positivo" >&2; exit 1 ;;
+  esac
+  rc=0
+  timeout --kill-after=10s "${CLOUD_DB_UPLOAD_MAX_SECONDS}s" \
+    env CLOUD_DB_UPLOAD_BOUNDED_WORKER=1 bash "$0" "$@" || rc=$?
+  if [ "$rc" = "124" ] || [ "$rc" = "137" ]; then
+    write_state "FAIL" "upload-timeout" ""
+    echo "Respaldo cloud cancelado al alcanzar ${CLOUD_DB_UPLOAD_MAX_SECONDS}s; siguiente intento en la próxima ejecución nocturna." >&2
+  fi
+  exit "$rc"
+fi
+
+on_upload_error() {
+  local rc=$?
+  trap - ERR
+  write_state "FAIL" "upload-error-rc-$rc" "${REMOTE_FILE_SPEC:-}"
+  exit "$rc"
+}
+trap on_upload_error ERR
+
+rclone_run() {
+  "$RCLONE_BIN" "$@" --retries 2 --low-level-retries 3 \
+    --retries-sleep 10s --contimeout 10s --timeout 60s
+}
+
 if [ -z "$LOCAL_FILE" ]; then
   write_state "FAIL" "missing-local-file-argument" ""
   echo "Uso: $0 /ruta/al/dump.sql.gz [contexto]" >&2
@@ -96,7 +125,7 @@ Contexto: $UPLOAD_CONTEXT"
   exit 1
 fi
 
-if ! "$RCLONE_BIN" listremotes --config "$RCLONE_CONFIG_FILE" 2>/dev/null | grep -Fxq "${CLOUD_DB_UPLOAD_REMOTE}:"; then
+if ! rclone_run listremotes --config "$RCLONE_CONFIG_FILE" 2>/dev/null | grep -Fxq "${CLOUD_DB_UPLOAD_REMOTE}:"; then
   write_state "FAIL" "missing-remote" ""
   alert_once "missing-remote" "⚠️ Respaldo DB cloud no configurado
 No existe el remoto de rclone '${CLOUD_DB_UPLOAD_REMOTE}:'.
@@ -115,18 +144,18 @@ fi
 
 LOCAL_SIZE="$(stat -c '%s' "$LOCAL_FILE")"
 
-"$RCLONE_BIN" mkdir "$REMOTE_DIR_SPEC" --config "$RCLONE_CONFIG_FILE" >/dev/null
+rclone_run mkdir "$REMOTE_DIR_SPEC" --config "$RCLONE_CONFIG_FILE" >/dev/null
 
 # Antes de subir, limpia cualquier copia visible del mismo nombre para que quede
 # exactamente un archivo remoto "latest" y no se acumulen dumps históricos.
-"$RCLONE_BIN" delete "$REMOTE_DIR_SPEC" \
+rclone_run delete "$REMOTE_DIR_SPEC" \
   --config "$RCLONE_CONFIG_FILE" \
   --include "$REMOTE_FILE" >/dev/null 2>&1 || true
 
-"$RCLONE_BIN" copyto "$LOCAL_FILE" "$REMOTE_FILE_SPEC" \
+rclone_run copyto "$LOCAL_FILE" "$REMOTE_FILE_SPEC" \
   --config "$RCLONE_CONFIG_FILE" >/dev/null
 
-REMOTE_INFO="$("$RCLONE_BIN" ls "$REMOTE_DIR_SPEC" --config "$RCLONE_CONFIG_FILE" 2>/dev/null \
+REMOTE_INFO="$(rclone_run ls "$REMOTE_DIR_SPEC" --config "$RCLONE_CONFIG_FILE" 2>/dev/null \
   | awk -v name="$REMOTE_FILE" '$2==name {count++; size=$1} END {printf "%d:%s", count+0, size+0}')"
 REMOTE_COUNT="${REMOTE_INFO%%:*}"
 REMOTE_SIZE="${REMOTE_INFO#*:}"

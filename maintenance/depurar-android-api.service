@@ -1,0 +1,17 @@
+[Unit]
+Description=Depurar Android Immich verification API
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=DEPURAR_ANDROID_HOST=0.0.0.0
+Environment=DEPURAR_ANDROID_PORT=8787
+# Optional shared token. If set, the APK must send X-Depurar-Token.
+# Environment=DEPURAR_ANDROID_TOKEN=change-me
+ExecStart=/usr/bin/env python3 /usr/local/bin/depurar-android-api.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -192,6 +192,7 @@ build_summary_notes() {
     add_summary_note "IA por disponibilidad: sin pendientes al cierre de esta corrida."
   fi
   [ "$DBDUMP_RES" = "FAIL" ] && add_summary_note "No pude guardar la copia lógica de la base de datos."
+  [ "$PERFUME_DB_RES" = "FAIL" ] && add_summary_note "No pude validar y conservar el respaldo externo de la base de perfumes; se preservó la copia anterior y el archivo de origen queda disponible para reintentar."
   [ "${DBCLOUD_RES:-SKIPPED}" = "FAIL" ] && add_summary_note "No pude subir la copia lógica de la base de datos a Google Drive."
 
   if [ "$VIDEO_RES" = "OK" ] && [ -f "$VIDEO_SUMMARY_FILE" ]; then
@@ -433,6 +434,7 @@ BACKUP_RES="SKIPPED"
 SMART_RES="OK"
 DBDUMP_RES="SKIPPED"
 DBCLOUD_RES="SKIPPED"
+PERFUME_DB_RES="SKIPPED"
 CACHE_MONITOR_RES="SKIPPED"
 CACHE_CLEAN_RES="SKIPPED"
 TEMP_CLEAN_RES="WEEKLY_SKIPPED"
@@ -448,7 +450,15 @@ else
   if [ -x /usr/local/bin/video-reprocess-nightly.sh ]; then
     VIDEO_OPTIMIZE_CMD="/usr/local/bin/video-reprocess-nightly.sh"
   fi
-  run_task "Video optimize" "$VIDEO_OPTIMIZE_CMD" "$VIDEO_OPTIMIZE_MAX_MIN" && VIDEO_RES="OK" || VIDEO_RES="FAIL"
+  # ventas-campaign-active: si una campana de perfume-automation esta corriendo
+  # (raro a esta hora, pero posible), no arrancamos ffmpeg -- corre en el host,
+  # sin tope de CPU de Immich que lo alcance, y competiria directo con Chrome.
+  if [ -f "${VENTAS_CAMPAIGN_LOCK:-/var/lock/ventas-campaign-active}" ]; then
+    log "SKIP: Video optimize pospuesto, hay una campana de ventas activa"
+    VIDEO_RES="SKIPPED"
+  else
+    run_task "Video optimize" "$VIDEO_OPTIMIZE_CMD" "$VIDEO_OPTIMIZE_MAX_MIN" && VIDEO_RES="OK" || VIDEO_RES="FAIL"
+  fi
   sleep 180
 
   if [ -x /usr/local/bin/playback-audit-autoheal.sh ]; then
@@ -567,6 +577,20 @@ else
   DBCLOUD_RES="SKIPPED"
 fi
 
+# Perfume app SQLite arrives from the Windows app host into a guarded inbox.
+# This task consumes only an explicit ready manifest and never scans disks.
+if [ -x /usr/local/bin/perfume-db-backup.sh ]; then
+  /usr/local/bin/perfume-db-backup.sh
+  case "$?" in
+    0) PERFUME_DB_RES="OK" ;;
+    2) PERFUME_DB_RES="SKIPPED" ;;
+    *) PERFUME_DB_RES="FAIL" ;;
+  esac
+else
+  PERFUME_DB_RES="FAIL"
+  log "Perfume DB backup consumer is not installed"
+fi
+
 load_status_env "$HEALTH_DIR/mount-status.env"
 load_status_env "$HEALTH_DIR/smart-status.env"
 load_status_env "$HEALTH_DIR/storage-status.env"
@@ -589,6 +613,7 @@ alert "🌙 Resumen de la noche
 🧠 IA 24/7 por disponibilidad: $(pretty_status "${ML_RES}") (pendientes: ${ML_PENDING_COUNT})
 🔬 Revisión profunda de discos: $(pretty_status "${SMART_RES}")
 🗄️ Copia de la base de datos: $(pretty_status "${DBDUMP_RES}")
+🧴 Base de perfumes: $(pretty_status "${PERFUME_DB_RES}")
 ☁️ Copia DB en Google Drive: $(pretty_status "${DBCLOUD_RES}")
 📝 Lo más importante:
 ${SUMMARY_NOTES}"

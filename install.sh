@@ -1353,6 +1353,8 @@ SCRIPTS=(
     "disaster-restore.sh" # Restauracion integral en caja nueva (discos existentes)
     "bootstrap-restore.sh" # Flujo todo-en-uno desde OS limpio (install restore + restore total)
     "cloud-db-upload.sh" # Sube el dump lógico de la DB a Google Drive con archivo remoto fijo
+    "perfume-db-receive.sh" # Recibe la base de perfumes desde el host Windows solo en un HDD montado
+    "perfume-db-backup.sh" # Valida y reemplaza de forma atómica la copia estable de perfumes
     "manual-retention.sh" # Depuracion manual de respaldos (sin auto-borrado)
     "log-maintenance.sh"  # Rotacion/depuracion mensual de logs tecnicos
     "emmc-safe-monthly.sh" # Limpieza semanal segura de eMMC (sin tocar cache playback)
