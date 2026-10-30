@@ -85,24 +85,35 @@ PY
 }
 
 read_value() {
-  python3 - "$1" <<'PY'
+  local source="$1" file="$1" temp=""
+  if [[ "$source" == *.gz ]]; then
+    temp="$(mktemp "${TMPDIR:-/tmp}/perfume-db-test-read.XXXXXX")"
+    gzip -dc -- "$source" > "$temp"
+    file="$temp"
+  fi
+  python3 - "$file" <<'PY'
 import sqlite3, sys
 db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 print(db.execute("SELECT value FROM sample").fetchone()[0])
 db.close()
 PY
+  [[ -z "$temp" ]] || rm -f -- "$temp"
 }
 
 receive_fixture() {
-  local fixture="$1" id="$2" expected_disk="$3" size sha response partial
-  size="$(stat -c '%s' "$fixture")"
-  sha="$(sha256sum "$fixture" | awk '{print $1}')"
-  response="$("$RECEIVER" prepare "$id" "$size" "$sha")" || fail "receiver prepare returned failure: $response"
+  local fixture="$1" id="$2" expected_disk="$3" archive="${1}.gz" size raw_size sha raw_sha response partial
+  gzip -1 -c -- "$fixture" > "$archive"
+  size="$(stat -c '%s' "$archive")"
+  raw_size="$(stat -c '%s' "$fixture")"
+  sha="$(sha256sum "$archive" | awk '{print $1}')"
+  raw_sha="$(sha256sum "$fixture" | awk '{print $1}')"
+  response="$("$RECEIVER" prepare "$id" "$size" "$raw_size" "$sha" "$raw_sha")" || fail "receiver prepare returned failure: $response"
   [[ "$(python3 -c 'import json,sys; print(json.load(sys.stdin)["disk"])' <<< "$response")" == "$expected_disk" ]] || fail "receiver picked an unexpected disk"
   partial="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["stagingPath"])' <<< "$response")"
-  cp -- "$fixture" "$partial"
-  response="$("$RECEIVER" commit "$id" "$size" "$sha")" || fail "receiver commit returned failure: $response"
+  cp -- "$archive" "$partial"
+  response="$("$RECEIVER" commit "$id" "$size" "$raw_size" "$sha" "$raw_sha")" || fail "receiver commit returned failure: $response"
   [[ "$(python3 -c 'import json,sys; print(json.load(sys.stdin)["disk"])' <<< "$response")" == "$expected_disk" ]] || fail "commit marker has the wrong disk"
+  [[ "$(python3 -c 'import json,sys; print(json.load(sys.stdin)["format"])' < "$(dirname "$partial")/perfume-app.ready.json")" == "perfume-sqlite-gzip-backup-v2" ]] || fail "receiver did not mark the archive as gzip"
 }
 
 run_consumer() {
@@ -115,10 +126,42 @@ ID1="11111111-1111-4111-8111-111111111111"
 receive_fixture "$FIXTURE1" "$ID1" primary
 [[ -f "$DISK1/perfume-db/incoming/perfume-app.ready.json" ]] || fail "primary ready marker missing"
 run_consumer
-STABLE="$PERFUME_DB_STABLE_DIR/perfume-app.sqlite"
+STABLE="$PERFUME_DB_STABLE_DIR/perfume-app.sqlite.gz"
 [[ "$(read_value "$STABLE")" == one ]] || fail "primary-origin copy was not installed"
 [[ ! -e "$DISK1/perfume-db/incoming/perfume-app.ready.json" ]] || fail "consumed primary marker remains"
 pass "primary mounted disk receives and nightly consumer installs the verified database"
+
+# A verified legacy stable SQLite copy remains recoverable until the first
+# compressed replacement and its new manifest are both committed.
+LEGACY_FIXTURE="$TEST_ROOT/legacy-stable.sqlite"
+new_fixture "$LEGACY_FIXTURE" legacy
+cp -- "$LEGACY_FIXTURE" "$PERFUME_DB_STABLE_DIR/perfume-app.sqlite"
+rm -f -- "$STABLE"
+legacy_size="$(stat -c '%s' "$LEGACY_FIXTURE")"
+legacy_sha="$(sha256sum "$LEGACY_FIXTURE" | awk '{print $1}')"
+python3 - "$PERFUME_DB_STABLE_DIR/perfume-app.sqlite.json" "$legacy_size" "$legacy_sha" <<'PY'
+import datetime, json, sys
+path, size, sha = sys.argv[1:]
+obj = {
+    "format": "perfume-sqlite-backup-v1",
+    "database": "perfume-app.sqlite",
+    "databaseFile": "perfume-app.sqlite",
+    "sizeBytes": int(size),
+    "sha256": sha,
+    "disk": "secondary",
+    "capturedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(obj, f)
+PY
+FIXTURE_UPGRADE="$TEST_ROOT/fixture-upgrade.sqlite"
+new_fixture "$FIXTURE_UPGRADE" upgraded
+ID_UPGRADE="88888888-8888-4888-8888-888888888888"
+receive_fixture "$FIXTURE_UPGRADE" "$ID_UPGRADE" primary
+run_consumer
+[[ "$(read_value "$STABLE")" == upgraded ]] || fail "legacy stable backup was not upgraded"
+[[ ! -e "$PERFUME_DB_STABLE_DIR/perfume-app.sqlite" ]] || fail "legacy raw stable file was not removed after verified upgrade"
+pass "legacy uncompressed stable backup is preserved until compressed replacement is verified"
 
 FIXTURE2="$TEST_ROOT/fixture-two.sqlite"
 new_fixture "$FIXTURE2" two
@@ -133,8 +176,11 @@ pass "primary absent falls back directly to secondary and nightly consumer recog
 FIXTURE3="$TEST_ROOT/fixture-three.sqlite"
 new_fixture "$FIXTURE3" three
 ID3="33333333-3333-4333-8333-333333333333"
-size3="$(stat -c '%s' "$FIXTURE3")"
-sha3="$(sha256sum "$FIXTURE3" | awk '{print $1}')"
+gzip -1 -c -- "$FIXTURE3" > "$FIXTURE3.gz"
+size3="$(stat -c '%s' "$FIXTURE3.gz")"
+raw_size3="$(stat -c '%s' "$FIXTURE3")"
+sha3="$(sha256sum "$FIXTURE3.gz" | awk '{print $1}')"
+raw_sha3="$(sha256sum "$FIXTURE3" | awk '{print $1}')"
 touch "$DISK1/.mounted"
 echo 100 > "$DISK1/.free"
 echo 1073741824 > "$DISK2/.free"
@@ -144,7 +190,7 @@ pass "unusable primary (insufficient space) falls back to secondary"
 rm -f "$DISK1/.mounted" "$DISK2/.mounted"
 ID4="44444444-4444-4444-8444-444444444444"
 set +e
-no_disk_response="$("$RECEIVER" prepare "$ID4" "$size3" "$sha3" 2>&1)"
+no_disk_response="$("$RECEIVER" prepare "$ID4" "$size3" "$raw_size3" "$sha3" "$raw_sha3" 2>&1)"
 no_disk_rc=$?
 set -e
 [[ "$no_disk_rc" -eq 2 ]] || fail "both-unmounted prepare unexpectedly succeeded"
