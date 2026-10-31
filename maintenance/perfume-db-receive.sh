@@ -6,7 +6,6 @@ PHOTOS_MOUNT="${PERFUME_DB_PHOTOS_MOUNT:-/mnt/storage-main}"
 BACKUP_MOUNT="${PERFUME_DB_BACKUP_MOUNT:-/mnt/storage-backup}"
 INBOX_SUFFIX="/perfume-db/incoming"
 DATABASE_NAME="perfume-app.sqlite"
-ARCHIVE_NAME="$DATABASE_NAME.gz"
 READY_NAME="perfume-app.ready.json"
 MIN_FREE_BYTES="${PERFUME_DB_MIN_FREE_BYTES:-268435456}"
 
@@ -52,7 +51,7 @@ disk_free_bytes() {
 }
 
 prepare_disk() {
-  local disk="$1" mount="$2" id="$3" size="$4" raw_size="$5"
+  local disk="$1" mount="$2" id="$3" size="$4"
   local incoming avail probe
   is_real_external_mount "$mount" || return 1
   incoming="$mount$INBOX_SUFFIX"
@@ -61,13 +60,11 @@ prepare_disk() {
   safe_incoming_dir "$mount" || return 1
   avail="$(disk_free_bytes "$mount")"
   [[ "$avail" =~ ^[0-9]+$ ]] || return 1
-  # Keep enough room for the compressed upload and a temporary expanded copy
-  # on this same external disk while validating SQLite. Never spill to eMMC.
-  (( avail >= size + raw_size + MIN_FREE_BYTES )) || return 1
+  (( avail >= size + MIN_FREE_BYTES )) || return 1
   probe="$(mktemp "$incoming/.write-check.XXXXXX")" || return 1
   rm -f -- "$probe" || return 1
   printf '{"ok":true,"disk":"%s","stagingPath":"%s/.%s.%s.partial"}\n' \
-    "$disk" "$incoming" "$ARCHIVE_NAME" "$id"
+    "$disk" "$incoming" "$DATABASE_NAME" "$id"
 }
 
 sqlite_integrity_ok() {
@@ -82,26 +79,6 @@ try:
 except Exception:
     raise SystemExit(1)
 PY
-}
-
-gzip_sqlite_integrity_ok() {
-  local archive="$1" raw_size_expected="$2" raw_sha_expected="$3" external_dir="$4"
-  local expanded actual_size actual_sha
-  expanded="$(mktemp "$external_dir/.perfume-db-verify.XXXXXX")" || return 1
-  # gzip -dc validates the stream and CRC while writing it. Avoid a separate
-  # gzip -t pass over a multi-gigabyte backup; it doubles the slowest part of
-  # remote verification without adding a stronger integrity guarantee.
-  if ! gzip -dc -- "$archive" > "$expanded"; then
-    rm -f -- "$expanded"
-    return 1
-  fi
-  actual_size="$(stat -c '%s' -- "$expanded")"
-  actual_sha="$(sha256sum -- "$expanded" | awk '{print $1}')"
-  if [[ "$actual_size" != "$raw_size_expected" || "$actual_sha" != "$raw_sha_expected" ]] || ! sqlite_integrity_ok "$expanded"; then
-    rm -f -- "$expanded"
-    return 1
-  fi
-  rm -f -- "$expanded"
 }
 
 safe_mount_for_partial() {
@@ -124,7 +101,7 @@ import json, re, sys
 try:
     data = json.load(open(sys.argv[1], encoding="utf-8"))
     name = data.get("databaseFile", "")
-    if re.fullmatch(r"perfume-app-[0-9a-f-]{36}\.sqlite(?:\.gz)?", name):
+    if re.fullmatch(r"perfume-app-[0-9a-f-]{36}\.sqlite", name):
         print(name)
 except Exception:
     pass
@@ -132,25 +109,25 @@ PY
 }
 
 prepare() {
-  local id="$1" size="$2" raw_size="$3" sha="$4" raw_sha="$5" preference="${6:-auto}"
-  valid_id "$id" && valid_size "$size" && valid_size "$raw_size" && valid_sha "$sha" && valid_sha "$raw_sha" || { json_error "parámetros inválidos"; return 2; }
+  local id="$1" size="$2" sha="$3" preference="${4:-auto}"
+  valid_id "$id" && valid_size "$size" && valid_sha "$sha" || { json_error "parámetros inválidos"; return 2; }
   if [[ "$preference" == "secondary" ]]; then
-    prepare_disk secondary "$BACKUP_MOUNT" "$id" "$size" "$raw_size" && return 0
+    prepare_disk secondary "$BACKUP_MOUNT" "$id" "$size" && return 0
     json_error "disco secundario ausente, sin espacio o no escribible"
     return 2
   fi
-  if prepare_disk primary "$PHOTOS_MOUNT" "$id" "$size" "$raw_size"; then return 0; fi
-  if prepare_disk secondary "$BACKUP_MOUNT" "$id" "$size" "$raw_size"; then return 0; fi
+  if prepare_disk primary "$PHOTOS_MOUNT" "$id" "$size"; then return 0; fi
+  if prepare_disk secondary "$BACKUP_MOUNT" "$id" "$size"; then return 0; fi
   json_error "ni el disco principal ni el secundario están montados, tienen espacio suficiente y son escribibles"
   return 2
 }
 
 commit() {
-  local id="$1" expected_size="$2" expected_raw_size="$3" expected_sha="$4" expected_raw_sha="$5" partial
-  valid_id "$id" && valid_size "$expected_size" && valid_size "$expected_raw_size" && valid_sha "$expected_sha" && valid_sha "$expected_raw_sha" || { json_error "parámetros inválidos"; return 2; }
+  local id="$1" expected_size="$2" expected_sha="$3" partial
+  valid_id "$id" && valid_size "$expected_size" && valid_sha "$expected_sha" || { json_error "parámetros inválidos"; return 2; }
 
-  local photos_partial="$PHOTOS_MOUNT$INBOX_SUFFIX/.$ARCHIVE_NAME.$id.partial"
-  local backup_partial="$BACKUP_MOUNT$INBOX_SUFFIX/.$ARCHIVE_NAME.$id.partial"
+  local photos_partial="$PHOTOS_MOUNT$INBOX_SUFFIX/.$DATABASE_NAME.$id.partial"
+  local backup_partial="$BACKUP_MOUNT$INBOX_SUFFIX/.$DATABASE_NAME.$id.partial"
   if [[ -f "$photos_partial" ]] && is_real_external_mount "$PHOTOS_MOUNT"; then
     partial="$photos_partial"
   elif [[ -f "$backup_partial" ]] && is_real_external_mount "$BACKUP_MOUNT"; then
@@ -168,27 +145,24 @@ commit() {
   actual_size="$(stat -c '%s' -- "$partial")"
   actual_sha="$(sha256sum -- "$partial" | awk '{print $1}')"
   [[ "$actual_size" == "$expected_size" && "$actual_sha" == "$expected_sha" ]] || { json_error "tamaño o SHA-256 no coincide"; return 2; }
-  gzip_sqlite_integrity_ok "$partial" "$expected_raw_size" "$expected_raw_sha" "$incoming" || { json_error "gzip, datos expandidos o SQLite integrity_check fallaron"; return 2; }
+  sqlite_integrity_ok "$partial" || { json_error "SQLite integrity_check falló"; return 2; }
 
-  database_file="perfume-app-$id.sqlite.gz"
+  database_file="perfume-app-$id.sqlite"
   ready="$incoming/$READY_NAME"
   ready_tmp="$incoming/.$READY_NAME.$id.partial"
   previous_file="$(read_previous_file "$ready")"
   mv -- "$partial" "$incoming/$database_file"
   sync -f "$incoming/$database_file"
-  python3 - "$ready_tmp" "$database_file" "$disk" "$actual_size" "$expected_raw_size" "$actual_sha" "$expected_raw_sha" <<'PY'
+  python3 - "$ready_tmp" "$database_file" "$disk" "$actual_size" "$actual_sha" <<'PY'
 import datetime, json, os, sys
-path, database, disk, size, raw_size, sha, raw_sha = sys.argv[1:]
+path, database, disk, size, sha = sys.argv[1:]
 obj = {
-    "format": "perfume-sqlite-gzip-backup-v2",
+    "format": "perfume-sqlite-backup-v1",
     "database": "perfume-app.sqlite",
     "databaseFile": database,
-    "compression": "gzip",
     "disk": disk,
     "sizeBytes": int(size),
-    "uncompressedSizeBytes": int(raw_size),
     "sha256": sha,
-    "uncompressedSha256": raw_sha,
     "capturedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
 }
 with open(path, "x", encoding="utf-8") as f:
@@ -202,7 +176,7 @@ PY
   if [[ -n "$previous_file" && "$previous_file" != "$database_file" ]]; then
     rm -f -- "$incoming/$previous_file"
   fi
-    printf '{"ok":true,"disk":"%s","sizeBytes":%s,"uncompressedSizeBytes":%s,"sha256":"%s","uncompressedSha256":"%s"}\n' "$disk" "$actual_size" "$expected_raw_size" "$actual_sha" "$expected_raw_sha"
+  printf '{"ok":true,"disk":"%s","sizeBytes":%s,"sha256":"%s"}\n' "$disk" "$actual_size" "$actual_sha"
 }
 
 abort_transfer() {
@@ -212,8 +186,8 @@ abort_transfer() {
   for mount in "$PHOTOS_MOUNT" "$BACKUP_MOUNT"; do
     if is_real_external_mount "$mount" && safe_incoming_dir "$mount"; then
       incoming="$mount$INBOX_SUFFIX"
-      rm -f -- "$incoming/.$ARCHIVE_NAME.$id.partial" "$incoming/.$READY_NAME.$id.partial"
-      committed="perfume-app-$id.sqlite.gz"
+      rm -f -- "$incoming/.$DATABASE_NAME.$id.partial" "$incoming/.$READY_NAME.$id.partial"
+      committed="perfume-app-$id.sqlite"
       if [[ "$(read_previous_file "$incoming/$READY_NAME")" != "$committed" ]]; then
         rm -f -- "$incoming/$committed"
       fi
@@ -224,12 +198,12 @@ abort_transfer() {
 
 case "${1:-}" in
   prepare)
-    [[ $# -ge 6 && $# -le 7 ]] || { json_error "uso inválido de prepare"; exit 2; }
-    prepare "$2" "$3" "$4" "$5" "$6" "${7:-auto}"
+    [[ $# -ge 4 && $# -le 5 ]] || { json_error "uso inválido de prepare"; exit 2; }
+    prepare "$2" "$3" "$4" "${5:-auto}"
     ;;
   commit)
-    [[ $# -eq 6 ]] || { json_error "uso inválido de commit"; exit 2; }
-    commit "$2" "$3" "$4" "$5" "$6"
+    [[ $# -eq 4 ]] || { json_error "uso inválido de commit"; exit 2; }
+    commit "$2" "$3" "$4"
     ;;
   abort)
     [[ $# -eq 2 ]] || { json_error "uso inválido de abort"; exit 2; }

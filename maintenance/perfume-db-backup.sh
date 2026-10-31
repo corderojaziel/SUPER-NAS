@@ -6,8 +6,7 @@ PHOTOS_MOUNT="${PERFUME_DB_PHOTOS_MOUNT:-/mnt/storage-main}"
 BACKUP_MOUNT="${PERFUME_DB_BACKUP_MOUNT:-/mnt/storage-backup}"
 INBOX_SUFFIX="/perfume-db/incoming"
 DEST_DIR="${PERFUME_DB_STABLE_DIR:-/mnt/storage-backup/snapshots/perfume-db}"
-STABLE_NAME="perfume-app.sqlite.gz"
-LEGACY_STABLE_NAME="perfume-app.sqlite"
+STABLE_NAME="perfume-app.sqlite"
 READY_NAME="perfume-app.ready.json"
 MANIFEST_NAME="perfume-app.sqlite.json"
 
@@ -62,35 +61,21 @@ import json, re, sys
 try:
     obj = json.load(open(sys.argv[1], encoding="utf-8"))
     allow_stable = sys.argv[2] == "stable"
+    if obj.get("format") != "perfume-sqlite-backup-v1":
+        raise ValueError("formato")
     if obj.get("database") != "perfume-app.sqlite":
         raise ValueError("base")
     if obj.get("disk") not in ("primary", "secondary"):
         raise ValueError("disco")
     name = obj.get("databaseFile", "")
+    is_received = re.fullmatch(r"perfume-app-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.sqlite", name)
+    if not is_received and not (allow_stable and name == "perfume-app.sqlite"):
+        raise ValueError("nombre")
     if not isinstance(obj.get("sizeBytes"), int) or obj["sizeBytes"] <= 0:
         raise ValueError("tamaño")
     if not re.fullmatch(r"[0-9a-f]{64}", obj.get("sha256", "")):
         raise ValueError("hash")
-    fmt = obj.get("format")
-    if fmt == "perfume-sqlite-backup-v1":
-        if obj.get("compression") not in (None, ""):
-            raise ValueError("compresión heredada")
-        raw_size, raw_sha = obj["sizeBytes"], obj["sha256"]
-        is_received = re.fullmatch(r"perfume-app-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.sqlite", name)
-        stable = allow_stable and name == "perfume-app.sqlite"
-    elif fmt == "perfume-sqlite-gzip-backup-v2":
-        if obj.get("compression") != "gzip":
-            raise ValueError("compresión")
-        raw_size, raw_sha = obj.get("uncompressedSizeBytes"), obj.get("uncompressedSha256")
-        is_received = re.fullmatch(r"perfume-app-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.sqlite\.gz", name)
-        stable = allow_stable and name == "perfume-app.sqlite.gz"
-        if not isinstance(raw_size, int) or raw_size <= 0 or not re.fullmatch(r"[0-9a-f]{64}", raw_sha or ""):
-            raise ValueError("datos expandidos")
-    else:
-        raise ValueError("formato")
-    if not is_received and not stable:
-        raise ValueError("nombre")
-    print(obj["disk"], name, obj["sizeBytes"], obj["sha256"], fmt, raw_size, raw_sha, sep="|")
+    print(obj["disk"], name, obj["sizeBytes"], obj["sha256"], sep="|")
 except Exception:
     raise SystemExit(1)
 PY
@@ -110,73 +95,50 @@ except Exception:
 PY
 }
 
-gzip_sqlite_integrity_ok() {
-  local archive="$1" expected_raw_size="$2" expected_raw_sha="$3" verify_dir="$4"
-  local expanded actual_size actual_sha
-  expanded="$(mktemp "$verify_dir/.perfume-db-verify.XXXXXX")" || return 1
-  if ! gzip -t -- "$archive" || ! gzip -dc -- "$archive" > "$expanded"; then
-    rm -f -- "$expanded"
-    return 1
-  fi
-  actual_size="$(stat -c '%s' -- "$expanded")"
-  actual_sha="$(sha256sum -- "$expanded" | awk '{print $1}')"
-  if [[ "$actual_size" != "$expected_raw_size" || "$actual_sha" != "$expected_raw_sha" ]] || ! sqlite_integrity_ok "$expanded"; then
-    rm -f -- "$expanded"
-    return 1
-  fi
-  rm -f -- "$expanded"
-}
-
 verify_copy() {
-  local file="$1" size="$2" sha="$3" fmt="$4" raw_size="$5" raw_sha="$6" verify_dir="$7" actual_size actual_sha
+  local file="$1" size="$2" sha="$3" actual_size actual_sha
   [[ -f "$file" && ! -L "$file" ]] || return 1
   actual_size="$(stat -c '%s' -- "$file")"
   actual_sha="$(sha256sum -- "$file" | awk '{print $1}')"
   [[ "$actual_size" == "$size" && "$actual_sha" == "$sha" ]] || return 1
-  if [[ "$fmt" == "perfume-sqlite-backup-v1" ]]; then
-    sqlite_integrity_ok "$file"
-  elif [[ "$fmt" == "perfume-sqlite-gzip-backup-v2" ]]; then
-    gzip_sqlite_integrity_ok "$file" "$raw_size" "$raw_sha" "$verify_dir"
-  else
-    return 1
-  fi
+  sqlite_integrity_ok "$file"
 }
 
 recover_previous() {
   local stable="$DEST_DIR/$STABLE_NAME" manifest="$DEST_DIR/$MANIFEST_NAME"
   local prev="$DEST_DIR/.$STABLE_NAME.previous" prev_manifest="$DEST_DIR/.$MANIFEST_NAME.previous"
-  [[ -e "$prev" || -e "$prev_manifest" ]] || return 0
-  [[ -f "$prev" && ! -L "$prev" && -f "$prev_manifest" && ! -L "$prev_manifest" ]] || fail "hay una recuperación previa incompleta que requiere revisión"
-
-  local previous_meta previous_name previous_size previous_sha previous_fmt previous_raw_size previous_raw_sha
-  previous_meta="$(manifest_fields "$prev_manifest" stable 2>/dev/null || true)"
-  [[ -n "$previous_meta" ]] || fail "el manifiesto de recuperación anterior no es válido"
-  IFS='|' read -r _ previous_name previous_size previous_sha previous_fmt previous_raw_size previous_raw_sha <<< "$previous_meta"
-  verify_copy "$prev" "$previous_size" "$previous_sha" "$previous_fmt" "$previous_raw_size" "$previous_raw_sha" "$DEST_DIR" || fail "la copia previa de recuperación no coincide con su manifiesto"
-
-  local current_meta current_name current_size current_sha current_fmt current_raw_size current_raw_sha
-  current_meta="$(manifest_fields "$manifest" stable 2>/dev/null || true)"
-  if [[ -n "$current_meta" ]]; then
-    IFS='|' read -r _ current_name current_size current_sha current_fmt current_raw_size current_raw_sha <<< "$current_meta"
-    if [[ "$current_name" == "$STABLE_NAME" ]] \
-      && ! cmp -s -- "$manifest" "$prev_manifest" \
-      && verify_copy "$DEST_DIR/$current_name" "$current_size" "$current_sha" "$current_fmt" "$current_raw_size" "$current_raw_sha" "$DEST_DIR"; then
-      rm -f -- "$prev" "$prev_manifest"
-      [[ "$previous_name" != "$LEGACY_STABLE_NAME" ]] || rm -f -- "$DEST_DIR/$LEGACY_STABLE_NAME"
-      return 0
+  [[ -f "$prev" ]] || return 0
+  if [[ -f "$stable" && -f "$manifest" ]]; then
+    local meta name size sha
+    meta="$(manifest_fields "$manifest" stable 2>/dev/null || true)"
+    if [[ -n "$meta" ]]; then
+      IFS='|' read -r _ name size sha <<< "$meta"
+      if verify_copy "$stable" "$size" "$sha"; then
+        rm -f -- "$prev"
+        rm -f -- "$prev_manifest"
+        return 0
+      fi
     fi
   fi
-
-  if [[ "$previous_name" == "$STABLE_NAME" ]]; then
+  if [[ -f "$prev_manifest" ]]; then
+    local previous_meta previous_name previous_size previous_sha
+    previous_meta="$(manifest_fields "$prev_manifest" stable 2>/dev/null || true)"
+    if [[ -n "$previous_meta" ]]; then
+      IFS='|' read -r _ previous_name previous_size previous_sha <<< "$previous_meta"
+      if verify_copy "$prev" "$previous_size" "$previous_sha"; then
+        mv -f -- "$prev" "$stable"
+        mv -f -- "$prev_manifest" "$manifest"
+        sync -f "$DEST_DIR"
+        return 0
+      fi
+    fi
+  elif [[ ! -f "$stable" ]] && sqlite_integrity_ok "$prev"; then
     mv -f -- "$prev" "$stable"
-  else
-    [[ -f "$DEST_DIR/$previous_name" && ! -L "$DEST_DIR/$previous_name" ]] || fail "falta la copia anterior indicada por su manifiesto"
-    verify_copy "$DEST_DIR/$previous_name" "$previous_size" "$previous_sha" "$previous_fmt" "$previous_raw_size" "$previous_raw_sha" "$DEST_DIR" || fail "la copia anterior no pasó su verificación"
-    rm -f -- "$prev"
-    rm -f -- "$stable"
+    rm -f -- "$manifest"
+    sync -f "$DEST_DIR"
+    return 0
   fi
-  mv -f -- "$prev_manifest" "$manifest"
-  sync -f "$DEST_DIR"
+  fail "hay una copia previa de recuperación, pero no se pudo verificar cuál conservar"
 }
 
 select_ready() {
@@ -219,12 +181,12 @@ esac
 is_real_external_mount "$source_mount" || fail "el disco de origen dejó de estar montado"
 safe_incoming_dir "$source_mount" || fail "la carpeta de recepción ya no es una ruta directa del disco externo"
 meta="$(manifest_fields "$marker")" || fail "el manifiesto de recepción no es válido"
-IFS='|' read -r declared_disk database_file expected_size expected_sha expected_format expected_raw_size expected_raw_sha <<< "$meta"
+IFS='|' read -r declared_disk database_file expected_size expected_sha <<< "$meta"
 expected_mount="primary"
 [[ "$source_mount" == "$BACKUP_MOUNT" ]] && expected_mount="secondary"
 [[ "$declared_disk" == "$expected_mount" ]] || fail "el manifiesto no coincide con el disco que lo contiene"
 source_file="$(dirname "$marker")/$database_file"
-verify_copy "$source_file" "$expected_size" "$expected_sha" "$expected_format" "$expected_raw_size" "$expected_raw_sha" "$(dirname "$marker")" || fail "la copia recibida no coincide en tamaño, SHA-256 o SQLite integrity_check"
+verify_copy "$source_file" "$expected_size" "$expected_sha" || fail "la copia recibida no coincide en tamaño, SHA-256 o SQLite integrity_check"
 
 is_real_external_mount "$BACKUP_MOUNT" || fail "el disco secundario de respaldo no está montado; se conserva el origen para reintentar"
 prepare_stable_dir || fail "el destino estable no es una ruta directa segura dentro del disco secundario"
@@ -238,21 +200,13 @@ previous="$DEST_DIR/.$STABLE_NAME.previous"
 previous_manifest="$DEST_DIR/.$MANIFEST_NAME.previous"
 had_previous=0
 installed_new=0
-old_name=""
 
 cleanup() {
   local rc=$?
   rm -f -- "$tmp" "$manifest_tmp"
   if [[ $rc -ne 0 ]]; then
     if [[ "$had_previous" -eq 1 && -f "$previous" && -f "$previous_manifest" ]]; then
-      local saved_meta saved_name
-      saved_meta="$(manifest_fields "$previous_manifest" stable 2>/dev/null || true)"
-      saved_name="$(cut -d'|' -f2 <<< "$saved_meta")"
-      if [[ "$saved_name" == "$STABLE_NAME" ]]; then
-        mv -f -- "$previous" "$stable"
-      else
-        rm -f -- "$previous" "$stable"
-      fi
+      mv -f -- "$previous" "$stable"
       mv -f -- "$previous_manifest" "$manifest"
       sync -f "$DEST_DIR" || true
     elif [[ "$installed_new" -eq 1 ]]; then
@@ -266,42 +220,33 @@ trap cleanup EXIT INT TERM
 
 cp --reflink=never -- "$source_file" "$tmp" || fail "no se pudo copiar al temporal del disco secundario"
 sync -f "$tmp" || fail "no se pudo sincronizar la copia temporal"
-verify_copy "$tmp" "$expected_size" "$expected_sha" "$expected_format" "$expected_raw_size" "$expected_raw_sha" "$DEST_DIR" || fail "la copia temporal no pasó tamaño, hash e integridad"
+verify_copy "$tmp" "$expected_size" "$expected_sha" || fail "la copia temporal no pasó tamaño, hash e integridad"
 
-if [[ -e "$manifest" ]]; then
-  [[ -f "$manifest" && ! -L "$manifest" ]] || fail "el manifiesto estable previo no es un archivo regular"
+if [[ -e "$stable" ]]; then
+  [[ -f "$stable" && ! -L "$stable" ]] || fail "la copia estable previa no es un archivo regular"
+  [[ -f "$manifest" && ! -L "$manifest" ]] || fail "la copia estable previa no tiene manifiesto verificable"
   old_meta="$(manifest_fields "$manifest" stable)" || fail "el manifiesto estable previo no es válido"
-  IFS='|' read -r _ old_name old_size old_sha old_fmt old_raw_size old_raw_sha <<< "$old_meta"
-  old_file="$DEST_DIR/$old_name"
-  [[ -f "$old_file" && ! -L "$old_file" ]] || fail "falta la copia estable indicada por su manifiesto"
-  verify_copy "$old_file" "$old_size" "$old_sha" "$old_fmt" "$old_raw_size" "$old_raw_sha" "$DEST_DIR" || fail "la copia estable previa no coincide con su manifiesto"
-  if [[ "$old_name" != "$STABLE_NAME" && -e "$stable" ]]; then
-    fail "hay una copia comprimida sin manifiesto estable; requiere revisión"
-  fi
+  IFS='|' read -r _ old_name old_size old_sha <<< "$old_meta"
+  verify_copy "$stable" "$old_size" "$old_sha" || fail "la copia estable previa no coincide con su manifiesto"
   [[ ! -e "$previous" ]] || fail "hay un respaldo de recuperación previo que requiere revisión"
   [[ ! -e "$previous_manifest" ]] || fail "hay un manifiesto de recuperación previo que requiere revisión"
-  ln -- "$old_file" "$previous" || fail "no se pudo preservar la última copia válida"
+  ln -- "$stable" "$previous" || fail "no se pudo preservar la última copia válida"
   ln -- "$manifest" "$previous_manifest" || { rm -f -- "$previous"; fail "no se pudo preservar el manifiesto anterior"; }
   had_previous=1
-elif [[ -e "$stable" || -e "$DEST_DIR/$LEGACY_STABLE_NAME" ]]; then
-  fail "hay una copia estable sin manifiesto verificable; no se reemplazará"
 fi
 
 mv -f -- "$tmp" "$stable" || fail "no se pudo reemplazar atómicamente la copia estable"
 installed_new=1
 sync -f "$DEST_DIR" || fail "no se pudo sincronizar el directorio de destino"
-python3 - "$manifest_tmp" "$expected_size" "$expected_sha" "$expected_raw_size" "$expected_raw_sha" "$declared_disk" "$marker" <<'PY'
+python3 - "$manifest_tmp" "$expected_size" "$expected_sha" "$declared_disk" "$marker" <<'PY'
 import datetime, json, os, sys
-path, size, sha, raw_size, raw_sha, disk, source_marker = sys.argv[1:]
+path, size, sha, disk, source_marker = sys.argv[1:]
 obj = {
-    "format": "perfume-sqlite-gzip-backup-v2",
+    "format": "perfume-sqlite-backup-v1",
     "database": "perfume-app.sqlite",
-    "databaseFile": "perfume-app.sqlite.gz",
-    "compression": "gzip",
+    "databaseFile": "perfume-app.sqlite",
     "sizeBytes": int(size),
-    "uncompressedSizeBytes": int(raw_size),
     "sha256": sha,
-    "uncompressedSha256": raw_sha,
     "disk": "secondary",
     "sourceDisk": disk,
     "sourceMarker": source_marker,
@@ -319,10 +264,6 @@ sync -f "$DEST_DIR" || fail "no se pudo sincronizar el manifiesto estable"
 had_previous=0
 rm -f -- "$previous"
 rm -f -- "$previous_manifest"
-if [[ "$old_name" == "$LEGACY_STABLE_NAME" ]]; then
-  rm -f -- "$DEST_DIR/$LEGACY_STABLE_NAME"
-  sync -f "$DEST_DIR"
-fi
 
 rm -f -- "$marker"
 rm -f -- "$source_file"
